@@ -1,0 +1,77 @@
+@PACKAGE_INIT@
+
+set(rachis_private_library_dir "@PACKAGE_rachis_private_library_dir@")
+
+include(CMakeFindDependencyMacro)
+if(@RACHIS_ENABLE_D3D12@ AND @RACHIS_ENABLE_DEBUG_MARKERS@ AND NOT TARGET RachisWinPixEventRuntime)
+    add_library(RachisWinPixEventRuntime SHARED IMPORTED)
+    set_target_properties(RachisWinPixEventRuntime PROPERTIES
+        IMPORTED_IMPLIB "${rachis_private_library_dir}/WinPixEventRuntime.lib"
+        IMPORTED_LOCATION "@PACKAGE_rachis_runtime_dir@/WinPixEventRuntime.dll")
+endif()
+
+if(@RACHIS_ENABLE_VULKAN@)
+    set(THREADS_PREFER_PTHREAD_FLAG ON)
+    find_dependency(Threads)
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/RachisTargets.cmake")
+foreach(rachis_bundled_archive IN ITEMS D3D12MA:RHID3D12 volk:RHIVulkan)
+    string(REPLACE ":" ";" rachis_bundled_archive "${rachis_bundled_archive}")
+    list(GET rachis_bundled_archive 0 rachis_bundled_name)
+    list(GET rachis_bundled_archive 1 rachis_bundled_consumer)
+    if(NOT TARGET Rachis::${rachis_bundled_consumer} OR TARGET Rachis::${rachis_bundled_name})
+        continue()
+    endif()
+    add_library(Rachis::${rachis_bundled_name} STATIC IMPORTED)
+    file(GLOB rachis_bundled_files "${CMAKE_CURRENT_LIST_DIR}/RachisBundled-${rachis_bundled_name}-*.cmake")
+    foreach(rachis_bundled_file IN LISTS rachis_bundled_files)
+        include("${rachis_bundled_file}")
+    endforeach()
+    set_property(TARGET Rachis::${rachis_bundled_consumer} APPEND PROPERTY INTERFACE_LINK_LIBRARIES
+        "$<LINK_ONLY:Rachis::${rachis_bundled_name}>")
+endforeach()
+unset(rachis_bundled_archive)
+unset(rachis_bundled_name)
+unset(rachis_bundled_consumer)
+unset(rachis_bundled_files)
+unset(rachis_bundled_file)
+
+get_directory_property(rachis_package_targets IMPORTED_TARGETS)
+list(FILTER rachis_package_targets INCLUDE REGEX "^Rachis::")
+foreach(rachis_package_target IN LISTS rachis_package_targets)
+    get_target_property(rachis_package_alias ${rachis_package_target} ALIASED_TARGET)
+    get_target_property(rachis_package_configurations ${rachis_package_target} IMPORTED_CONFIGURATIONS)
+    if(rachis_package_alias OR NOT "RELEASE" IN_LIST rachis_package_configurations)
+        continue()
+    endif()
+    foreach(rachis_consumer_configuration IN ITEMS RELWITHDEBINFO MINSIZEREL)
+        get_target_property(rachis_package_mapping ${rachis_package_target}
+            MAP_IMPORTED_CONFIG_${rachis_consumer_configuration})
+        if(NOT DEFINED CMAKE_MAP_IMPORTED_CONFIG_${rachis_consumer_configuration}
+                AND NOT rachis_package_mapping)
+            set_property(TARGET ${rachis_package_target}
+                PROPERTY MAP_IMPORTED_CONFIG_${rachis_consumer_configuration} RELEASE)
+        endif()
+    endforeach()
+endforeach()
+unset(rachis_package_targets)
+unset(rachis_package_target)
+unset(rachis_package_alias)
+unset(rachis_package_configurations)
+unset(rachis_package_mapping)
+unset(rachis_consumer_configuration)
+unset(rachis_private_library_dir)
+
+foreach(rachis_component IN ITEMS RHI C RHID3D12 RHIVulkan RHIMetal ShaderBinaryTool)
+    if(TARGET Rachis::${rachis_component})
+        set(Rachis_${rachis_component}_FOUND TRUE)
+    else()
+        set(Rachis_${rachis_component}_FOUND FALSE)
+    endif()
+endforeach()
+unset(rachis_component)
+
+include("${CMAKE_CURRENT_LIST_DIR}/RachisShaders.cmake")
+
+check_required_components(Rachis)

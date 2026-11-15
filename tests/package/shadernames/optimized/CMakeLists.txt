@@ -1,0 +1,13 @@
+set(CMAKE_MSVC_RUNTIME_CHECKS "")
+foreach(config IN ITEMS DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+    if(MSVC)
+        set(CMAKE_CXX_FLAGS_${config} "/O2 /Ob2")
+    else()
+        set(CMAKE_CXX_FLAGS_${config} "-O2")
+    endif()
+endforeach()
+
+add_shader_names_program(RachisShaderNamesOptimized STATIC)
+if(NOT WIN32)
+    add_shader_names_program(RachisShaderNamesOptimizedShared SHARED)
+endif()

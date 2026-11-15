@@ -1,0 +1,48 @@
+#version 460
+
+layout(local_size_x = 4, local_size_y = 1, local_size_z = 1) in;
+
+struct Element
+{
+    vec3 position;
+    uint id;
+};
+
+layout(set = 0, binding = 0, std430) readonly buffer Elements
+{
+    Element elements[];
+};
+
+layout(set = 0, binding = 1, std430) writeonly buffer Output
+{
+    uint values[];
+} outputBuffer;
+
+layout(set = 1, binding = 0, std140) uniform Params
+{
+    uint count;
+    vec3 bias;
+    float scale;
+} params;
+
+layout(push_constant, std430) uniform Push
+{
+    uint offset;
+    uint stride;
+} push;
+
+uint mapElement(Element element)
+{
+    vec3 shifted = (element.position + params.bias) * params.scale;
+    return uint(shifted.x + shifted.y + shifted.z) + element.id;
+}
+
+void main()
+{
+    uint index = gl_GlobalInvocationID.x;
+    if (index >= params.count)
+    {
+        return;
+    }
+    outputBuffer.values[push.offset + index * push.stride] = mapElement(elements[index]);
+}

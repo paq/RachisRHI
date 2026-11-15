@@ -1,0 +1,14 @@
+---
+# clang-format's stock Microsoft style, adjusted to the conventions shared by
+# Microsoft's DirectX code (DirectXTK, DirectXMath, DirectStorage, and the
+# DirectX-Graphics-Samples): access specifiers flush with the class brace,
+# `T* p` declarators, indented namespace bodies, `template<...>` on its own
+# line, and one argument or parameter per line once a call or declaration wraps.
+BasedOnStyle: Microsoft
+AccessModifierOffset: -4
+BinPackArguments: false
+BinPackParameters: false
+BreakTemplateDeclarations: Yes
+NamespaceIndentation: All
+PointerAlignment: Left
+SpaceAfterTemplateKeyword: false

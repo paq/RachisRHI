@@ -1,0 +1,309 @@
+#include "D3D12/D3D12TestHooks.h"
+#include "Rachis/Device.h"
+#include "RhiTestSupport.h"
+
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
+
+#include <array>
+#include <atomic>
+#include <cstdint>
+#include <string>
+#include <utility>
+
+namespace
+{
+
+    using rachis::TextureLayout;
+
+    class ForceLegacyBarriers final
+    {
+    public:
+        explicit ForceLegacyBarriers(bool enabled)
+            : previous_(rachis::d3d12::test::forceLegacyBarriers().exchange(enabled, std::memory_order_relaxed))
+        {
+        }
+
+        ~ForceLegacyBarriers()
+        {
+            rachis::d3d12::test::forceLegacyBarriers().store(previous_, std::memory_order_relaxed);
+        }
+
+        ForceLegacyBarriers(const ForceLegacyBarriers&) = delete;
+        ForceLegacyBarriers& operator=(const ForceLegacyBarriers&) = delete;
+        ForceLegacyBarriers(ForceLegacyBarriers&&) = delete;
+        ForceLegacyBarriers& operator=(ForceLegacyBarriers&&) = delete;
+
+    private:
+        bool previous_ = false;
+    };
+
+    struct LayoutScope final
+    {
+        rachis::PipelineStage stages = rachis::PipelineStage::none;
+        rachis::Access access = rachis::Access::none;
+    };
+
+    [[nodiscard]] constexpr LayoutScope layoutScope(TextureLayout layout) noexcept
+    {
+        switch (layout)
+        {
+        case TextureLayout::copyDestination:
+            return {rachis::PipelineStage::copy, rachis::Access::copyDestination};
+        case TextureLayout::copySource:
+            return {rachis::PipelineStage::copy, rachis::Access::copySource};
+        case TextureLayout::shaderResource:
+            return {rachis::PipelineStage::pixelShader | rachis::PipelineStage::computeShader,
+                    rachis::Access::shaderResource};
+        case TextureLayout::unorderedAccess:
+            return {rachis::PipelineStage::computeShader, rachis::Access::unorderedAccess};
+        default:
+            return {};
+        }
+    }
+
+    [[nodiscard]] rachis::TextureBarrier layoutBarrier(rachis::TextureHandle texture,
+                                                       TextureLayout before,
+                                                       TextureLayout after,
+                                                       rachis::TextureSubresourceRange range = {})
+    {
+        const auto beforeScope = layoutScope(before);
+        const auto afterScope = layoutScope(after);
+        return rachis::TextureBarrier{
+            .texture = texture,
+            .stagesBefore = beforeScope.stages,
+            .stagesAfter = afterScope.stages,
+            .accessBefore = beforeScope.access,
+            .accessAfter = afterScope.access,
+            .layoutBefore = before,
+            .layoutAfter = after,
+            .subresources = range,
+        };
+    }
+
+    [[nodiscard]] rachis::CommandBuffer acquire(rachis::Device& device)
+    {
+        auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::graphics);
+        REQUIRE(command.has_value());
+        return std::move(*command);
+    }
+
+    void submitAndWait(rachis::Device& device, rachis::CommandBuffer&& command)
+    {
+        auto submitted = device.submit(std::move(command));
+        REQUIRE(submitted.has_value());
+        REQUIRE(device.wait(*submitted).has_value());
+    }
+
+} // namespace
+
+TEST_CASE("D3D12 texture barriers must name the current layout of every subresource or undefined",
+          "[size:medium][rhi][d3d12][warp][barrier][layout]")
+{
+    const bool legacy = GENERATE(false, true);
+    CAPTURE(legacy);
+    const ForceLegacyBarriers forced(legacy);
+    auto created = rachis::createDevice(rachis::test::d3d12WarpDeviceDesc());
+    REQUIRE(created.has_value());
+    auto device = std::move(*created);
+    REQUIRE(rachis::test::requireCapabilities(device).enhancedBarriers == !legacy);
+
+    const rachis::TextureDesc desc{
+        .width = 8,
+        .height = 8,
+        .mipLevels = 2,
+        .format = rachis::Format::rgba8Unorm,
+        .usage = rachis::TextureUsage::copySource | rachis::TextureUsage::copyDestination |
+                 rachis::TextureUsage::sampled | rachis::TextureUsage::storage,
+        .label = "D3D12 layoutBefore texture",
+    };
+    auto texture = device.createTexture(desc);
+    auto other = device.createTexture(desc);
+    REQUIRE(texture.has_value());
+    REQUIRE(other.has_value());
+
+    SECTION("a barrier inside one command buffer must start where the command buffer left the subresource")
+    {
+        auto command = acquire(device);
+        REQUIRE(device
+                    .textureBarrier(command,
+                                    layoutBarrier(*texture, TextureLayout::undefined, TextureLayout::copyDestination))
+                    .has_value());
+        const auto wrong = device.textureBarrier(
+            command, layoutBarrier(*texture, TextureLayout::copySource, TextureLayout::shaderResource));
+        REQUIRE_FALSE(wrong.has_value());
+        CHECK(wrong.error().code == rachis::ErrorCode::invalidState);
+        CHECK(wrong.error().message.find("leaves it in copyDestination") != std::string::npos);
+
+        REQUIRE(device
+                    .textureBarrier(
+                        command, layoutBarrier(*texture, TextureLayout::copyDestination, TextureLayout::shaderResource))
+                    .has_value());
+        const auto repeated = device.textureBarrier(
+            command, layoutBarrier(*texture, TextureLayout::copyDestination, TextureLayout::shaderResource));
+        REQUIRE_FALSE(repeated.has_value());
+        CHECK(repeated.error().code == rachis::ErrorCode::invalidState);
+
+        REQUIRE(
+            device.textureBarrier(command, layoutBarrier(*texture, TextureLayout::undefined, TextureLayout::copySource))
+                .has_value());
+
+        REQUIRE(
+            device
+                .textureBarrier(command, layoutBarrier(*other, TextureLayout::undefined, TextureLayout::shaderResource))
+                .has_value());
+        const std::array batch{
+            layoutBarrier(*texture, TextureLayout::copySource, TextureLayout::copyDestination),
+            layoutBarrier(*other, TextureLayout::copySource, TextureLayout::copyDestination),
+        };
+        const auto batchRejected = device.resourceBarriers(command, {.textureBarriers = batch});
+        REQUIRE_FALSE(batchRejected.has_value());
+        CHECK(batchRejected.error().code == rachis::ErrorCode::invalidState);
+        REQUIRE(device
+                    .textureBarrier(command,
+                                    layoutBarrier(*texture, TextureLayout::copySource, TextureLayout::shaderResource))
+                    .has_value());
+
+        REQUIRE(device
+                    .textureBarrier(command,
+                                    layoutBarrier(*texture,
+                                                  TextureLayout::shaderResource,
+                                                  TextureLayout::copyDestination,
+                                                  {.firstMipLevel = 1, .mipLevelCount = 1}))
+                    .has_value());
+        const auto mixed = device.textureBarrier(
+            command, layoutBarrier(*texture, TextureLayout::shaderResource, TextureLayout::copySource));
+        REQUIRE_FALSE(mixed.has_value());
+        CHECK(mixed.error().message.find("subresource 1") != std::string::npos);
+        submitAndWait(device, std::move(command));
+    }
+
+    SECTION("a barrier's entry layout is checked against earlier submissions, with no partial effects")
+    {
+        {
+            auto first = acquire(device);
+            REQUIRE(device
+                        .textureBarrier(first,
+                                        layoutBarrier(*texture, TextureLayout::common, TextureLayout::copyDestination))
+                        .has_value());
+            REQUIRE(device
+                        .textureBarrier(first,
+                                        layoutBarrier(*other, TextureLayout::undefined, TextureLayout::shaderResource))
+                        .has_value());
+            submitAndWait(device, std::move(first));
+        }
+
+        std::array wrong{acquire(device)};
+        REQUIRE(device
+                    .textureBarrier(wrong[0],
+                                    layoutBarrier(*texture, TextureLayout::copySource, TextureLayout::shaderResource))
+                    .has_value());
+        const auto rejected = device.submit(wrong);
+        REQUIRE_FALSE(rejected.has_value());
+        CHECK(rejected.error().code == rachis::ErrorCode::invalidState);
+        CHECK(rejected.error().message.find("submitted before it leaves it in copyDestination") != std::string::npos);
+
+        std::array mixedBatch{acquire(device), acquire(device)};
+        REQUIRE(device
+                    .textureBarrier(mixedBatch[0],
+                                    layoutBarrier(*texture, TextureLayout::copyDestination, TextureLayout::copySource))
+                    .has_value());
+        REQUIRE(device
+                    .textureBarrier(mixedBatch[1],
+                                    layoutBarrier(*other, TextureLayout::copyDestination, TextureLayout::copySource))
+                    .has_value());
+        REQUIRE_FALSE(device.submit(mixedBatch).has_value());
+
+        auto check = acquire(device);
+        REQUIRE(device
+                    .textureBarrier(
+                        check, layoutBarrier(*texture, TextureLayout::copyDestination, TextureLayout::shaderResource))
+                    .has_value());
+        submitAndWait(device, std::move(check));
+
+        std::array reversed{acquire(device), acquire(device)};
+        REQUIRE(device
+                    .textureBarrier(reversed[0],
+                                    layoutBarrier(*texture, TextureLayout::copySource, TextureLayout::unorderedAccess))
+                    .has_value());
+        REQUIRE(device
+                    .textureBarrier(reversed[1],
+                                    layoutBarrier(*texture, TextureLayout::shaderResource, TextureLayout::copySource))
+                    .has_value());
+        REQUIRE_FALSE(device.submit(reversed).has_value());
+        std::array ordered{std::move(reversed[1]), std::move(reversed[0])};
+        auto orderedPoint = device.submit(ordered);
+        REQUIRE(orderedPoint.has_value());
+        REQUIRE(device.wait(*orderedPoint).has_value());
+
+        auto discard = acquire(device);
+        REQUIRE(device
+                    .textureBarrier(discard,
+                                    layoutBarrier(*texture, TextureLayout::undefined, TextureLayout::copyDestination))
+                    .has_value());
+        submitAndWait(device, std::move(discard));
+    }
+
+    SECTION("generateMipmaps checks its base layout like a barrier")
+    {
+        auto command = acquire(device);
+        REQUIRE(device
+                    .textureBarrier(command,
+                                    layoutBarrier(*texture, TextureLayout::undefined, TextureLayout::copyDestination))
+                    .has_value());
+        const auto wrongBase = device.generateMipmaps(command,
+                                                      {.texture = *texture,
+                                                       .baseLayout = TextureLayout::shaderResource,
+                                                       .finalLayout = TextureLayout::shaderResource});
+        REQUIRE_FALSE(wrongBase.has_value());
+        CHECK(wrongBase.error().code == rachis::ErrorCode::invalidState);
+        REQUIRE(device
+                    .generateMipmaps(command,
+                                     {.texture = *texture,
+                                      .baseLayout = TextureLayout::copyDestination,
+                                      .finalLayout = TextureLayout::shaderResource})
+                    .has_value());
+        REQUIRE(device
+                    .textureBarrier(command,
+                                    layoutBarrier(*texture, TextureLayout::shaderResource, TextureLayout::copySource))
+                    .has_value());
+        submitAndWait(device, std::move(command));
+    }
+
+    if (!legacy)
+    {
+        SECTION("a shared texture's layout on entry is unknown, so only the record-time check applies")
+        {
+            auto shared = device.createSharedTexture({
+                .width = 8,
+                .height = 8,
+                .format = rachis::Format::rgba8Unorm,
+                .usage = rachis::TextureUsage::copySource | rachis::TextureUsage::copyDestination |
+                         rachis::TextureUsage::sampled,
+                .label = "D3D12 shared layoutBefore texture",
+            });
+            REQUIRE(shared.has_value());
+            auto entry = acquire(device);
+            REQUIRE(
+                device
+                    .textureBarrier(
+                        entry, layoutBarrier(*shared, TextureLayout::copyDestination, TextureLayout::shaderResource))
+                    .has_value());
+            submitAndWait(device, std::move(entry));
+
+            auto inside = acquire(device);
+            REQUIRE(device
+                        .textureBarrier(
+                            inside, layoutBarrier(*shared, TextureLayout::copySource, TextureLayout::copyDestination))
+                        .has_value());
+            const auto wrong = device.textureBarrier(
+                inside, layoutBarrier(*shared, TextureLayout::shaderResource, TextureLayout::copySource));
+            REQUIRE_FALSE(wrong.has_value());
+            CHECK(wrong.error().code == rachis::ErrorCode::invalidState);
+            submitAndWait(device, std::move(inside));
+        }
+    }
+
+    const auto counts = device.diagnosticCounts();
+    CHECK(counts.corruptions == 0);
+}

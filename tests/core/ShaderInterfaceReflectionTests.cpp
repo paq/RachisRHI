@@ -1,0 +1,339 @@
+#include "Internal/ShaderInterfaceReflection.h"
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <array>
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace
+{
+
+    using rachis::shader_tool::BackendInterface;
+    using rachis::shader_tool::InterfaceBackend;
+    using rachis::shader_tool::InterfaceStage;
+    using rachis::shader_tool::ReflectedBinding;
+    using rachis::shader_tool::reflectShaderInterface;
+
+    constexpr std::string_view computeSpirvJson = R"({
+        "parameters": [
+            {"name": "Constants", "binding": {"kind": "constantBuffer", "index": 0},
+             "type": {"kind": "constantBuffer", "elementType": {"kind": "struct", "fields": []}}},
+            {"name": "elements", "binding": {"kind": "shaderResource", "index": 1},
+             "type": {"kind": "resource", "baseShape": "structuredBuffer", "resultType": {"kind": "scalar"}}},
+            {"name": "values", "binding": {"kind": "unorderedAccess", "index": 2},
+             "type": {"kind": "resource", "baseShape": "structuredBuffer", "access": "readWrite"}},
+            {"name": "unusedTexture", "binding": {"kind": "shaderResource", "index": 3},
+             "type": {"kind": "resource", "baseShape": "texture2D"}},
+            {"name": "linearSampler", "binding": {"kind": "samplerState", "space": 1, "index": 4},
+             "type": {"kind": "samplerState"}},
+            {"name": "colorTextures", "binding": {"kind": "shaderResource", "space": 1, "index": 0},
+             "type": {"kind": "array", "elementCount": 2, "elementType": {"kind": "resource", "baseShape": "texture2D"}}},
+            {"name": "push", "bindings": [{"kind": "pushConstantBuffer", "index": 0},
+                                          {"kind": "constantBuffer", "index": 0, "count": 0}],
+             "type": {"kind": "constantBuffer",
+                      "containerVarLayout": {"binding": {"kind": "pushConstantBuffer", "index": 0}},
+                      "elementVarLayout": {"binding": {"kind": "uniform", "offset": 0, "size": 8}}}}
+        ],
+        "entryPoints": [
+            {"name": "probeMain", "stage": "compute", "threadGroupSize": [8, 4, 1],
+             "bindings": [
+                {"name": "Constants", "binding": {"kind": "constantBuffer", "index": 0, "used": 1}},
+                {"name": "elements", "binding": {"kind": "shaderResource", "index": 1, "used": 1}},
+                {"name": "values", "binding": {"kind": "unorderedAccess", "index": 2, "used": 1}},
+                {"name": "unusedTexture", "binding": {"kind": "shaderResource", "index": 3, "used": 0}},
+                {"name": "linearSampler", "binding": {"kind": "samplerState", "space": 1, "index": 4, "used": 1}},
+                {"name": "colorTextures", "binding": {"kind": "shaderResource", "space": 1, "index": 0, "used": 1}},
+                {"name": "push", "bindings": [{"kind": "pushConstantBuffer", "index": 0},
+                                              {"kind": "constantBuffer", "index": 0, "count": 0, "used": 1}]}
+             ]}
+        ]
+    })";
+
+    constexpr std::string_view computeHlslJson = R"({
+        "parameters": [
+            {"name": "values", "binding": {"kind": "unorderedAccess", "index": 0},
+             "type": {"kind": "resource", "baseShape": "byteAddressBuffer", "access": "readWrite"}},
+            {"name": "push", "binding": {"kind": "constantBuffer", "space": 4, "index": 0},
+             "type": {"kind": "constantBuffer",
+                      "elementVarLayout": {"binding": {"kind": "uniform", "offset": 0, "size": 16}}}},
+            {"name": "bindless", "binding": {"kind": "shaderResource", "space": 2, "index": 0},
+             "type": {"kind": "array", "elementCount": 0, "elementType": {"kind": "resource", "baseShape": "texture2D"}}}
+        ],
+        "entryPoints": [
+            {"name": "main", "stage": "compute", "threadGroupSize": [64, 1, 1],
+             "bindings": [
+                {"name": "values", "binding": {"kind": "unorderedAccess", "index": 0, "used": 1}},
+                {"name": "push", "binding": {"kind": "constantBuffer", "space": 4, "index": 0, "used": 1}},
+                {"name": "bindless", "binding": {"kind": "shaderResource", "space": 2, "index": 0, "used": 1}}
+             ]}
+        ]
+    })";
+
+    [[nodiscard]] std::string vertexJson(std::string_view secondSemantic)
+    {
+        return std::string(R"({
+        "parameters": [],
+        "entryPoints": [
+            {"name": "vertexMain", "stage": "vertex", "bindings": [],
+             "parameters": [
+                {"name": "vertexId", "semanticName": "SV_VERTEXID", "type": {"kind": "scalar"}},
+                {"name": "position", "binding": {"kind": "varyingInput", "index": 0}, "semanticName": "TEXCOORD",
+                 "type": {"kind": "vector"}},
+                {"name": "transform", "binding": {"kind": "varyingInput", "index": 1, "count": 4},
+                 "semanticName": ")") +
+               std::string(secondSemantic) + R"(", "semanticIndex": 4, "type": {"kind": "matrix"}},
+                {"name": "extra", "type": {"kind": "struct", "fields": [
+                    {"name": "color", "binding": {"kind": "varyingInput", "index": 5}, "semanticName": "TEXCOORD",
+                     "semanticIndex": 2, "type": {"kind": "vector"}}
+                ]}}
+             ]}
+        ]
+    })";
+    }
+
+} // namespace
+
+TEST_CASE("Shader interface reflection keeps the resources the entry point uses",
+          "[size:small][rhi][tooling][shader-interface]")
+{
+    const auto reflected =
+        reflectShaderInterface(computeSpirvJson, InterfaceBackend::vulkan, "probeMain", InterfaceStage::compute);
+    REQUIRE(reflected.has_value());
+    const std::vector<ReflectedBinding> expected{
+        {.name = "Constants", .set = 0, .binding = 0, .type = "uniformBuffer", .count = 1},
+        {.name = "elements", .set = 0, .binding = 1, .type = "readOnlyStorageBuffer", .count = 1},
+        {.name = "values", .set = 0, .binding = 2, .type = "storageBuffer", .count = 1},
+        {.name = "colorTextures", .set = 1, .binding = 0, .type = "sampledTexture", .count = 2},
+        {.name = "linearSampler", .set = 1, .binding = 4, .type = "sampler", .count = 1},
+    };
+    CHECK(reflected->bindings == expected);
+    CHECK(reflected->pushConstantBytes == 8);
+    REQUIRE(reflected->workgroupSize.has_value());
+    CHECK(*reflected->workgroupSize == std::array<std::uint32_t, 3>{8, 4, 1});
+    CHECK(reflected->vertexInputLocations.empty());
+
+    const auto d3d12 =
+        reflectShaderInterface(computeHlslJson, InterfaceBackend::d3d12, "main", InterfaceStage::compute);
+    REQUIRE(d3d12.has_value());
+    const std::vector<ReflectedBinding> d3d12Expected{
+        {.name = "values", .set = 0, .binding = 0, .type = "storageBuffer", .count = 1},
+        {.name = "bindless",
+         .set = 2,
+         .binding = 0,
+         .type = "sampledTexture",
+         .count = rachis::shader_tool::unboundedResourceCount},
+    };
+    CHECK(d3d12->bindings == d3d12Expected);
+    CHECK(d3d12->pushConstantBytes == 16);
+
+    const auto vulkan =
+        reflectShaderInterface(computeHlslJson, InterfaceBackend::vulkan, "main", InterfaceStage::compute);
+    REQUIRE(vulkan.has_value());
+    CHECK(vulkan->pushConstantBytes == 0);
+    REQUIRE(vulkan->bindings.size() == 3);
+    CHECK(vulkan->bindings[2].set == 4);
+    CHECK(vulkan->bindings[2].type == "uniformBuffer");
+}
+
+TEST_CASE("Shader interface reflection reads vertex input locations per backend",
+          "[size:small][rhi][tooling][shader-interface]")
+{
+    const auto json = vertexJson("TEXCOORD");
+    const auto vulkan = reflectShaderInterface(json, InterfaceBackend::vulkan, "vertexMain", InterfaceStage::vertex);
+    REQUIRE(vulkan.has_value());
+    CHECK(vulkan->vertexInputLocations == std::vector<std::uint32_t>{0, 1, 2, 3, 4, 5});
+    CHECK_FALSE(vulkan->workgroupSize.has_value());
+
+    const auto d3d12 = reflectShaderInterface(json, InterfaceBackend::d3d12, "vertexMain", InterfaceStage::vertex);
+    REQUIRE(d3d12.has_value());
+    CHECK(d3d12->vertexInputLocations == std::vector<std::uint32_t>{0, 2, 4, 5, 6, 7});
+
+    const auto otherSemantic =
+        reflectShaderInterface(vertexJson("COLOR"), InterfaceBackend::d3d12, "vertexMain", InterfaceStage::vertex);
+    REQUIRE_FALSE(otherSemantic.has_value());
+    CHECK(otherSemantic.error().find("TEXCOORD") != std::string::npos);
+}
+
+TEST_CASE("Shader interface reflection rejects what RachisRHI cannot bind",
+          "[size:small][rhi][tooling][shader-interface]")
+{
+    CHECK_FALSE(reflectShaderInterface("{", InterfaceBackend::vulkan, "main", InterfaceStage::compute).has_value());
+    CHECK_FALSE(
+        reflectShaderInterface(
+            R"({"parameters": [], "entryPoints": []})", InterfaceBackend::vulkan, "main", InterfaceStage::compute)
+            .has_value());
+
+    constexpr std::string_view looseUniform = R"({
+        "parameters": [{"name": "scale", "binding": {"kind": "uniform", "offset": 0, "size": 4},
+                        "type": {"kind": "scalar"}}],
+        "entryPoints": [{"name": "main", "threadGroupSize": [1, 1, 1], "bindings": [
+            {"name": "scale", "binding": {"kind": "uniform", "offset": 0, "size": 4, "used": 1}}]}]
+    })";
+    const auto loose = reflectShaderInterface(looseUniform, InterfaceBackend::d3d12, "main", InterfaceStage::compute);
+    REQUIRE_FALSE(loose.has_value());
+    CHECK(loose.error().find("constant buffer") != std::string::npos);
+
+    constexpr std::string_view typedBuffer = R"({
+        "parameters": [{"name": "texels", "binding": {"kind": "shaderResource", "index": 0},
+                        "type": {"kind": "resource", "baseShape": "textureBuffer"}}],
+        "entryPoints": [{"name": "main", "threadGroupSize": [1, 1, 1], "bindings": [
+            {"name": "texels", "binding": {"kind": "shaderResource", "index": 0, "used": 1}}]}]
+    })";
+    CHECK_FALSE(
+        reflectShaderInterface(typedBuffer, InterfaceBackend::vulkan, "main", InterfaceStage::compute).has_value());
+
+    constexpr std::string_view sharedSlot = R"({
+        "parameters": [
+            {"name": "first", "binding": {"kind": "shaderResource", "index": 0},
+             "type": {"kind": "resource", "baseShape": "texture2D"}},
+            {"name": "second", "binding": {"kind": "unorderedAccess", "index": 0},
+             "type": {"kind": "resource", "baseShape": "structuredBuffer", "access": "readWrite"}}],
+        "entryPoints": [{"name": "main", "threadGroupSize": [1, 1, 1], "bindings": [
+            {"name": "first", "binding": {"kind": "shaderResource", "index": 0, "used": 1}},
+            {"name": "second", "binding": {"kind": "unorderedAccess", "index": 0, "used": 1}}]}]
+    })";
+    const auto shared = reflectShaderInterface(sharedSlot, InterfaceBackend::vulkan, "main", InterfaceStage::compute);
+    REQUIRE_FALSE(shared.has_value());
+    CHECK(shared.error().find("share set 0 binding 0") != std::string::npos);
+}
+
+TEST_CASE("Generated shader interface headers hold per-backend constexpr data",
+          "[size:small][rhi][tooling][shader-interface]")
+{
+    auto vulkan =
+        reflectShaderInterface(computeSpirvJson, InterfaceBackend::vulkan, "probeMain", InterfaceStage::compute);
+    REQUIRE(vulkan.has_value());
+    const std::array backends{BackendInterface{.backend = InterfaceBackend::vulkan, .reflected = *vulkan}};
+    const auto header =
+        rachis::shader_tool::generateShaderInterfaceHeader("Probe", InterfaceStage::compute, "probeMain", backends);
+    REQUIRE(header.has_value());
+    const auto contains = [&](std::string_view text) { return header->find(text) != std::string::npos; };
+    CHECK(contains("namespace rachis_shaders::reflection::Probe"));
+    CHECK(contains("inline constexpr rachis::ShaderStage stage = rachis::ShaderStage::compute;"));
+    CHECK(contains("inline constexpr std::string_view entryPoint = \"probeMain\";"));
+    CHECK(contains("{.set = 1, .binding = 0, .type = rachis::ShaderResourceType::sampledTexture, .count = 2}, // "
+                   "colorTextures"));
+    CHECK(contains("{{{.offset = 0, .size = 8}}};"));
+    CHECK(contains("rachis::ShaderWorkgroupSize{8, 4, 1}"));
+    CHECK(contains("inline constexpr std::uint32_t bindingSetCount = 2;"));
+    CHECK(contains("{.binding = 4, .type = rachis::BindingType::sampler, .visibility = stage, .count = 1},"));
+    CHECK(contains("{.type = rachis::BindingType::sampledTexture, .descriptorCount = 2},"));
+    CHECK(contains("case rachis::Backend::vulkan:\n            return vulkan::shaderInterface();"));
+    CHECK_FALSE(contains("rachis::Backend::d3d12"));
+    CHECK_FALSE(contains("inline namespace"));
+
+    CHECK_FALSE(rachis::shader_tool::generateShaderInterfaceHeader(
+                    "not-an-identifier", InterfaceStage::compute, "probeMain", backends)
+                    .has_value());
+
+    const auto tagged = rachis::shader_tool::generateShaderInterfaceHeader(
+        "Probe", InterfaceStage::compute, "probeMain", backends, "0a1b2c3d4e5f");
+    REQUIRE(tagged.has_value());
+    CHECK(tagged->find("namespace rachis_shaders::reflection::Probe\n{\ninline namespace t_0a1b2c3d4e5f\n{\n") !=
+          std::string::npos);
+    CHECK(tagged->find("} // inline namespace t_0a1b2c3d4e5f\n} // namespace rachis_shaders::reflection::Probe") !=
+          std::string::npos);
+    CHECK_FALSE(rachis::shader_tool::generateShaderInterfaceHeader(
+                    "Probe", InterfaceStage::compute, "probeMain", backends, "not-a-tag")
+                    .has_value());
+}
+
+namespace
+{
+    constexpr std::string_view layoutHlslJson = R"({
+        "parameters": [
+            {"name": "Constants", "binding": {"kind": "constantBuffer", "index": 0},
+             "type": {"kind": "constantBuffer",
+                      "elementVarLayout": {
+                          "type": {"kind": "struct", "fields": [
+                              {"name": "a", "type": {"kind": "scalar", "scalarType": "float32"},
+                               "binding": {"kind": "uniform", "offset": 0, "size": 4}},
+                              {"name": "weights", "type": {"kind": "array", "elementCount": 3,
+                                                           "elementType": {"kind": "scalar", "scalarType": "float32"}},
+                               "binding": {"kind": "uniform", "offset": 16, "size": 36, "elementStride": 16}},
+                              {"name": "after", "type": {"kind": "scalar", "scalarType": "uint32"},
+                               "binding": {"kind": "uniform", "offset": 52, "size": 4}},
+                              {"name": "m", "type": {"kind": "matrix", "rowCount": 2, "columnCount": 3,
+                                                     "elementType": {"kind": "scalar", "scalarType": "float32"}},
+                               "binding": {"kind": "uniform", "offset": 64, "size": 40}}
+                          ]},
+                          "binding": {"kind": "uniform", "offset": 0, "size": 104}}}},
+            {"name": "elements", "binding": {"kind": "shaderResource", "index": 1},
+             "type": {"kind": "resource", "baseShape": "structuredBuffer",
+                      "resultType": {"kind": "struct", "name": "Element", "fields": [
+                          {"name": "position", "type": {"kind": "vector", "elementCount": 3,
+                                                        "elementType": {"kind": "scalar", "scalarType": "float32"}},
+                           "binding": {"kind": "uniform", "offset": 0, "size": 12}},
+                          {"name": "flag", "type": {"kind": "scalar", "scalarType": "uint16"},
+                           "binding": {"kind": "uniform", "offset": 12, "size": 2}}
+                      ]}}}
+        ],
+        "entryPoints": [{"name": "main", "threadGroupSize": [1, 1, 1], "bindings": [
+            {"name": "Constants", "binding": {"kind": "constantBuffer", "index": 0, "used": 1}},
+            {"name": "elements", "binding": {"kind": "shaderResource", "index": 1, "used": 1}}]}]
+    })";
+
+} // namespace
+
+TEST_CASE("Generated shader structs place each member at its reflected offset",
+          "[size:small][rhi][tooling][shader-interface]")
+{
+    auto reflected = reflectShaderInterface(layoutHlslJson, InterfaceBackend::d3d12, "main", InterfaceStage::compute);
+    REQUIRE(reflected.has_value());
+    REQUIRE(reflected->dataResources.size() == 2);
+    CHECK(reflected->dataResources[0].typeName == "Constants");
+    CHECK(reflected->dataResources[1].typeName == "Element");
+    REQUIRE(rachis::shader_tool::attachSlangDataLayouts(*reflected, layoutHlslJson, false).has_value());
+    REQUIRE(reflected->blocks.size() == 2);
+    CHECK(reflected->blocks[1].size == 16);
+
+    const std::array backends{BackendInterface{.backend = InterfaceBackend::d3d12, .reflected = *reflected}};
+    const auto header =
+        rachis::shader_tool::generateShaderInterfaceHeader("Layout", InterfaceStage::compute, "main", backends);
+    REQUIRE(header.has_value());
+    const auto contains = [&](std::string_view text) { return header->find(text) != std::string::npos; };
+    CHECK(contains("struct StridedArray final"));
+    CHECK(contains("        struct Constants final\n"));
+    CHECK(contains("            float a;\n            std::byte rachisPadding0[12];\n"));
+    CHECK(contains("            rachis_shaders::layout::StridedArray<float, 3, 16> weights;\n"
+                   "            std::uint32_t after;\n"));
+    CHECK(contains("rachis_shaders::layout::StridedArray<std::array<float, 2>, 3, 16> m;"));
+    CHECK(contains("static_assert(offsetof(Constants, after) == 52);"));
+    CHECK(contains("static_assert(offsetof(Constants, m) == 64);"));
+    CHECK(contains("static_assert(sizeof(Constants) == 104);"));
+    CHECK(contains("static_assert(alignof(Constants) == 4);"));
+    CHECK(contains("            std::uint16_t flag;\n        };\n"));
+    CHECK(contains("static_assert(sizeof(Element) == 16);"));
+
+    auto metal = reflectShaderInterface(layoutHlslJson, InterfaceBackend::metal, "main", InterfaceStage::compute);
+    REQUIRE(metal.has_value());
+    REQUIRE(rachis::shader_tool::attachSlangDataLayouts(*metal, layoutHlslJson, true).has_value());
+    CHECK(metal->blocks[1].size == 16);
+}
+
+TEST_CASE("Generated shader structs reject layouts C++ cannot express", "[size:small][rhi][tooling][shader-interface]")
+{
+    std::string rowMajor(layoutHlslJson);
+    const std::string columnMajorSize = R"("offset": 64, "size": 40)";
+    rowMajor.replace(rowMajor.find(columnMajorSize), columnMajorSize.size(), R"("offset": 64, "size": 28)");
+    auto reflected = reflectShaderInterface(rowMajor, InterfaceBackend::d3d12, "main", InterfaceStage::compute);
+    REQUIRE(reflected.has_value());
+    const auto attached = rachis::shader_tool::attachSlangDataLayouts(*reflected, rowMajor, false);
+    REQUIRE_FALSE(attached.has_value());
+    CHECK(attached.error().find("row_major") != std::string::npos);
+
+    std::string overlap(layoutHlslJson);
+    const std::string afterOffset = R"("offset": 52, "size": 4)";
+    overlap.replace(overlap.find(afterOffset), afterOffset.size(), R"("offset": 40, "size": 4)");
+    auto overlapping = reflectShaderInterface(overlap, InterfaceBackend::d3d12, "main", InterfaceStage::compute);
+    REQUIRE(overlapping.has_value());
+    REQUIRE(rachis::shader_tool::attachSlangDataLayouts(*overlapping, overlap, false).has_value());
+    const std::array backends{BackendInterface{.backend = InterfaceBackend::d3d12, .reflected = *overlapping}};
+    const auto header =
+        rachis::shader_tool::generateShaderInterfaceHeader("Layout", InterfaceStage::compute, "main", backends);
+    REQUIRE_FALSE(header.has_value());
+    CHECK(header.error().find("overlaps") != std::string::npos);
+}
