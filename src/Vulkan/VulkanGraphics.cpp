@@ -1199,7 +1199,7 @@ namespace rachis::vulkan
         {
             return rendering;
         }
-        const auto scope = std::static_pointer_cast<VulkanRenderingScope>(commandBuffer.graphicsState().renderingOwner);
+        auto* const scope = static_cast<VulkanRenderingScope*>(commandBuffer.graphicsState().renderingOwner.get());
         if (attachmentIndex >= scope->colorFormats.size() || !std::isfinite(clearValue.red) ||
             !std::isfinite(clearValue.green) || !std::isfinite(clearValue.blue) || !std::isfinite(clearValue.alpha))
         {
@@ -1236,7 +1236,7 @@ namespace rachis::vulkan
         {
             return rendering;
         }
-        const auto scope = std::static_pointer_cast<VulkanRenderingScope>(commandBuffer.graphicsState().renderingOwner);
+        auto* const scope = static_cast<VulkanRenderingScope*>(commandBuffer.graphicsState().renderingOwner.get());
         const bool clearDepth = hasAny(aspects, DepthStencilClearAspect::depth);
         const bool clearStencil = hasAny(aspects, DepthStencilClearAspect::stencil);
         if (scope->depthStencilFormat == Format::unknown || aspects == DepthStencilClearAspect::none ||
@@ -1309,7 +1309,7 @@ namespace rachis::vulkan
             });
         }
         const auto& bound = *native;
-        const auto scope = std::static_pointer_cast<VulkanRenderingScope>(commandBuffer.graphicsState().renderingOwner);
+        auto* const scope = static_cast<VulkanRenderingScope*>(commandBuffer.graphicsState().renderingOwner.get());
         if (bound->colorFormats != scope->colorFormats || bound->depthStencilFormat != scope->depthStencilFormat ||
             bound->sampleCount != scope->sampleCount || bound->viewMask != scope->viewMask)
         {
@@ -1377,8 +1377,8 @@ namespace rachis::vulkan
         {
             return pipelineState;
         }
-        const auto pipeline =
-            std::static_pointer_cast<const VulkanNativePipeline>(commandBuffer.graphicsState().pipelineOwner);
+        auto* const pipeline =
+            static_cast<const VulkanNativePipeline*>(commandBuffer.graphicsState().pipelineOwner.get());
         return bindDescriptorSetBatch(bindings_,
                                       table_,
                                       commandBuffer,
@@ -1404,8 +1404,8 @@ namespace rachis::vulkan
         {
             return pipelineState;
         }
-        const auto pipeline =
-            std::static_pointer_cast<const VulkanNativePipeline>(commandBuffer.graphicsState().pipelineOwner);
+        auto* const pipeline =
+            static_cast<const VulkanNativePipeline*>(commandBuffer.graphicsState().pipelineOwner.get());
         auto subranges = validation_detail::planGraphicsPushConstants(
             pipeline->pushConstantRanges, pipeline->nativePushConstantRanges, visibility, offset, data.size());
         if (!subranges)
@@ -1683,8 +1683,8 @@ namespace rachis::vulkan
         {
             return pipelineState;
         }
-        const auto pipeline =
-            std::static_pointer_cast<const VulkanNativePipeline>(commandBuffer.graphicsState().pipelineOwner);
+        auto* const pipeline =
+            static_cast<const VulkanNativePipeline*>(commandBuffer.graphicsState().pipelineOwner.get());
         if (bindings.empty() || firstSlot >= pipeline->vertexStrides.size() ||
             bindings.size() > pipeline->vertexStrides.size() - firstSlot)
         {
@@ -1837,7 +1837,7 @@ namespace rachis::vulkan
             return pipelineState;
         }
         const auto& state = commandBuffer.graphicsState();
-        const auto pipeline = std::static_pointer_cast<const VulkanNativePipeline>(state.pipelineOwner);
+        auto* const pipeline = static_cast<const VulkanNativePipeline*>(state.pipelineOwner.get());
         if (pipeline->mesh || (pipeline->rasterizationEnabled && !hasCompleteViewportState(state)) ||
             (state.blendConstantsRequired && !state.blendConstantsSet) ||
             (state.depthBiasRequired && !state.depthBiasSet) || (state.depthBoundsRequired && !state.depthBoundsSet) ||
@@ -1871,7 +1871,7 @@ namespace rachis::vulkan
             return pipelineState;
         }
         const auto& state = commandBuffer.graphicsState();
-        const auto pipeline = std::static_pointer_cast<const VulkanNativePipeline>(state.pipelineOwner);
+        auto* const pipeline = static_cast<const VulkanNativePipeline*>(state.pipelineOwner.get());
         if (pipeline->mesh || (pipeline->rasterizationEnabled && !hasCompleteViewportState(state)) ||
             (state.blendConstantsRequired && !state.blendConstantsSet) ||
             (state.depthBiasRequired && !state.depthBiasSet) || (state.depthBoundsRequired && !state.depthBoundsSet) ||
@@ -1901,7 +1901,7 @@ namespace rachis::vulkan
             return pipelineState;
         }
         const auto& state = commandBuffer.graphicsState();
-        const auto pipeline = std::static_pointer_cast<const VulkanNativePipeline>(state.pipelineOwner);
+        auto* const pipeline = static_cast<const VulkanNativePipeline*>(state.pipelineOwner.get());
         if (pipeline->mesh || (pipeline->rasterizationEnabled && !hasCompleteViewportState(state)) ||
             (state.blendConstantsRequired && !state.blendConstantsSet) ||
             (state.depthBiasRequired && !state.depthBiasSet) || (state.depthBoundsRequired && !state.depthBoundsSet) ||
@@ -1978,7 +1978,7 @@ namespace rachis::vulkan
             return pipelineState;
         }
         const auto& state = commandBuffer.graphicsState();
-        const auto pipeline = std::static_pointer_cast<const VulkanNativePipeline>(state.pipelineOwner);
+        auto* const pipeline = static_cast<const VulkanNativePipeline*>(state.pipelineOwner.get());
         if (pipeline->mesh || (pipeline->rasterizationEnabled && !hasCompleteViewportState(state)) ||
             (state.blendConstantsRequired && !state.blendConstantsSet) ||
             (state.depthBiasRequired && !state.depthBiasSet) || (state.depthBoundsRequired && !state.depthBoundsSet) ||
@@ -2120,7 +2120,7 @@ namespace rachis::vulkan
                 "A compute pipeline must be bound before binding sets.",
             });
         }
-        const auto pipeline = std::static_pointer_cast<const VulkanNativePipeline>(state.pipelineOwner);
+        auto* const pipeline = static_cast<const VulkanNativePipeline*>(state.pipelineOwner.get());
         return bindDescriptorSetBatch(bindings_,
                                       table_,
                                       commandBuffer,
@@ -2150,7 +2150,7 @@ namespace rachis::vulkan
                 "A compute pipeline must be bound before setting push constants.",
             });
         }
-        const auto pipeline = std::static_pointer_cast<const VulkanNativePipeline>(state.pipelineOwner);
+        auto* const pipeline = static_cast<const VulkanNativePipeline*>(state.pipelineOwner.get());
         auto subranges = validation_detail::planComputePushConstants(
             pipeline->pushConstantRanges, pipeline->nativePushConstantRanges, offset, data.size());
         if (!subranges)
@@ -2251,9 +2251,7 @@ namespace rachis::vulkan
     Status VulkanGraphicsEncoder::requireMeshDispatchState(const VulkanCommandBuffer& commandBuffer) const
     {
         const auto& state = commandBuffer.graphicsState();
-        const auto pipeline = state.pipelineOwner == nullptr
-                                  ? std::shared_ptr<const VulkanNativePipeline>{}
-                                  : std::static_pointer_cast<const VulkanNativePipeline>(state.pipelineOwner);
+        auto* const pipeline = static_cast<const VulkanNativePipeline*>(state.pipelineOwner.get());
         if (state.renderingOwner == nullptr || pipeline == nullptr || !pipeline->mesh ||
             !hasCompleteViewportState(state) || (state.blendConstantsRequired && !state.blendConstantsSet) ||
             (state.depthBiasRequired && !state.depthBiasSet) || (state.depthBoundsRequired && !state.depthBoundsSet) ||
@@ -2624,7 +2622,7 @@ namespace rachis::vulkan
                 "Non-default shading-rate combiners require primitive and attachment fragment shading rates.",
             });
         }
-        const auto scope = std::static_pointer_cast<VulkanRenderingScope>(commandBuffer.graphicsState().renderingOwner);
+        auto* const scope = static_cast<VulkanRenderingScope*>(commandBuffer.graphicsState().renderingOwner.get());
         if (!supportsSampleCount(rate, scope->sampleCount))
         {
             return std::unexpected(Error{
@@ -2667,7 +2665,7 @@ namespace rachis::vulkan
                 "Shading-rate images require primitive and attachment fragment shading rates.",
             });
         }
-        auto scope = std::static_pointer_cast<VulkanRenderingScope>(commandBuffer.graphicsState().renderingOwner);
+        auto* const scope = static_cast<VulkanRenderingScope*>(commandBuffer.graphicsState().renderingOwner.get());
         return applyShadingRateImage(commandBuffer, *scope, image);
     }
 
@@ -2857,7 +2855,7 @@ namespace rachis::vulkan
                 "A ray-tracing pipeline must be bound before binding sets.",
             });
         }
-        const auto pipeline = std::static_pointer_cast<const VulkanNativePipeline>(state.pipelineOwner);
+        auto* const pipeline = static_cast<const VulkanNativePipeline*>(state.pipelineOwner.get());
         return bindDescriptorSetBatch(bindings_,
                                       table_,
                                       commandBuffer,
@@ -2887,7 +2885,7 @@ namespace rachis::vulkan
                 "A ray-tracing pipeline must be bound before setting push constants.",
             });
         }
-        const auto pipeline = std::static_pointer_cast<const VulkanNativePipeline>(state.pipelineOwner);
+        auto* const pipeline = static_cast<const VulkanNativePipeline*>(state.pipelineOwner.get());
         auto subranges = validation_detail::planRayTracingPushConstants(
             pipeline->pushConstantRanges, pipeline->nativePushConstantRanges, offset, data.size());
         if (!subranges)

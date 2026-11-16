@@ -1153,7 +1153,7 @@ namespace rachis::d3d12
         NativePipelineContinuation continuation;
         if (computeState.pipelineOwner != nullptr)
         {
-            const auto pipeline = std::static_pointer_cast<ComputePipelineRecord>(computeState.pipelineOwner);
+            auto* const pipeline = static_cast<ComputePipelineRecord*>(computeState.pipelineOwner.get());
             continuation.computePipeline_ = pipeline->pipelineState.Get();
         }
         else if (rayTracingState.pipelineOwner != nullptr)
@@ -1163,7 +1163,7 @@ namespace rachis::d3d12
             {
                 return std::unexpected(std::move(commandList.error()));
             }
-            const auto pipeline = std::static_pointer_cast<RayTracingPipelineRecord>(rayTracingState.pipelineOwner);
+            auto* const pipeline = static_cast<RayTracingPipelineRecord*>(rayTracingState.pipelineOwner.get());
             continuation.rayTracingCommandList_ = *commandList;
             continuation.rayTracingPipeline_ = pipeline->stateObject.Get();
         }
@@ -1229,7 +1229,7 @@ namespace rachis::d3d12
         commandBuffer.rayTracingState() = {};
         state.pipelineOwner = std::move(record);
         state.boundBindingSets.clear();
-        const auto activePipeline = std::static_pointer_cast<ComputePipelineRecord>(state.pipelineOwner);
+        auto* const activePipeline = static_cast<ComputePipelineRecord*>(state.pipelineOwner.get());
         state.boundBindingSets.reserve(activePipeline->layout->slots.size());
         for (const auto& slot : activePipeline->layout->slots)
         {
@@ -1268,7 +1268,7 @@ namespace rachis::d3d12
                 "A compute pipeline must be bound before binding sets.",
             });
         }
-        const auto pipeline = std::static_pointer_cast<ComputePipelineRecord>(state.pipelineOwner);
+        auto* const pipeline = static_cast<ComputePipelineRecord*>(state.pipelineOwner.get());
         auto prepared = prepareBindingSetBatch(
             queues, commandBuffer, bindings, resources, pipeline->layout->slots, firstSet, bindingSets, dynamicOffsets);
         if (!prepared)
@@ -1320,7 +1320,7 @@ namespace rachis::d3d12
             });
         }
 
-        const auto pipeline = std::static_pointer_cast<ComputePipelineRecord>(state.pipelineOwner);
+        auto* const pipeline = static_cast<ComputePipelineRecord*>(state.pipelineOwner.get());
         const auto end = static_cast<std::uint64_t>(offset) + data.size();
         const bool declared = std::ranges::any_of(pipeline->layout->pushConstantRanges, [&](const auto& range) {
             return hasAny(range.visibility, ShaderStage::compute) && range.offset <= offset &&
@@ -1572,7 +1572,7 @@ namespace rachis::d3d12
                 "A color attachment can be cleared only inside an active rendering scope.",
             });
         }
-        const auto rendering = std::static_pointer_cast<RenderingRecord>(state.renderingOwner);
+        auto* const rendering = static_cast<RenderingRecord*>(state.renderingOwner.get());
         if (attachmentIndex >= rendering->colorDescriptors.size())
         {
             return std::unexpected(Error{
@@ -1637,7 +1637,7 @@ namespace rachis::d3d12
                 "A depth-stencil attachment can be cleared only inside an active rendering scope.",
             });
         }
-        const auto rendering = std::static_pointer_cast<RenderingRecord>(state.renderingOwner);
+        auto* const rendering = static_cast<RenderingRecord*>(state.renderingOwner.get());
         if (!rendering->depthStencilDescriptor.has_value())
         {
             return std::unexpected(Error{
@@ -1734,7 +1734,7 @@ namespace rachis::d3d12
             }
             record = *graphics;
         }
-        const auto rendering = std::static_pointer_cast<RenderingRecord>(state.renderingOwner);
+        auto* const rendering = static_cast<RenderingRecord*>(state.renderingOwner.get());
         if (record->colorFormats != rendering->colorFormats ||
             record->depthStencilFormat != rendering->depthStencilFormat ||
             record->sampleCount != rendering->sampleCount || record->viewMask != rendering->viewMask)
@@ -1785,7 +1785,7 @@ namespace rachis::d3d12
             ->SOSetTargets(0, static_cast<UINT>(emptyStreamOutputViews.size()), emptyStreamOutputViews.data());
 
         state.pipelineOwner = std::move(record);
-        const auto activePipeline = std::static_pointer_cast<GraphicsPipelineRecord>(state.pipelineOwner);
+        auto* const activePipeline = static_cast<GraphicsPipelineRecord*>(state.pipelineOwner.get());
         state.boundBindingSets.clear();
         for (const auto& slot : activePipeline->layout->slots)
         {
@@ -1835,7 +1835,7 @@ namespace rachis::d3d12
                 "A graphics pipeline must be bound before binding graphics sets.",
             });
         }
-        const auto pipeline = std::static_pointer_cast<GraphicsPipelineRecord>(state.pipelineOwner);
+        auto* const pipeline = static_cast<GraphicsPipelineRecord*>(state.pipelineOwner.get());
         auto prepared = prepareBindingSetBatch(
             queues, commandBuffer, bindings, resources, pipeline->layout->slots, firstSet, bindingSets, dynamicOffsets);
         if (!prepared)
@@ -1888,7 +1888,7 @@ namespace rachis::d3d12
                 "Graphics push constants require graphics visibility and an aligned range.",
             });
         }
-        const auto pipeline = std::static_pointer_cast<GraphicsPipelineRecord>(state.pipelineOwner);
+        auto* const pipeline = static_cast<GraphicsPipelineRecord*>(state.pipelineOwner.get());
         const auto end = static_cast<std::uint64_t>(offset) + data.size();
         const bool declared = std::ranges::any_of(pipeline->layout->pushConstantRanges, [&](const auto& range) {
             return (range.visibility & visibility) == visibility && range.offset <= offset &&
@@ -2218,7 +2218,7 @@ namespace rachis::d3d12
                 "Non-default shading-rate combiners require Tier 2 variable-rate shading.",
             });
         }
-        const auto rendering = std::static_pointer_cast<RenderingRecord>(state.renderingOwner);
+        auto* const rendering = static_cast<RenderingRecord*>(state.renderingOwner.get());
         if (!supportsSampleCount(rate, rendering->sampleCount))
         {
             return std::unexpected(Error{
@@ -2306,7 +2306,7 @@ namespace rachis::d3d12
         {
             return std::unexpected(Error{ErrorCode::invalidState, 0, "A graphics pipeline must be bound first."});
         }
-        const auto pipeline = std::static_pointer_cast<GraphicsPipelineRecord>(state.pipelineOwner);
+        auto* const pipeline = static_cast<GraphicsPipelineRecord*>(state.pipelineOwner.get());
         if (pipeline->meshShader != nullptr || bindings.empty() || firstSlot >= pipeline->vertexStrides.size() ||
             bindings.size() > pipeline->vertexStrides.size() - firstSlot)
         {
@@ -2388,7 +2388,7 @@ namespace rachis::d3d12
         {
             return std::unexpected(Error{ErrorCode::invalidState, 0, "A graphics pipeline must be bound first."});
         }
-        const auto pipeline = std::static_pointer_cast<GraphicsPipelineRecord>(state.pipelineOwner);
+        auto* const pipeline = static_cast<GraphicsPipelineRecord*>(state.pipelineOwner.get());
         if (pipeline->meshShader != nullptr || bindings.empty() || firstSlot >= pipeline->streamOutputStrides.size() ||
             bindings.size() > pipeline->streamOutputStrides.size() - firstSlot)
         {
@@ -2448,7 +2448,7 @@ namespace rachis::d3d12
                 "Index buffers require a bound graphics pipeline and a valid index format.",
             });
         }
-        const auto pipeline = std::static_pointer_cast<GraphicsPipelineRecord>(state.pipelineOwner);
+        auto* const pipeline = static_cast<GraphicsPipelineRecord*>(state.pipelineOwner.get());
         if (pipeline->meshShader != nullptr)
         {
             return std::unexpected(Error{
@@ -2508,10 +2508,8 @@ namespace rachis::d3d12
                                  std::uint32_t firstInstance)
     {
         const auto& state = commandBuffer.graphicsState();
-        const auto pipeline = state.pipelineOwner == nullptr
-                                  ? std::shared_ptr<GraphicsPipelineRecord>{}
-                                  : std::static_pointer_cast<GraphicsPipelineRecord>(state.pipelineOwner);
-        if (!isReadyForVertexDraw(state, pipeline.get()) || vertexCount == 0 || instanceCount == 0)
+        auto* const pipeline = static_cast<GraphicsPipelineRecord*>(state.pipelineOwner.get());
+        if (!isReadyForVertexDraw(state, pipeline) || vertexCount == 0 || instanceCount == 0)
         {
             return std::unexpected(Error{
                 ErrorCode::invalidState,
@@ -2537,11 +2535,8 @@ namespace rachis::d3d12
                                         std::uint32_t firstInstance)
     {
         const auto& state = commandBuffer.graphicsState();
-        const auto pipeline = state.pipelineOwner == nullptr
-                                  ? std::shared_ptr<GraphicsPipelineRecord>{}
-                                  : std::static_pointer_cast<GraphicsPipelineRecord>(state.pipelineOwner);
-        if (!isReadyForVertexDraw(state, pipeline.get()) || !state.indexBufferBound || indexCount == 0 ||
-            instanceCount == 0)
+        auto* const pipeline = static_cast<GraphicsPipelineRecord*>(state.pipelineOwner.get());
+        if (!isReadyForVertexDraw(state, pipeline) || !state.indexBufferBound || indexCount == 0 || instanceCount == 0)
         {
             return std::unexpected(Error{
                 ErrorCode::invalidState,
@@ -2565,10 +2560,8 @@ namespace rachis::d3d12
                                          std::uint32_t groupCountZ)
     {
         const auto& state = commandBuffer.graphicsState();
-        const auto pipeline = state.pipelineOwner == nullptr
-                                  ? std::shared_ptr<GraphicsPipelineRecord>{}
-                                  : std::static_pointer_cast<GraphicsPipelineRecord>(state.pipelineOwner);
-        if (!isReadyForMeshDispatch(state, pipeline.get()))
+        auto* const pipeline = static_cast<GraphicsPipelineRecord*>(state.pipelineOwner.get());
+        if (!isReadyForMeshDispatch(state, pipeline))
         {
             return std::unexpected(Error{
                 ErrorCode::invalidState,
@@ -2604,10 +2597,8 @@ namespace rachis::d3d12
                                                  const IndirectMeshDispatchDesc& desc)
     {
         const auto& state = commandBuffer.graphicsState();
-        const auto pipeline = state.pipelineOwner == nullptr
-                                  ? std::shared_ptr<GraphicsPipelineRecord>{}
-                                  : std::static_pointer_cast<GraphicsPipelineRecord>(state.pipelineOwner);
-        if (!isReadyForMeshDispatch(state, pipeline.get()))
+        auto* const pipeline = static_cast<GraphicsPipelineRecord*>(state.pipelineOwner.get());
+        if (!isReadyForMeshDispatch(state, pipeline))
         {
             return std::unexpected(Error{
                 ErrorCode::invalidState,
@@ -2675,10 +2666,8 @@ namespace rachis::d3d12
                                             bool indexed)
     {
         const auto& state = commandBuffer.graphicsState();
-        const auto pipeline = state.pipelineOwner == nullptr
-                                  ? std::shared_ptr<GraphicsPipelineRecord>{}
-                                  : std::static_pointer_cast<GraphicsPipelineRecord>(state.pipelineOwner);
-        if (!isReadyForVertexDraw(state, pipeline.get()) || (indexed && !state.indexBufferBound))
+        auto* const pipeline = static_cast<GraphicsPipelineRecord*>(state.pipelineOwner.get());
+        if (!isReadyForVertexDraw(state, pipeline) || (indexed && !state.indexBufferBound))
         {
             return std::unexpected(Error{
                 ErrorCode::invalidState,

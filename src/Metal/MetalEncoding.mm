@@ -2036,7 +2036,7 @@ namespace rachis::metal
         {
             return std::unexpected(metalSelectionError(ErrorCode::invalidState, "No rendering scope is active."));
         }
-        const auto scope = std::static_pointer_cast<MetalRenderingScope>(state.renderingOwner);
+        auto* const scope = static_cast<MetalRenderingScope*>(state.renderingOwner.get());
         if (attachmentIndex >= scope->colors.size())
         {
             return std::unexpected(metalSelectionError(
@@ -2116,7 +2116,7 @@ namespace rachis::metal
         {
             return std::unexpected(metalSelectionError(ErrorCode::invalidState, "No rendering scope is active."));
         }
-        const auto scope = std::static_pointer_cast<MetalRenderingScope>(state.renderingOwner);
+        auto* const scope = static_cast<MetalRenderingScope*>(state.renderingOwner.get());
         if (!scope->hasDepth)
         {
             return std::unexpected(metalSelectionError(
@@ -2192,7 +2192,7 @@ namespace rachis::metal
             return std::unexpected(metalSelectionError(
                 ErrorCode::invalidState, "A graphics pipeline must be bound inside an active rendering scope."));
         }
-        const auto scope = std::static_pointer_cast<MetalRenderingScope>(state.renderingOwner);
+        auto* const scope = static_cast<MetalRenderingScope*>(state.renderingOwner.get());
         const auto& raster = *record->graphicsState;
         std::vector<Format> scopeFormats;
         scopeFormats.reserve(scope->colors.size());
@@ -2324,7 +2324,7 @@ namespace rachis::metal
             return std::unexpected(metalSelectionError(
                 ErrorCode::invalidState, "Graphics binding sets require an active Metal render encoder."));
         }
-        const auto pipeline = std::static_pointer_cast<MetalPipelineRecord>(state.pipelineOwner);
+        auto* const pipeline = static_cast<MetalPipelineRecord*>(state.pipelineOwner.get());
         if (auto valid = metalValidateBindingSetBatch(*pipeline,
                                                       firstSet,
                                                       versions,
@@ -2702,7 +2702,7 @@ namespace rachis::metal
                 metalSelectionError(ErrorCode::invalidState,
                                     "Vertex buffers require a bound graphics pipeline and matching vertex slots."));
         }
-        const auto pipeline = std::static_pointer_cast<MetalPipelineRecord>(state.pipelineOwner);
+        auto* const pipeline = static_cast<MetalPipelineRecord*>(state.pipelineOwner.get());
         if (pipeline->graphicsState.has_value())
         {
             if (auto aligned = detail::validateVertexBufferOffsetAlignment(
@@ -2782,7 +2782,7 @@ namespace rachis::metal
                 ErrorCode::invalidArgument,
                 "Index buffers require a bound graphics pipeline, index usage, and an aligned in-bounds offset."));
         }
-        const auto pipeline = std::static_pointer_cast<MetalPipelineRecord>(state.pipelineOwner);
+        auto* const pipeline = static_cast<MetalPipelineRecord*>(state.pipelineOwner.get());
         if (pipeline->graphicsState.has_value())
         {
             if (auto restart = metalValidateRestartIndexFormat(*pipeline->graphicsState, format); !restart)
@@ -2829,9 +2829,7 @@ namespace rachis::metal
         }
         const std::scoped_lock lock(native->owner()->mutex);
         auto& state = native->graphicsState();
-        const auto pipeline = state.pipelineOwner == nullptr
-                                  ? std::shared_ptr<MetalPipelineRecord>{}
-                                  : std::static_pointer_cast<MetalPipelineRecord>(state.pipelineOwner);
+        auto* const pipeline = static_cast<MetalPipelineRecord*>(state.pipelineOwner.get());
         if (state.renderingOwner == nullptr || pipeline == nullptr || !pipeline->graphicsState.has_value() ||
             (pipeline->graphicsState->rasterizationEnabled && !metalHasCompleteViewportState(state)) ||
             (state.blendConstantsRequired && !state.blendConstantsSet) ||
@@ -2893,9 +2891,7 @@ namespace rachis::metal
         }
         const std::scoped_lock lock(native->owner()->mutex);
         auto& state = native->graphicsState();
-        const auto pipeline = state.pipelineOwner == nullptr
-                                  ? std::shared_ptr<MetalPipelineRecord>{}
-                                  : std::static_pointer_cast<MetalPipelineRecord>(state.pipelineOwner);
+        auto* const pipeline = static_cast<MetalPipelineRecord*>(state.pipelineOwner.get());
         if (state.renderingOwner == nullptr || pipeline == nullptr || !pipeline->graphicsState.has_value() ||
             (pipeline->graphicsState->rasterizationEnabled && !metalHasCompleteViewportState(state)) ||
             (state.blendConstantsRequired && !state.blendConstantsSet) ||
@@ -3002,9 +2998,7 @@ namespace rachis::metal
         }
         const std::scoped_lock lock(native->owner()->mutex);
         auto& state = native->graphicsState();
-        const auto pipeline = state.pipelineOwner == nullptr
-                                  ? std::shared_ptr<MetalPipelineRecord>{}
-                                  : std::static_pointer_cast<MetalPipelineRecord>(state.pipelineOwner);
+        auto* const pipeline = static_cast<MetalPipelineRecord*>(state.pipelineOwner.get());
         auto* entry = native->entry();
         if (entry == nullptr || state.renderingOwner == nullptr || pipeline == nullptr ||
             !pipeline->graphicsState.has_value() ||
@@ -3095,9 +3089,7 @@ namespace rachis::metal
         }
         const std::scoped_lock lock(native->owner()->mutex);
         auto& state = native->graphicsState();
-        const auto pipeline = state.pipelineOwner == nullptr
-                                  ? std::shared_ptr<MetalPipelineRecord>{}
-                                  : std::static_pointer_cast<MetalPipelineRecord>(state.pipelineOwner);
+        auto* const pipeline = static_cast<MetalPipelineRecord*>(state.pipelineOwner.get());
         auto* entry = native->entry();
         if (entry == nullptr || state.renderingOwner == nullptr || pipeline == nullptr ||
             !pipeline->graphicsState.has_value() ||
