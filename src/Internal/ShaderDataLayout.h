@@ -663,8 +663,7 @@ namespace rachis::shader_tool
                     {
                         if (executionModel == executionModelVertex && uses(id) && !builtIns_.contains(id))
                         {
-                            if (auto appended = appendVertexInput(id, variable, result.vertexInputLocations);
-                                !appended)
+                            if (auto appended = appendVertexInput(id, variable, result.vertexInputLocations); !appended)
                             {
                                 return std::unexpected(std::move(appended.error()));
                             }
@@ -991,9 +990,8 @@ namespace rachis::shader_tool
                 }
             }
 
-            [[nodiscard]] std::expected<void, std::string> appendVertexInput(std::uint32_t id,
-                                                                             const Variable& variable,
-                                                                             std::vector<std::uint32_t>& locations) const
+            [[nodiscard]] std::expected<void, std::string> appendVertexInput(
+                std::uint32_t id, const Variable& variable, std::vector<std::uint32_t>& locations) const
             {
                 const auto location = locations_.find(id);
                 const auto pointee = pointeeType(variable);
