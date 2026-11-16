@@ -1388,8 +1388,8 @@ namespace rachis::d3d12
                 "A BLAS update requires a built source and an unbuilt immutable destination.",
             .inPlaceTargetExecuting =
                 "An in-place BLAS update cannot overwrite an acceleration structure with active GPU execution.",
-            .destinationTooSmall =
-                "A BLAS update destination must fit the source version, including compacted sources.",
+            .destinationTooSmall = "A BLAS update destination must fit the source version and the update input's "
+                                   "prebuild size, including for compacted sources.",
         };
 
         struct LockedUpdateTarget final
@@ -1405,6 +1405,7 @@ namespace rachis::d3d12
             detail::BackendCommandBuffer& commandBuffer,
             const UpdateTarget& target,
             bool inPlace,
+            std::uint64_t updateResultSize,
             const UpdateTargetErrors& errors)
         {
             auto recordingId = queues.recordingId(commandBuffer);
@@ -1442,7 +1443,8 @@ namespace rachis::d3d12
             {
                 return std::unexpected(Error{ErrorCode::invalidState, 0, std::string(errors.inPlaceTargetExecuting)});
             }
-            if (target.destination->size < locked.sourceVersion->resultSize)
+            if (target.destination->size < locked.sourceVersion->resultSize ||
+                target.destination->size < updateResultSize)
             {
                 return std::unexpected(Error{ErrorCode::invalidArgument, 0, std::string(errors.destinationTooSmall)});
             }
@@ -1532,8 +1534,8 @@ namespace rachis::d3d12
             return std::unexpected(std::move(target.error()));
         }
 
-        auto lockedTarget =
-            lockAndValidateUpdateTarget(queues, commandBuffer, *target, inPlace, bottomLevelUpdateTargetErrors);
+        auto lockedTarget = lockAndValidateUpdateTarget(
+            queues, commandBuffer, *target, inPlace, sizes->accelerationStructureSize, bottomLevelUpdateTargetErrors);
         if (!lockedTarget)
         {
             return std::unexpected(std::move(lockedTarget.error()));
@@ -1649,8 +1651,8 @@ namespace rachis::d3d12
                 "A TLAS update requires a built source and an unbuilt immutable destination.",
             .inPlaceTargetExecuting =
                 "An in-place TLAS update cannot overwrite an acceleration structure with active GPU execution.",
-            .destinationTooSmall =
-                "A TLAS update destination must fit the source version, including compacted sources.",
+            .destinationTooSmall = "A TLAS update destination must fit the source version and the update input's "
+                                   "prebuild size, including for compacted sources.",
         };
 
         [[nodiscard]] Status validateTopLevelUpdateCompatibility(const AccelerationStructureVersion& source,
@@ -1748,8 +1750,8 @@ namespace rachis::d3d12
             return std::unexpected(std::move(target.error()));
         }
 
-        auto lockedTarget =
-            lockAndValidateUpdateTarget(queues, commandBuffer, *target, inPlace, topLevelUpdateTargetErrors);
+        auto lockedTarget = lockAndValidateUpdateTarget(
+            queues, commandBuffer, *target, inPlace, sizes->accelerationStructureSize, topLevelUpdateTargetErrors);
         if (!lockedTarget)
         {
             return std::unexpected(std::move(lockedTarget.error()));

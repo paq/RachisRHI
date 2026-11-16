@@ -385,6 +385,7 @@ Acceleration structures follow a single-build / in-place-update contract:
 
 - **Creation & build order:** An acceleration structure accepts one initial build, out-of-place update, compaction copy, or deserialization, after which only in-place updates are valid. Recording a build marks the target as built—submit the builder's command buffer before submitting any dependent command buffer. Resetting or abandoning a command buffer, or a failed `submit`, rolls back its recorded acceleration-structure state transitions.
 - **Direct3D 12 in-place update exclusivity:** Direct3D 12 rejects submitting concurrent command buffers where one records an in-place update of an acceleration structure while another reads the same structure (binding it as a shader resource, building/updating a TLAS referencing it, compacting, serializing, or writing compacted-size / serialization-info queries) with `ErrorCode::invalidState`. Sequential commands within the same command buffer remain valid.
+- **Update sizes:** An update's destination (the target itself for an in-place update) must hold the `accelerationStructureSize` that `queryBottomLevelAccelerationStructureBuildSizes` or `queryTopLevelAccelerationStructureBuildSizes` reports for the update's input, even when the source was compacted or deserialized into less memory; a smaller destination fails with `ErrorCode::invalidArgument`. The scratch range must hold the reported `updateScratchSize`, which may be `0`.
 
 ---
 

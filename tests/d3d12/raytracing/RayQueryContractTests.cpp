@@ -1428,7 +1428,7 @@ TEST_CASE("inline ray query traverses retained BLAS and TLAS versions", "[size:m
         .label = "Compacted ray-query TLAS storage",
     });
     auto compactedUpdatedBottomStorage = device.createBuffer({
-        .size = compactedSizes[0],
+        .size = bottomSizes->accelerationStructureSize,
         .usage = rachis::BufferUsage::accelerationStructureStorage,
         .memoryType = rachis::MemoryType::deviceLocal,
         .label = "Updated compacted ray-query BLAS storage",
@@ -1512,6 +1512,34 @@ TEST_CASE("inline ray query traverses retained BLAS and TLAS versions", "[size:m
                                                   .compactedSize = compactedSizes[1],
                                               })
                 .has_value());
+    if (compactedSizes[0] < bottomSizes->accelerationStructureSize)
+    {
+        auto compactedSizeStorage = device.createBuffer({
+            .size = compactedSizes[0],
+            .usage = rachis::BufferUsage::accelerationStructureStorage,
+            .memoryType = rachis::MemoryType::deviceLocal,
+            .label = "Compacted-size update destination storage",
+        });
+        REQUIRE(compactedSizeStorage.has_value());
+        auto compactedSizeDestination = device.createAccelerationStructure({
+            .type = rachis::AccelerationStructureType::bottomLevel,
+            .storage = *compactedSizeStorage,
+            .label = "Compacted-size update destination",
+        });
+        REQUIRE(compactedSizeDestination.has_value());
+        auto undersizedUpdate =
+            device.updateBottomLevelAccelerationStructure(*compactCommand,
+                                                          {
+                                                              .source = *compactedBottomLevel,
+                                                              .destination = *compactedSizeDestination,
+                                                              .input = bottomInput,
+                                                              .scratch = *scratch,
+                                                          });
+        REQUIRE_FALSE(undersizedUpdate.has_value());
+        CHECK(undersizedUpdate.error().code == rachis::ErrorCode::invalidArgument);
+        REQUIRE(device.destroyAccelerationStructure(*compactedSizeDestination).has_value());
+        REQUIRE(device.destroyBuffer(*compactedSizeStorage).has_value());
+    }
     REQUIRE(device
                 .updateBottomLevelAccelerationStructure(*compactCommand,
                                                         {
