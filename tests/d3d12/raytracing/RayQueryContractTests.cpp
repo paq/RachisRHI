@@ -1189,6 +1189,7 @@ TEST_CASE("inline ray query traverses retained BLAS and TLAS versions", "[size:m
     device.collectGarbage();
     std::array<std::vector<std::byte>, 2> archives;
     std::array<rachis::AccelerationStructureArchiveInfo, 2> archiveInfo;
+    const std::array serializedSourceSizes{bottomSizes->accelerationStructureSize, topSizes->accelerationStructureSize};
     for (std::size_t index = 0; index < serializationInfo.size(); ++index)
     {
         archives[index].resize(static_cast<std::size_t>(serializationInfo[index].serializedSize));
@@ -1200,7 +1201,8 @@ TEST_CASE("inline ray query traverses retained BLAS and TLAS versions", "[size:m
         CHECK(archiveInfo[index].compatibility == rachis::AccelerationStructureArchiveCompatibility::compatible);
         CHECK(archiveInfo[index].serializedSize == serializationInfo[index].serializedSize);
         CHECK(archiveInfo[index].bottomLevelPointerCount == serializationInfo[index].bottomLevelPointerCount);
-        CHECK(archiveInfo[index].deserializedSize >= 256);
+        CHECK(archiveInfo[index].deserializedSize > 0);
+        CHECK(archiveInfo[index].deserializedSize <= serializedSourceSizes[index]);
         REQUIRE(device.destroyBuffer(serializedBuffers[index]).has_value());
         REQUIRE(device.destroyBuffer(serializedReadbacks[index]).has_value());
     }
