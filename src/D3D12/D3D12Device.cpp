@@ -1846,12 +1846,20 @@ namespace rachis::d3d12
         [[nodiscard]] Status flushMappedMemoryRanges(BufferHandle buffer,
                                                      std::span<const MappedMemoryRange> ranges) override
         {
+            if (auto loss = deviceLossError())
+            {
+                return std::unexpected(std::move(*loss));
+            }
             return resources_.flushMappedMemoryRanges(buffer, ranges);
         }
 
         [[nodiscard]] Status invalidateMappedMemoryRanges(BufferHandle buffer,
                                                           std::span<const MappedMemoryRange> ranges) override
         {
+            if (auto loss = deviceLossError())
+            {
+                return std::unexpected(std::move(*loss));
+            }
             return resources_.invalidateMappedMemoryRanges(buffer, ranges);
         }
 

@@ -235,16 +235,15 @@ Calls on a single `rachis_device*` are thread-safe, provided nothing else calls 
   - *Fairness:* Waiters proceed in arrival order, and adjacent concurrent calls execute together—continuous recording/copying cannot starve exclusive calls, nor vice versa.
 - **Per-command-handle restriction:** Only one thread may record into a given command handle at a time; concurrent recording on the same handle returns `RACHIS_STATUS_INVALID_STATE`.
 - **Non-blocking waits and swapchain serialization:** `rachis_timeline_wait` does not block other calls. Presents serialize per swapchain (and on Vulkan block work targeting the presenting queue during the driver present call). On D3D12 and Vulkan, present may wait for the display; on Metal it does not. `rachis_swapchain_acquire`, `resize`, and `destroy` can block on the GPU or window system while holding device locks.
-- **Vulkan & Metal copy/recording locks:** On Vulkan and Metal, `rachis_buffer_write` and `rachis_buffer_read` hold an internal device-wide lock for the entire copy, blocking other copies (even on different buffers) plus:
+- **Vulkan & Metal copy/recording locks:** On Vulkan and Metal, `rachis_buffer_write` and `rachis_buffer_read` hold an internal device-wide lock for the entire copy, blocking other copies (even on different buffers), `rachis_buffer_map`, `rachis_buffer_unmap`, and flushing or invalidating mapped ranges, plus:
   - *Vulkan:* `rachis_command_copy_buffer`, buffer-texture copies, `rachis_command_barriers`, `rachis_command_begin_rendering`, and `rachis_texture_query_transfer_layout` (copies and barriers across distinct command handles also serialize).
   - *Metal:* all command recording calls.
-  - *Direct3D 12* locks per buffer and has none of these stalls. To keep other threads responsive on Vulkan/Metal, split large uploads or readbacks into chunks of a few megabytes.
+  - *Direct3D 12* locks per buffer and has none of these stalls. To keep other threads responsive on Vulkan/Metal, split large uploads or readbacks into chunks of a few megabytes, or write and read through a mapped pointer, which takes no lock.
 - **Diagnostic callbacks:** May execute on backend threads and must never re-enter the `rachis_device*`.
 
 ## Device loss
 
 - Query `rachis_device_operational_state` to check whether a device is active or lost, and `rachis_device_loss_error` to read the stored cause (check `error.code`, since the function's return status only indicates whether querying succeeded). The first loss is also sent to `diagnostic_callback`.
-- Once lost, all create, record, submit, acquire, and present calls—plus `rachis_buffer_write` and `rachis_buffer_read` (even with stale handles or out-of-bounds ranges)—return `RACHIS_STATUS_DEVICE_LOST`.
-- `rachis_buffer_map`, `rachis_buffer_flush_mapped_ranges`, and `rachis_buffer_invalidate_mapped_ranges` also return `RACHIS_STATUS_DEVICE_LOST`.
+- Once lost, all create, record, submit, acquire, and present calls—plus `rachis_buffer_write`, `rachis_buffer_read`, `rachis_buffer_map`, `rachis_buffer_flush_mapped_ranges`, and `rachis_buffer_invalidate_mapped_ranges` (even with stale handles or out-of-bounds ranges)—return `RACHIS_STATUS_DEVICE_LOST`.
 - A pointer mapped before the loss stays valid memory until `rachis_buffer_unmap`: reading and writing through it does not fault, but the bytes read are undefined and writes reach no GPU. `rachis_buffer_unmap` still succeeds, and a mapped buffer still needs it before `rachis_buffer_destroy`.
 - Diagnostics, `destroy`, and `release` calls continue working (including `rachis_swapchain_destroy` while an image is still acquired). Create a new device to recover.

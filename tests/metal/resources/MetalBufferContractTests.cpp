@@ -381,4 +381,148 @@ TEST_CASE("Metal mapBuffer rejects out-of-bounds and wrapping offsets without un
     CHECK(device.diagnosticCounts().errors == 0);
 }
 
+TEST_CASE("Metal mapped buffers refuse destruction and validate flush and invalidate ranges",
+          "[size:large][rhi][metal][buffer]")
+{
+    auto created = rachis::createDevice(metalDesc());
+    REQUIRE(created.has_value());
+    auto device = std::move(*created);
+
+    constexpr std::uint64_t bufferSize = 64;
+    constexpr std::uint64_t mappedOffset = 16;
+    constexpr std::uint64_t mappedSize = 16;
+    auto upload = device.createBuffer({
+        .size = bufferSize,
+        .usage = rachis::BufferUsage::copySource,
+        .memoryType = rachis::MemoryType::upload,
+        .label = "Mapped upload",
+    });
+    auto readback = device.createBuffer({
+        .size = bufferSize,
+        .usage = rachis::BufferUsage::copyDestination,
+        .memoryType = rachis::MemoryType::readback,
+        .label = "Mapped readback",
+    });
+    REQUIRE(upload);
+    REQUIRE(readback);
+
+    const std::array mappedRange{rachis::MappedMemoryRange{.offset = mappedOffset, .size = mappedSize}};
+    const auto flushUnmapped = device.flushMappedMemoryRanges(*upload, mappedRange);
+    REQUIRE_FALSE(flushUnmapped);
+    CHECK(flushUnmapped.error().code == rachis::ErrorCode::invalidState);
+    const auto invalidateUnmapped = device.invalidateMappedMemoryRanges(*readback, mappedRange);
+    REQUIRE_FALSE(invalidateUnmapped);
+    CHECK(invalidateUnmapped.error().code == rachis::ErrorCode::invalidState);
+
+    REQUIRE(device.mapBuffer(*upload, mappedOffset, mappedSize));
+    REQUIRE(device.mapBuffer(*readback, mappedOffset, mappedSize));
+    for (const auto target : {*upload, *readback})
+    {
+        const auto destroyedWhileMapped = device.destroyBuffer(target);
+        REQUIRE_FALSE(destroyedWhileMapped);
+        CHECK(destroyedWhileMapped.error().code == rachis::ErrorCode::invalidState);
+        const auto stillMapped = device.mapBuffer(target);
+        REQUIRE_FALSE(stillMapped);
+        CHECK(stillMapped.error().code == rachis::ErrorCode::invalidState);
+    }
+
+    REQUIRE(device.flushMappedMemoryRanges(*upload, mappedRange).has_value());
+    REQUIRE(device.invalidateMappedMemoryRanges(*readback, mappedRange).has_value());
+    const auto emptyFlush = device.flushMappedMemoryRanges(*upload, {});
+    REQUIRE_FALSE(emptyFlush);
+    CHECK(emptyFlush.error().code == rachis::ErrorCode::invalidArgument);
+    const auto emptyInvalidate = device.invalidateMappedMemoryRanges(*readback, {});
+    REQUIRE_FALSE(emptyInvalidate);
+    CHECK(emptyInvalidate.error().code == rachis::ErrorCode::invalidArgument);
+    const auto wrongFlush = device.flushMappedMemoryRanges(*readback, mappedRange);
+    REQUIRE_FALSE(wrongFlush);
+    CHECK(wrongFlush.error().code == rachis::ErrorCode::unsupported);
+    const auto wrongInvalidate = device.invalidateMappedMemoryRanges(*upload, mappedRange);
+    REQUIRE_FALSE(wrongInvalidate);
+    CHECK(wrongInvalidate.error().code == rachis::ErrorCode::unsupported);
+
+    const std::array rejectedRanges{
+        rachis::MappedMemoryRange{.offset = 0, .size = mappedOffset},
+        rachis::MappedMemoryRange{.offset = mappedOffset, .size = rachis::wholeResource},
+        rachis::MappedMemoryRange{.offset = mappedOffset + mappedSize / 2, .size = mappedSize},
+        rachis::MappedMemoryRange{.offset = mappedOffset, .size = 0},
+        rachis::MappedMemoryRange{.offset = bufferSize, .size = 1},
+    };
+    for (const auto& range : rejectedRanges)
+    {
+        CAPTURE(range.offset, range.size);
+        const auto flushed = device.flushMappedMemoryRanges(*upload, std::span{&range, 1});
+        REQUIRE_FALSE(flushed);
+        CHECK(flushed.error().code == rachis::ErrorCode::invalidArgument);
+        const auto invalidated = device.invalidateMappedMemoryRanges(*readback, std::span{&range, 1});
+        REQUIRE_FALSE(invalidated);
+        CHECK(invalidated.error().code == rachis::ErrorCode::invalidArgument);
+    }
+
+    REQUIRE(device.unmapBuffer(*upload).has_value());
+    REQUIRE(device.unmapBuffer(*readback).has_value());
+    const auto flushAfterUnmap = device.flushMappedMemoryRanges(*upload, mappedRange);
+    REQUIRE_FALSE(flushAfterUnmap);
+    CHECK(flushAfterUnmap.error().code == rachis::ErrorCode::invalidState);
+    REQUIRE(device.destroyBuffer(*upload).has_value());
+    REQUIRE(device.destroyBuffer(*readback).has_value());
+    CHECK(device.diagnosticCounts().errors == 0);
+}
+
+TEST_CASE("Metal unmap ranges must lie inside the active mapping", "[size:large][rhi][metal][buffer]")
+{
+    auto created = rachis::createDevice(metalDesc());
+    REQUIRE(created.has_value());
+    auto device = std::move(*created);
+
+    constexpr std::uint64_t mappedBufferSize = 64;
+    constexpr std::uint64_t mappedOffset = 16;
+    constexpr std::uint64_t mappedSize = 16;
+    for (const auto memoryType : {rachis::MemoryType::upload, rachis::MemoryType::readback})
+    {
+        CAPTURE(static_cast<int>(memoryType));
+        auto buffer = device.createBuffer({
+            .size = mappedBufferSize,
+            .usage = memoryType == rachis::MemoryType::upload ? rachis::BufferUsage::copySource
+                                                              : rachis::BufferUsage::copyDestination,
+            .memoryType = memoryType,
+            .label = "Subrange-mapped buffer",
+        });
+        REQUIRE(buffer.has_value());
+        auto mapped = device.mapBuffer(*buffer, mappedOffset, mappedSize);
+        REQUIRE(mapped.has_value());
+        CHECK(mapped->size == mappedSize);
+
+        const auto beforeMapping = device.unmapBuffer(*buffer, 0, mappedOffset);
+        REQUIRE_FALSE(beforeMapping.has_value());
+        CHECK(beforeMapping.error().code == rachis::ErrorCode::invalidArgument);
+        const auto straddlingEnd = device.unmapBuffer(*buffer, mappedOffset + mappedSize / 2, mappedSize);
+        REQUIRE_FALSE(straddlingEnd.has_value());
+        CHECK(straddlingEnd.error().code == rachis::ErrorCode::invalidArgument);
+        const auto pastEnd = device.unmapBuffer(*buffer, mappedOffset, rachis::wholeResource);
+        REQUIRE_FALSE(pastEnd.has_value());
+        CHECK(pastEnd.error().code == rachis::ErrorCode::invalidArgument);
+        const auto outsideBuffer = device.unmapBuffer(*buffer, mappedBufferSize, 1);
+        REQUIRE_FALSE(outsideBuffer.has_value());
+        CHECK(outsideBuffer.error().code == rachis::ErrorCode::invalidArgument);
+        const auto stillMapped = device.mapBuffer(*buffer);
+        REQUIRE_FALSE(stillMapped.has_value());
+        CHECK(stillMapped.error().code == rachis::ErrorCode::invalidState);
+        REQUIRE(device.unmapBuffer(*buffer, mappedOffset + 4, 8).has_value());
+
+        auto remapped = device.mapBuffer(*buffer, mappedOffset, mappedSize);
+        REQUIRE(remapped.has_value());
+        REQUIRE(device.unmapBuffer(*buffer).has_value());
+        auto tailMapped = device.mapBuffer(*buffer, mappedOffset, rachis::wholeResource);
+        REQUIRE(tailMapped.has_value());
+        CHECK(tailMapped->size == mappedBufferSize - mappedOffset);
+        REQUIRE(device.unmapBuffer(*buffer, mappedOffset, rachis::wholeResource).has_value());
+        REQUIRE(device.destroyBuffer(*buffer).has_value());
+    }
+
+    const auto diagnostics = device.diagnosticCounts();
+    CHECK(diagnostics.errors == 0);
+    CHECK(diagnostics.corruptions == 0);
+}
+
 #endif

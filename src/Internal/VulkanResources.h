@@ -254,7 +254,10 @@ namespace rachis::vulkan
                                                               const BufferDesc& desc);
         [[nodiscard]] Status destroyBuffer(BufferHandle buffer);
         [[nodiscard]] Result<MappedMemory> mapBuffer(BufferHandle buffer, std::uint64_t offset, std::uint64_t size);
-        [[nodiscard]] Status unmapBuffer(BufferHandle buffer, std::uint64_t offset, std::uint64_t size);
+        [[nodiscard]] Status unmapBuffer(BufferHandle buffer,
+                                         std::uint64_t offset,
+                                         std::uint64_t size,
+                                         bool flushWrites = true);
         [[nodiscard]] Status flushMappedMemoryRanges(BufferHandle buffer, std::span<const MappedMemoryRange> ranges);
         [[nodiscard]] Status invalidateMappedMemoryRanges(BufferHandle buffer,
                                                           std::span<const MappedMemoryRange> ranges);

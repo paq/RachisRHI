@@ -2166,7 +2166,10 @@ namespace rachis::vulkan
         return MappedMemory{record->mappedBase + offset, record->mappedSize};
     }
 
-    Status VulkanResourceAllocator::unmapBuffer(BufferHandle buffer, std::uint64_t offset, std::uint64_t size)
+    Status VulkanResourceAllocator::unmapBuffer(BufferHandle buffer,
+                                                std::uint64_t offset,
+                                                std::uint64_t size,
+                                                bool flushWrites)
     {
         const std::scoped_lock lock(mutex_);
         auto* record = findBuffer(buffer);
@@ -2195,9 +2198,23 @@ namespace rachis::vulkan
                 "The buffer is not mapped.",
             });
         }
-        if (record->desc.memoryType == MemoryType::upload)
+        const auto resolvedSize = resolveSize(record->desc.size, offset, size);
+        const bool wholeBuffer = offset == 0 && resolvedSize == record->desc.size;
+        const auto mappedEnd = record->mappedOffset + record->mappedSize;
+        if (!wholeBuffer && (offset < record->mappedOffset || offset + resolvedSize > mappedEnd))
         {
-            auto flushed = synchronizeHostRange(*record, offset, resolveSize(record->desc.size, offset, size), true);
+            return std::unexpected(Error{
+                ErrorCode::invalidArgument,
+                0,
+                "The requested unmap range is not contained in the active mapping.",
+            });
+        }
+        if (flushWrites && record->desc.memoryType == MemoryType::upload)
+        {
+            auto flushed = synchronizeHostRange(*record,
+                                                wholeBuffer ? record->mappedOffset : offset,
+                                                wholeBuffer ? record->mappedSize : resolvedSize,
+                                                true);
             if (!flushed)
             {
                 return std::unexpected(std::move(flushed.error()));

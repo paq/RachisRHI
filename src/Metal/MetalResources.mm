@@ -1629,8 +1629,6 @@ namespace rachis::metal
     Status MetalDevice::unmapBuffer(BufferHandle buffer, std::uint64_t offset, std::uint64_t size)
     {
         std::scoped_lock const lock(mutex_);
-        static_cast<void>(offset);
-        static_cast<void>(size);
         if (native_ == nullptr)
         {
             return std::unexpected(
@@ -1642,9 +1640,21 @@ namespace rachis::metal
             return std::unexpected(
                 metalSelectionError(ErrorCode::invalidArgument, "The buffer handle is not a live Metal allocation."));
         }
+        if (offset >= record->desc.size || size == 0 || (size != wholeResource && size > record->desc.size - offset))
+        {
+            return std::unexpected(
+                metalSelectionError(ErrorCode::invalidArgument, "The Metal unmap range is outside the buffer."));
+        }
         if (!record->mapped)
         {
             return std::unexpected(metalSelectionError(ErrorCode::invalidState, "The Metal buffer is not mapped."));
+        }
+        const auto resolvedSize = size == wholeResource ? record->desc.size - offset : size;
+        const bool wholeBuffer = offset == 0 && resolvedSize == record->desc.size;
+        if (!wholeBuffer && (offset < record->mapOffset || offset + resolvedSize > record->mapOffset + record->mapSize))
+        {
+            return std::unexpected(metalSelectionError(
+                ErrorCode::invalidArgument, "The Metal unmap range is not contained in the active mapping."));
         }
         record->mapped = false;
         record->mapOffset = 0;
@@ -1654,6 +1664,10 @@ namespace rachis::metal
 
     Status MetalDevice::flushMappedMemoryRanges(BufferHandle buffer, std::span<const MappedMemoryRange> ranges)
     {
+        if (auto blocked = requireActive(); !blocked)
+        {
+            return blocked;
+        }
         std::scoped_lock const lock(mutex_);
         if (native_ == nullptr)
         {
@@ -1665,6 +1679,10 @@ namespace rachis::metal
 
     Status MetalDevice::invalidateMappedMemoryRanges(BufferHandle buffer, std::span<const MappedMemoryRange> ranges)
     {
+        if (auto blocked = requireActive(); !blocked)
+        {
+            return blocked;
+        }
         std::scoped_lock const lock(mutex_);
         if (native_ == nullptr)
         {

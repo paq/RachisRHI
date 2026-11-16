@@ -476,7 +476,7 @@ When `DeviceCapabilities::enhancedBarriers` is `false`, Direct3D 12 falls back t
 Once a device enters a lost state, recovery is permanent:
 
 - Query `Device::operationalState()` and `Device::deviceLossError()` at any time.
-- Resource creation, submissions, `mapBuffer`, `writeBuffer`, and `readBuffer` return `ErrorCode::deviceLost` (`completedValue` freezes at its last observed value).
+- Resource creation, submissions, `mapBuffer`, `flushMappedMemoryRanges`, `invalidateMappedMemoryRanges`, `writeBuffer`, and `readBuffer` return `ErrorCode::deviceLost` (`completedValue` freezes at its last observed value).
 - Cleanup calls (`destroy*`, `unmapBuffer`) continue to succeed (`destroySwapchain` allows tearing down with still-acquired images or live swapchain views; on Vulkan those swapchain views become stale and accept only `destroyTextureView`; normal non-swapchain textures still require destroying their views first).
 - Direct3D 12 resource creation calls may be the first place `deviceLost` surfaces; command recording calls that hit driver failures report `ErrorCode::nativeFailure` or `ErrorCode::outOfMemory` until the next `submit` or `wait` latches device loss.
 - If an imported Direct3D 12 shared timeline fence returns `UINT64_MAX`, `enqueueSharedTimelineWait` fails with `ErrorCode::invalidState` without marking the importing device lost.

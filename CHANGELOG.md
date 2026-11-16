@@ -17,10 +17,19 @@
     and `rachis_command_draw_indexed`.
   - `rachis_device_query_capabilities`, which reports unified memory,
     persistent mapping, mapped-memory coherence, and the vertex-input limits.
-- On Metal, `destroyBuffer` fails with `ErrorCode::invalidState` while the
-  buffer is mapped, and `flushMappedMemoryRanges` and
-  `invalidateMappedMemoryRanges` check the buffer's memory type and that every
-  range lies inside the mapping, as Direct3D 12 and Vulkan already do.
+- Mapped buffers now follow the same rules on every backend:
+  - On Metal, `destroyBuffer` fails with `ErrorCode::invalidState` while the
+    buffer is mapped, and `flushMappedMemoryRanges` and
+    `invalidateMappedMemoryRanges` check the buffer's memory type and that
+    every range lies inside the mapping, as Direct3D 12 and Vulkan already do.
+  - On Vulkan and Metal, an `unmapBuffer` range must lie inside the mapping, as
+    on Direct3D 12. Vulkan flushes only the mapped range when it unmaps the
+    whole buffer.
+  - On Direct3D 12 and Metal, `flushMappedMemoryRanges` and
+    `invalidateMappedMemoryRanges` return `ErrorCode::deviceLost` on a lost
+    device, as on Vulkan.
+  - On Vulkan, `unmapBuffer` on a lost device skips the flush, so it cannot
+    fail and leave a buffer that can never be destroyed.
 
 ## 0.1.0
 
