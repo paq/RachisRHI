@@ -1,0 +1,113 @@
+# Uses no actions outside GitHub's own `actions/` organization.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing v* tag to publish as a GitHub release (e.g. v0.2.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Resolve tag
+        id: target
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            tag="$INPUT_TAG"
+          else
+            tag="$GITHUB_REF_NAME"
+          fi
+          if [[ ! "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "error: tag '$tag' must match v<major>.<minor>.<patch>[-prerelease]" >&2
+            exit 1
+          fi
+          version="${tag#v}"
+          prerelease="false"
+          if [ -n "${BASH_REMATCH[2]:-}" ]; then
+            prerelease="true"
+          fi
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ steps.target.outputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check C ABI freeze against the previous release
+        shell: bash
+        run: |
+          set -euo pipefail
+          prev_tag=""
+          if git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
+            prev_tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD~1 2>/dev/null || true)"
+          fi
+          if [ -n "$prev_tag" ]; then
+            cmake -DBASELINE="$prev_tag" -DREQUIRE_BASELINE=ON -P cmake/CheckCAbiFreeze.cmake
+          else
+            cmake -P cmake/CheckCAbiFreeze.cmake
+          fi
+
+      - name: Validate version and render release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/render_release_notes.py \
+            --tag "${{ steps.target.outputs.tag }}" \
+            --repo "${{ github.repository }}" \
+            --output "${{ runner.temp }}/release-notes.md"
+
+      - name: Create or update GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.target.outputs.tag }}
+          VERSION: ${{ steps.target.outputs.version }}
+          IS_PRERELEASE: ${{ steps.target.outputs.prerelease }}
+          NOTES_FILE: ${{ runner.temp }}/release-notes.md
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" \
+              --title "RachisRHI $VERSION" \
+              --notes-file "$NOTES_FILE" \
+              --prerelease="$IS_PRERELEASE"
+          else
+            flags=(
+              --verify-tag
+              --title "RachisRHI $VERSION"
+              --notes-file "$NOTES_FILE"
+            )
+            if [ "$IS_PRERELEASE" = "true" ]; then
+              flags+=(--prerelease)
+            fi
+            gh release create "$TAG" "${flags[@]}"
+          fi
