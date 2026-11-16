@@ -1,3 +1,6 @@
+# Uses no actions outside GitHub's own `actions/` organization. Tools that the runner
+# images do not pin are installed by the scripts in .github/scripts, and each download
+# is checked against a pinned SHA-256.
 name: CI
 
 on:
@@ -61,48 +64,21 @@ jobs:
             throw 'Graphics Tools did not install d3d12SDKLayers.dll.'
           }
 
-      # Supplies the SPIR-V dxc, spirv-val, glslangValidator, and slangc (with the
-      # dxcompiler that Slang's DXIL target loads).
-      - uses: jakoch/install-vulkan-sdk-action@7fe84289ddbf750f7eff9f8e4588e600e1dd06c8 # v1.8.1
-        with:
-          vulkan_version: 1.4.341.1
-          cache: true
+      - name: Install CMake, Ninja, and the Vulkan SDK
+        shell: pwsh
+        run: ./.github/scripts/install-windows-tools.ps1
 
       - name: Enter the Visual Studio x64 developer environment
         shell: pwsh
-        run: |
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if (-not $vs) { throw 'No Visual Studio installation has the x64 C++ tools.' }
-          $before = @{}
-          Get-ChildItem env: | ForEach-Object { $before[$_.Name] = $_.Value }
-          $lines = cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set"
-          if ($LASTEXITCODE -ne 0) { throw 'vcvars64.bat failed.' }
-          foreach ($line in $lines) {
-            if ($line -match '^([^=]+)=(.*)$' -and $before[$Matches[1]] -ne $Matches[2]) {
-              "$($Matches[1])=$($Matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-            }
-          }
+        run: ./.github/scripts/enter-vs-dev-env.ps1
 
-      # The versions in flake.lock's nixpkgs, so every host builds with the same CMake.
-      # The action prepends them to PATH, ahead of the copies bundled with Visual Studio.
-      - uses: lukka/get-cmake@16e8153a8b4918849d92aad131befe67a3705daa # v4.5.0
-        with:
-          cmakeVersion: 4.4.4
-          ninjaVersion: 1.13.2
-
-      # The Vulkan SDK's dxc comes first on PATH, but DXIL is cooked with the Windows
-      # SDK's dxc, as in a developer shell with the Vulkan SDK installed.
       - name: Show tools
         shell: pwsh
         run: |
-          $dxc = (Join-Path $env:WindowsSdkVerBinPath 'x64\dxc.exe') -replace '\\', '/'
-          if (-not (Test-Path $dxc)) { throw "The Windows SDK has no dxc at $dxc." }
-          "RACHIS_WINDOWS_SDK_DXC=$dxc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           cmake --version
           ninja --version
           cl 2>&1 | Select-Object -First 1
-          & $dxc --version
+          & $env:RACHIS_WINDOWS_SDK_DXC --version
           slangc -v
 
       - name: Configure
@@ -174,9 +150,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
-        with:
-          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install Nix
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/install-nix.sh
 
       - name: Show tools
         run: |
@@ -253,9 +231,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
-        with:
-          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install Nix
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/install-nix.sh
 
       # clang-tools comes from the nixpkgs revision in flake.lock.
       - name: Check formatting
