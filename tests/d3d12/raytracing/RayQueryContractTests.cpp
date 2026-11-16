@@ -401,6 +401,176 @@ TEST_CASE("in-place BLAS updates accept a zero-byte update scratch requirement o
     CHECK(device.diagnosticCounts().corruptions == 0);
 }
 
+TEST_CASE("BLAS updates from a compacted source need a destination of the input's prebuild size on WARP",
+          "[size:medium][rhi][ray-query][warp]")
+{
+    auto created = rachis::createDevice({
+        .adapterPreference = rachis::AdapterPreference::warp,
+        .validation = rachis::ValidationLevel::standard,
+        .requireValidation = false,
+        .enableDred = true,
+        .diagnosticCallback = &printDiagnostic,
+    });
+    REQUIRE(created.has_value());
+    auto device = std::move(*created);
+    if (!device.capabilities()->rayTracing)
+    {
+        SKIP("WARP does not expose DXR on this host.");
+    }
+
+    const std::array vertices{
+        std::array{-1.0F, -1.0F, 0.0F},
+        std::array{0.0F, 1.0F, 0.0F},
+        std::array{1.0F, -1.0F, 0.0F},
+    };
+    auto vertexBuffer = device.createBuffer({
+        .size = sizeof(vertices),
+        .usage = rachis::BufferUsage::accelerationStructureBuildInput,
+        .memoryType = rachis::MemoryType::upload,
+        .label = "Compacted-update vertices",
+    });
+    REQUIRE(vertexBuffer.has_value());
+    REQUIRE(device.writeBuffer(*vertexBuffer, 0, std::as_bytes(std::span(vertices))).has_value());
+    const std::array geometry{
+        rachis::AccelerationStructureGeometry{
+            .data =
+                rachis::AccelerationStructureTriangleGeometry{
+                    .vertexBuffer = *vertexBuffer,
+                    .vertexCount = 3,
+                    .vertexStride = sizeof(vertices[0]),
+                    .vertexFormat = rachis::AccelerationStructureVertexFormat::float32x3,
+                },
+            .flags = rachis::AccelerationStructureGeometryFlag::opaque,
+        },
+    };
+    const rachis::BottomLevelAccelerationStructureBuildInput input{
+        .geometries = geometry,
+        .flags = rachis::AccelerationStructureBuildFlag::allowUpdate |
+                 rachis::AccelerationStructureBuildFlag::allowCompaction,
+    };
+    auto sizes = device.queryBottomLevelAccelerationStructureBuildSizes(input);
+    REQUIRE(sizes.has_value());
+    const auto createStorage = [&](std::uint64_t size, const char* label) {
+        auto storage = device.createBuffer({
+            .size = size,
+            .usage = rachis::BufferUsage::accelerationStructureStorage,
+            .memoryType = rachis::MemoryType::deviceLocal,
+            .label = label,
+        });
+        REQUIRE(storage.has_value());
+        auto structure = device.createAccelerationStructure({
+            .type = rachis::AccelerationStructureType::bottomLevel,
+            .storage = *storage,
+            .label = label,
+        });
+        REQUIRE(structure.has_value());
+        return *structure;
+    };
+    auto scratch = device.createBuffer({
+        .size = (std::max)(sizes->buildScratchSize, sizes->updateScratchSize),
+        .usage = rachis::BufferUsage::accelerationStructureScratch,
+        .memoryType = rachis::MemoryType::deviceLocal,
+        .label = "Compacted-update scratch",
+    });
+    REQUIRE(scratch.has_value());
+    const auto built = createStorage(sizes->accelerationStructureSize, "Compacted-update source BLAS");
+
+    auto compactionPool = device.createAccelerationStructureCompactedSizeQueryPool({
+        .queueType = rachis::QueueType::compute,
+        .queryCount = 1,
+        .label = "Compacted-update compacted size",
+    });
+    auto compactionReadback = device.createBuffer({
+        .size = rachis::accelerationStructureCompactedSizeQueryResultSize,
+        .usage = rachis::BufferUsage::copyDestination,
+        .memoryType = rachis::MemoryType::readback,
+        .label = "Compacted-update compacted-size readback",
+    });
+    REQUIRE(compactionPool.has_value());
+    REQUIRE(compactionReadback.has_value());
+    auto buildCommand = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+    REQUIRE(buildCommand.has_value());
+    REQUIRE(device
+                .buildBottomLevelAccelerationStructure(*buildCommand,
+                                                       {
+                                                           .destination = built,
+                                                           .input = input,
+                                                           .scratch = *scratch,
+                                                       })
+                .has_value());
+    REQUIRE(device.writeAccelerationStructureCompactedSize(*buildCommand, *compactionPool, 0, built).has_value());
+    REQUIRE(device
+                .resolveAccelerationStructureCompactedSizes(*buildCommand,
+                                                            {
+                                                                .queryPool = *compactionPool,
+                                                                .firstQuery = 0,
+                                                                .queryCount = 1,
+                                                                .destination = *compactionReadback,
+                                                            })
+                .has_value());
+    auto buildSubmitted = device.submit(std::move(*buildCommand));
+    REQUIRE(buildSubmitted.has_value());
+    REQUIRE(device.wait(*buildSubmitted).has_value());
+    std::uint64_t compactedSize = 0;
+    REQUIRE(
+        device.readBuffer(*compactionReadback, 0, std::as_writable_bytes(std::span(&compactedSize, 1))).has_value());
+    CAPTURE(compactedSize, sizes->accelerationStructureSize);
+    REQUIRE(compactedSize > 0);
+    if (compactedSize >= sizes->accelerationStructureSize)
+    {
+        SKIP("Compaction does not shrink this BLAS on this WARP version.");
+    }
+
+    const auto compacted = createStorage(compactedSize, "Compacted-update compacted BLAS");
+    const auto compactedSizeDestination = createStorage(compactedSize, "Compacted-update compacted-size destination");
+    const auto prebuildSizeDestination =
+        createStorage(sizes->accelerationStructureSize, "Compacted-update prebuild-size destination");
+    auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+    REQUIRE(command.has_value());
+    REQUIRE(device
+                .compactAccelerationStructure(*command,
+                                              {
+                                                  .source = built,
+                                                  .destination = compacted,
+                                                  .compactedSize = compactedSize,
+                                              })
+                .has_value());
+    auto undersized = device.updateBottomLevelAccelerationStructure(*command,
+                                                                    {
+                                                                        .source = compacted,
+                                                                        .destination = compactedSizeDestination,
+                                                                        .input = input,
+                                                                        .scratch = *scratch,
+                                                                    });
+    REQUIRE_FALSE(undersized.has_value());
+    CHECK(undersized.error().code == rachis::ErrorCode::invalidArgument);
+    auto undersizedInPlace = device.updateBottomLevelAccelerationStructureInPlace(*command,
+                                                                                  {
+                                                                                      .target = compacted,
+                                                                                      .input = input,
+                                                                                      .scratch = *scratch,
+                                                                                  });
+    REQUIRE_FALSE(undersizedInPlace.has_value());
+    CHECK(undersizedInPlace.error().code == rachis::ErrorCode::invalidArgument);
+    auto fitted = device.updateBottomLevelAccelerationStructure(*command,
+                                                                {
+                                                                    .source = compacted,
+                                                                    .destination = prebuildSizeDestination,
+                                                                    .input = input,
+                                                                    .scratch = *scratch,
+                                                                });
+    if (!fitted)
+    {
+        UNSCOPED_INFO(fitted.error().message);
+    }
+    REQUIRE(fitted.has_value());
+    auto submitted = device.submit(std::move(*command));
+    REQUIRE(submitted.has_value());
+    REQUIRE(device.wait(*submitted).has_value());
+    CHECK(device.diagnosticCounts().errors == 0);
+    CHECK(device.diagnosticCounts().corruptions == 0);
+}
+
 TEST_CASE("resetting an acceleration-structure postbuild query pool orders earlier postbuild writes",
           "[size:medium][rhi][ray-query][warp]")
 {
