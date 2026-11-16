@@ -21,6 +21,36 @@ These rows describe the hosts verified in CI today rather than a strict floor po
 
 ---
 
+## API equivalence
+
+RachisRHI models a Vulkan 1.3–style explicit API (dynamic rendering, binding sets, and timeline synchronization) over all three backends. Cells marked *no native object* are state RachisRHI tracks itself.
+
+| RachisRHI | Direct3D 12 | Vulkan 1.3 | Metal 4 |
+| --- | --- | --- | --- |
+| [`Device`](include/Rachis/Device.h) | `ID3D12Device` | `VkInstance` + `VkDevice` | `id<MTLDevice>` |
+| Queue, chosen by [`QueueType`](include/Rachis/Command.h) | `ID3D12CommandQueue` | `VkQueue` | `id<MTL4CommandQueue>` |
+| [`CommandPoolHandle`](include/Rachis/Command.h) | `ID3D12CommandAllocator` | `VkCommandPool` | `id<MTL4CommandAllocator>` |
+| [`CommandBuffer`](include/Rachis/Command.h) | `ID3D12GraphicsCommandList` | `VkCommandBuffer` | `id<MTL4CommandBuffer>` |
+| [`TimelinePoint`](include/Rachis/Command.h) | `ID3D12Fence` + value | Timeline `VkSemaphore` + value | `id<MTLSharedEvent>` + value |
+| [`ResourceHeapHandle`](include/Rachis/Resource.h) | `ID3D12Heap` | `VkDeviceMemory` | `id<MTLHeap>` |
+| [`BufferHandle`](include/Rachis/Resource.h) / [`TextureHandle`](include/Rachis/Resource.h) | `ID3D12Resource` | `VkBuffer` / `VkImage` | `id<MTLBuffer>` / `id<MTLTexture>` |
+| [`TextureViewHandle`](include/Rachis/Resource.h) | Descriptor (SRV/UAV/RTV/DSV) | `VkImageView` | `id<MTLTexture>` (view) |
+| [`SamplerHandle`](include/Rachis/Sampler.h) | Sampler descriptor | `VkSampler` | `id<MTLSamplerState>` |
+| [`AccelerationStructureHandle`](include/Rachis/AccelerationStructure.h) | Acceleration structure buffer (`ID3D12Resource`) | `VkAccelerationStructureKHR` | Not supported ([optional features](docs/platforms.md#optional-features-by-backend)) |
+| [`BindingLayoutHandle`](include/Rachis/Binding.h) | Root parameters / table layout | `VkDescriptorSetLayout` | *No native object* (slot layout) |
+| [`BindingPoolHandle`](include/Rachis/Binding.h) | `ID3D12DescriptorHeap` (suballocated) | `VkDescriptorPool` | *No native object* (set and descriptor quotas) |
+| [`BindingSetHandle`](include/Rachis/Binding.h) | Descriptor table + root descriptors | `VkDescriptorSet` | `id<MTL4ArgumentTable>` |
+| [`PipelineLayoutHandle`](include/Rachis/Pipeline.h) | `ID3D12RootSignature` | `VkPipelineLayout` | *No native object* (slot remap and push-constant buffer) |
+| [`ShaderModuleHandle`](include/Rachis/Pipeline.h) | `D3D12_SHADER_BYTECODE` (DXIL) | `VkShaderModule` (SPIR-V) | `id<MTLLibrary>` + `id<MTLFunction>` |
+| [`PipelineHandle`](include/Rachis/Pipeline.h) | `ID3D12PipelineState` / `ID3D12StateObject` | `VkPipeline` | `id<MTLRenderPipelineState>` / `id<MTLComputePipelineState>` |
+| [`beginRendering` / `endRendering`](include/Rachis/Rendering.h) | `OMSetRenderTargets` | `vkCmdBeginRendering` (dynamic) | `id<MTL4RenderCommandEncoder>` |
+| [`textureBarrier` / `bufferBarrier` / `globalBarrier`](include/Rachis/Resource.h) | Enhanced `Barrier`, legacy `ResourceBarrier` fallback | `vkCmdPipelineBarrier2` | `barrierAfterQueueStages` / `barrierAfterStages` |
+| [`QueryPoolHandle`](include/Rachis/Query.h) | `ID3D12QueryHeap` | `VkQueryPool` | `id<MTL4CounterHeap>` |
+| [`SurfaceHandle`](include/Rachis/Presentation.h) | `HWND` | `VkSurfaceKHR` | `CAMetalLayer` |
+| [`SwapchainHandle`](include/Rachis/Presentation.h) | `IDXGISwapChain4` | `VkSwapchainKHR` | `id<CAMetalDrawable>` from the layer |
+
+---
+
 ## Key guarantees
 
 | Guarantee | Behavior |
