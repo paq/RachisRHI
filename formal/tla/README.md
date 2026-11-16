@@ -57,7 +57,7 @@ Environment variables:
 - `TLA2TOOLS` (required): path to `tla2tools.jar` (`1.8.0+`).
 - `JAVA` or `JAVA_HOME`: selects the Java `11+` runtime.
 - `TLC_TIMEOUT`: per-configuration timeout in seconds (default `1800`).
-- `TLC_WORKERS`: overrides worker thread count (default `auto`).
+- `TLC_WORKERS`: overrides worker thread count (default `auto`). Configurations that expect a violation always run with one worker, so that TLC reports the same violated invariant on every run.
 
 ## Specifications
 
