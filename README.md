@@ -2,7 +2,7 @@
 
 RachisRHI is a C++23 GPU abstraction targeting **Direct3D 12**, **Vulkan 1.3**, and **Metal 4**, paired with a versioned **C11 ABI** for cross-module device sharing and **TLA+** safety specifications verified with TLC.
 
-Current release: `0.1.0`. The C11 ABI is versioned, while the C++23 API may evolve between minor releases prior to `1.0.0`.
+The C++23 API may change between minor releases before `1.0.0`.
 
 > [!NOTE]
 > Backends differ in optional hardware/API feature coverage. Check [Optional features by backend](docs/platforms.md#optional-features-by-backend) before relying on optional capabilities across backends.
@@ -11,13 +11,13 @@ Current release: `0.1.0`. The C11 ABI is versioned, while the C++23 API may evol
 
 ## Backend support
 
-| Backend | Verified hosts | Minimum details & notes |
+| Backend | Tested hosts | Minimum details & notes |
 | --- | --- | --- |
 | **Direct3D 12** | Windows 11 (`x64`) | Native DXIL via `dxc`; optional WARP software adapter |
 | **Vulkan 1.3** | Windows 11 (`x64`), Linux (`x64`) | SPIR-V via Vulkan SDK `dxc` + `spirv-val`; rejects layered Vulkan-on-D3D12 |
 | **Metal 4** | macOS 26+ (Apple silicon) | Packed metallib (`.pnms`) via `slangc` + `RachisShaderBinaryTool` |
 
-These rows describe the hosts verified in CI today rather than a strict floor policy. See [Platforms](docs/platforms.md) for backend requirements and what older OS versions would need.
+Each row has been tested on GPU hardware. GitHub Actions has no GPU, so CI runs the Direct3D 12 tests on WARP and only the GPU-less tests for Vulkan and Metal. The rows list what was tested, not a minimum; see [Platforms](docs/platforms.md) for backend requirements and what older OS versions would need.
 
 ---
 
