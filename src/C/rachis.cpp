@@ -2568,6 +2568,7 @@ extern "C"
                 !validArray(desc->bindings, desc->binding_count) ||
                 !validArray(desc->push_constants, desc->push_constant_count) ||
                 !validArray(desc->vertex_input_locations, desc->vertex_input_location_count) ||
+                desc->vertex_input_location_count > RACHIS_MAX_VERTEX_ATTRIBUTES ||
                 (desc->stage == RACHIS_SHADER_COMPUTE &&
                  (desc->workgroup_x == 0 || desc->workgroup_y == 0 || desc->workgroup_z == 0)) ||
                 (desc->stage != RACHIS_SHADER_COMPUTE &&

@@ -862,6 +862,12 @@ TEST_CASE("C ABI draws an indexed quad from mapped vertex and index buffers",
     CHECK(rachis_shader_module_create(device.get(), &shaderDesc, &rejectedShader, &error) ==
           RACHIS_STATUS_INVALID_ARGUMENT);
     CHECK(rejectedShader == 0);
+    shaderDesc.vertex_input_locations = inputLocations.data();
+    shaderDesc.vertex_input_location_count = RACHIS_MAX_VERTEX_ATTRIBUTES + 1;
+    CHECK(rachis_shader_module_create(device.get(), &shaderDesc, &rejectedShader, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rejectedShader == 0);
+    shaderDesc.vertex_input_location_count = static_cast<std::uint32_t>(inputLocations.size());
     shaderDesc.stage = RACHIS_SHADER_PIXEL;
     shaderDesc.bytecode = pixelBytes.data();
     shaderDesc.bytecode_size = pixelBytes.size();
