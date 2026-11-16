@@ -2,7 +2,7 @@
 
 RachisRHI is a C++23 GPU abstraction with a versioned C11 ABI, targeting Direct3D 12 and Vulkan on Windows, Vulkan on Linux, and Metal 4 on Apple silicon macOS. Public headers contain no Win32, DXGI, Direct3D 12, Vulkan, or Metal types.
 
-The current package version is `0.1.0`. Until `1.0.0`, the C++ API may change between minor releases; the C ABI (`RACHIS_ABI_VERSION`, currently `2`) changes only when its version number is bumped and verified before device creation.
+The current package version is `0.2.0`. Until `1.0.0`, the C++ API may change between minor releases; the C ABI (`RACHIS_ABI_VERSION`, currently `2`) changes only when its version number is bumped and verified before device creation.
 
 ## Core guides
 

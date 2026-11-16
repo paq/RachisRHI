@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
 - The C ABI is at `RACHIS_ABI_VERSION` 2, and the shared library is
   `librachis.so.2` and `librachis.2.dylib`. Modules built against version 1

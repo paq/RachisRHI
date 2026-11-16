@@ -182,17 +182,17 @@ cmake --install out/build/windows-x64-both-product --config Release --prefix out
 ```
 
 - Debug static libraries carry a `d` suffix (e.g., `RachisRHId.lib`, `Rachis/volkd.lib`, `libRachisRHId.a`), allowing side-by-side installation. `find_package(Rachis)` selects the matching configuration (`RelWithDebInfo` and `MinSizeRel` use Release).
-- The C ABI shared library has no configuration suffix (`rachis.dll`, `librachis.2.1.0.dylib`), so installing Release last ensures the redistributable DLL remains in the prefix. `Rachis::C` does not depend on the C runtime configuration and works with either.
+- The C ABI shared library has no configuration suffix (`rachis.dll`, `librachis.2.2.0.dylib`), so installing Release last ensures the redistributable DLL remains in the prefix. `Rachis::C` does not depend on the C runtime configuration and works with either.
 
 ### C ABI library version
 
-The C ABI shared library is versioned from `RACHIS_ABI_VERSION` in `rachis.h` (`<abi>.<package minor>.<package patch>`), not the package major version. For package `0.1.0` and C ABI `2`:
+The C ABI shared library is versioned from `RACHIS_ABI_VERSION` in `rachis.h` (`<abi>.<package minor>.<package patch>`), not the package major version. For package `0.2.0` and C ABI `2`:
 
 | Host | Library artifacts |
 | --- | --- |
-| **Linux** | `librachis.so.2.1.0`, `SONAME` `librachis.so.2`, symlinks `librachis.so.2` and `librachis.so` |
-| **macOS** | `librachis.2.1.0.dylib`, install name `@rpath/librachis.2.dylib`, compatibility `2.0.0`, current `2.1.0`, symlinks `librachis.2.dylib` and `librachis.dylib` |
-| **Windows** | `rachis.dll` with image version `2.1` |
+| **Linux** | `librachis.so.2.2.0`, `SONAME` `librachis.so.2`, symlinks `librachis.so.2` and `librachis.so` |
+| **macOS** | `librachis.2.2.0.dylib`, install name `@rpath/librachis.2.dylib`, compatibility `2.0.0`, current `2.2.0`, symlinks `librachis.2.dylib` and `librachis.dylib` |
+| **Windows** | `rachis.dll` with image version `2.2` |
 
 Different C ABI versions produce distinct `SONAME`s and install names so the dynamic loader never binds an incompatible version.
 
