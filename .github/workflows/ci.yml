@@ -72,6 +72,10 @@ jobs:
         shell: pwsh
         run: ./.github/scripts/enter-vs-dev-env.ps1
 
+      - name: Show DXGI adapters
+        shell: pwsh
+        run: ./.github/scripts/show-dxgi-adapters.ps1
+
       - name: Show tools
         shell: pwsh
         run: |
