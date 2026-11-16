@@ -1527,7 +1527,7 @@ namespace rachis::d3d12
         auto& state = commandBuffer.rayTracingState();
         state.pipelineOwner = std::move(record);
         state.boundBindingSets.clear();
-        const auto activePipeline = std::static_pointer_cast<RayTracingPipelineRecord>(state.pipelineOwner);
+        auto* const activePipeline = static_cast<RayTracingPipelineRecord*>(state.pipelineOwner.get());
         state.boundBindingSets.reserve(activePipeline->layout->slots.size());
         for (const auto& slot : activePipeline->layout->slots)
         {
@@ -1566,7 +1566,7 @@ namespace rachis::d3d12
                 "A ray-tracing pipeline must be bound before binding sets.",
             });
         }
-        const auto pipeline = std::static_pointer_cast<RayTracingPipelineRecord>(state.pipelineOwner);
+        auto* const pipeline = static_cast<RayTracingPipelineRecord*>(state.pipelineOwner.get());
         auto prepared = prepareBindingSetBatch(
             queues, commandBuffer, bindings, resources, pipeline->layout->slots, firstSet, bindingSets, dynamicOffsets);
         if (!prepared)
@@ -1616,7 +1616,7 @@ namespace rachis::d3d12
                 "Ray-tracing push constants require a non-empty, 4-byte aligned range within 128 bytes.",
             });
         }
-        const auto pipeline = std::static_pointer_cast<RayTracingPipelineRecord>(state.pipelineOwner);
+        auto* const pipeline = static_cast<RayTracingPipelineRecord*>(state.pipelineOwner.get());
         const auto end = static_cast<std::uint64_t>(offset) + data.size();
         const bool declared = std::ranges::any_of(pipeline->layout->pushConstantRanges, [&](const auto& range) {
             return hasAny(range.visibility, ShaderStage::allRayTracing) && range.offset <= offset &&

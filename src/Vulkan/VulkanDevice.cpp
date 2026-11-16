@@ -114,7 +114,6 @@ namespace rachis::vulkan
         struct LockedVulkanCommand final
         {
             VulkanCommandBuffer* command = nullptr;
-            std::shared_ptr<VulkanCommandPoolState> owner{};
             std::unique_lock<std::mutex> poolLock{};
 
             [[nodiscard]] VulkanCommandBuffer& operator*() const noexcept
@@ -140,7 +139,7 @@ namespace rachis::vulkan
                     message,
                 });
             }
-            auto owner = native->ownerShared();
+            auto* const owner = native->owner();
             std::unique_lock<std::mutex> poolLock(owner->mutex);
             if (owner->pool == VK_NULL_HANDLE || native->native() == VK_NULL_HANDLE)
             {
@@ -152,7 +151,6 @@ namespace rachis::vulkan
             }
             return LockedVulkanCommand{
                 .command = native,
-                .owner = std::move(owner),
                 .poolLock = std::move(poolLock),
             };
         }
