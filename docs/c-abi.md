@@ -10,6 +10,9 @@ The C ABI lives in the `rachis` shared library (`Rachis::C` in CMake) and export
 - [Creating a device](#creating-a-device)
 - [Descriptors and errors](#descriptors-and-errors)
 - [Coverage](#coverage)
+- [Device capabilities](#device-capabilities)
+- [Mapped buffers](#mapped-buffers)
+- [Vertex buffers and indexed draws](#vertex-buffers-and-indexed-draws)
 - [Adapters](#adapters)
 - [Surfaces](#surfaces)
 - [Handles and lifetime](#handles-and-lifetime)
@@ -21,7 +24,7 @@ The C ABI lives in the `rachis` shared library (`Rachis::C` in CMake) and export
 
 ## Version
 
-Call `rachis_abi_version()` before creating a device and abort unless it equals the `RACHIS_ABI_VERSION` your module compiled against (currently `1`). ABI versions are not backwards-compatible.
+Call `rachis_abi_version()` before creating a device and abort unless it equals the `RACHIS_ABI_VERSION` your module compiled against (currently `2`). ABI versions are not backwards-compatible.
 
 ## Creating a device
 
@@ -69,29 +72,92 @@ For a complete end-to-end C sample (buffer upload, copy, submit, wait, readback)
   - Bytecode must already be compiled for the selected backend.
   - **Vulkan SPIR-V** must pass `spirv-val`. The backend validates structural elements it reflects (function boundaries, entry points, declared interface, and targets of entry points/execution modes/calls/names/decorations) rather than the entire module. Compile HLSL with `dxc -fvk-support-nonzero-base-vertex -fvk-support-nonzero-base-instance` so `SV_VertexID` and `SV_InstanceID` start at `0` as on D3D12 (see [Shaders](using.md#shaders)).
   - **Metal** requires a packed Metal library (`.metallib` plus reflection) produced by `RachisShaderBinaryTool`; passing a plain `.metallib` fails with `RACHIS_STATUS_INVALID_ARGUMENT`. Since `rachis_add_shader` generates C++ headers, pure C modules invoke `RachisShaderBinaryTool` directly (see [Shaders](using.md#shaders)).
-- **Buffer I/O size:** `rachis_buffer_write` and `rachis_buffer_read` copy `size` bytes literally and reject `RACHIS_WHOLE_SIZE` (which is valid only in descriptors that explicitly document it, such as buffer bindings and barriers).
+- **Buffer I/O size:** `rachis_buffer_write` and `rachis_buffer_read` copy `size` bytes literally and reject `RACHIS_WHOLE_SIZE` (which is valid only where this page says so: buffer bindings, barriers, `rachis_buffer_map`, and mapped ranges).
 
 ## Coverage
 
 Supported C ABI surface:
 - Buffers, textures, texture leases, and texture views
+- Buffer mapping, with flush and invalidate for mapped ranges
 - Buffer copies and bidirectional buffer-texture copies
 - Global, buffer, and texture barriers
 - Render passes with `load`, `clear`, or `discard` load ops and `store`
 - Buffer, texture-view, and sampler bindings
 - Vertex, pixel, and compute shader modules; graphics and compute pipelines; graphics and compute push constants; viewport, scissor, draw, and dispatch
+- Vertex buffer layouts, vertex and index buffer binding, and indexed draws
+- Device capabilities for mapping and vertex input
 - Timestamp queries
 - Adapter identification
 - Surfaces, swapchains, and presentation status
 
 ### C++-only features and stage rules
 
-- **Not exposed in C ABI:** Shared resources and cross-device ownership transfers (C ABI barriers always use `OwnershipTransfer::none`), variable-count binding arrays, device limits, vertex buffer layouts, indexed draws, stencil state, and optional pipeline stages (geometry, tessellation, mesh, task, ray tracing).
+- **Not exposed in C ABI:** Shared resources and cross-device ownership transfers (C ABI barriers always use `OwnershipTransfer::none`), variable-count binding arrays, device limits other than the vertex-input limits, indirect draws, stencil state, and optional pipeline stages (geometry, tessellation, mesh, task, ray tracing).
 - **Stage masks (`visibility` and push constants):** Combine `RACHIS_SHADER_VERTEX`, `RACHIS_SHADER_PIXEL`, and `RACHIS_SHADER_COMPUTE` (or `RACHIS_SHADER_ALL` for all three). `0` or unknown bits return `RACHIS_STATUS_INVALID_ARGUMENT`.
 - **Push constants:**
   - `rachis_command_set_graphics_push_constants` requires graphics stage bits only (including `RACHIS_SHADER_COMPUTE` fails with `RACHIS_STATUS_INVALID_ARGUMENT`) and a bound graphics pipeline inside a render pass.
   - `rachis_command_set_compute_push_constants` requires a bound compute pipeline (otherwise returns `RACHIS_STATUS_INVALID_STATE`).
   - Both require `offset` to be a multiple of `4`, `size` to be a nonzero multiple of `4`, and `offset + size <= 128`.
+
+## Device capabilities
+
+`rachis_device_query_capabilities` fills a `rachis_device_capabilities` (set `struct_size` first). The values do not change during the life of the device and stay readable after device loss.
+
+| Field | Meaning |
+| --- | --- |
+| `unified_memory` | Nonzero when the CPU and GPU share memory, so a host-visible buffer costs no extra copy |
+| `persistent_mapping` | Nonzero when a buffer may stay mapped while the GPU uses it (see [Mapped buffers](#mapped-buffers)) |
+| `mapped_memory_host_coherent` | Nonzero when mapped memory needs no flush or invalidate |
+| `mapped_memory_non_coherent_atom_size` | Granularity, in bytes, at which the device flushes and invalidates non-coherent memory; `1` when coherent |
+| `vertex_formats` | Bit `1 << RACHIS_VERTEX_FORMAT_*` is set for each vertex format the device accepts |
+| `max_vertex_buffers`, `max_vertex_attributes` | Vertex buffer slots and vertex attributes one pipeline may use (at most `RACHIS_MAX_VERTEX_BUFFERS` and `RACHIS_MAX_VERTEX_ATTRIBUTES`) |
+| `max_vertex_buffer_stride`, `max_vertex_attribute_offset` | Largest `stride` and attribute `offset` in a vertex buffer layout |
+| `max_vertex_instance_step_rate` | Largest `instance_step_rate` (`1` on Vulkan) |
+
+## Mapped buffers
+
+`rachis_buffer_map` returns a pointer into the memory of a `RACHIS_MEMORY_UPLOAD` or `RACHIS_MEMORY_READBACK` buffer. A `RACHIS_MEMORY_DEVICE_LOCAL` buffer returns `RACHIS_STATUS_UNSUPPORTED`.
+
+- **Range:** `offset` and `size` select the mapped bytes; `size` may be `RACHIS_WHOLE_SIZE` for everything from `offset` to the end of the buffer. `rachis_mapped_memory.data` points at byte `offset` of the buffer and `size` is the mapped byte count (set `struct_size` first). An empty range or one outside the buffer returns `RACHIS_STATUS_INVALID_ARGUMENT`.
+- **One mapping per buffer:** A buffer has at most one mapping at a time. While it is mapped, `rachis_buffer_map`, `rachis_buffer_write`, `rachis_buffer_read`, and `rachis_buffer_destroy` on it return `RACHIS_STATUS_INVALID_STATE`; call `rachis_buffer_unmap` first. Unmapping a buffer that is not mapped also returns `RACHIS_STATUS_INVALID_STATE`.
+- **Pointer lifetime:** The pointer stays valid until `rachis_buffer_unmap` on that buffer or `rachis_device_destroy`. It does not depend on any device lock: any thread may read and write through it while other threads call into the device, and it may be kept across frames.
+- **Mapped while the GPU uses the buffer:** When `persistent_mapping` is nonzero, a buffer may stay mapped while command buffers that use it are recorded, submitted, and executed. Direct3D 12 and Metal always report it, and so does every Vulkan driver that follows the specification. When it is zero, unmap the buffer before submitting work that uses it.
+- **Synchronization is yours:** RachisRHI does not order your accesses against the GPU or against your other threads. Do not write bytes that a submitted command buffer still reads, and read bytes the GPU writes only after that submission's timeline has completed.
+
+```c
+rachis_mapped_memory mapped = {0};
+mapped.struct_size = sizeof(mapped);
+if (rachis_buffer_map(device, upload, 0, RACHIS_WHOLE_SIZE, &mapped, &error) == RACHIS_STATUS_OK)
+{
+    memcpy(mapped.data, vertices, sizeof(vertices));
+    const rachis_mapped_range written = {0, sizeof(vertices)};
+    rachis_buffer_flush_mapped_ranges(device, upload, &written, 1, &error);
+}
+```
+
+### Flush and invalidate
+
+Whether a write through the pointer reaches the GPU by itself depends on `mapped_memory_host_coherent`:
+
+- **Nonzero** (always on Direct3D 12 and Metal, and on most Vulkan devices): writes are visible to the GPU and GPU writes are visible through the pointer with no further call. `rachis_buffer_flush_mapped_ranges` and `rachis_buffer_invalidate_mapped_ranges` check their arguments and do nothing else, so portable code can call them unconditionally.
+- **Zero** (some Vulkan devices): after writing to an upload buffer, call `rachis_buffer_flush_mapped_ranges` on the written bytes before submitting work that reads them. Before reading a readback buffer through the pointer, call `rachis_buffer_invalidate_mapped_ranges` on the bytes the GPU wrote. `rachis_buffer_unmap` flushes the whole mapping of an upload buffer.
+
+Each `rachis_mapped_range` is an `offset` from the start of the buffer (not of the mapping) and a `size`, which may be `RACHIS_WHOLE_SIZE`. Every range must lie inside the mapped range; it need not be a multiple of `mapped_memory_non_coherent_atom_size`, because RachisRHI widens it. Failures:
+
+| Status | Cause |
+| --- | --- |
+| `RACHIS_STATUS_INVALID_ARGUMENT` | No ranges, or a range that is empty, outside the buffer, or outside the mapped range |
+| `RACHIS_STATUS_UNSUPPORTED` | Flush on a buffer that is not `RACHIS_MEMORY_UPLOAD`, or invalidate on one that is not `RACHIS_MEMORY_READBACK` |
+| `RACHIS_STATUS_INVALID_STATE` | The buffer is not mapped |
+
+## Vertex buffers and indexed draws
+
+- **Shader inputs:** A vertex shader module lists every input location it reads in `vertex_input_locations` (each one unique and below `RACHIS_MAX_VERTEX_ATTRIBUTES`). Other stages leave the list empty. [Shaders](using.md#shaders) explains how shader inputs get their locations on each backend.
+- **Layouts:** `vertex_buffers` in `rachis_graphics_pipeline_desc` holds one `rachis_vertex_buffer_layout` per vertex buffer slot, in slot order. Each layout gives the `stride`, the `step_mode`, and its attributes (`format`, byte `offset`, and `shader_location`). The locations of all attributes together must be exactly the locations the vertex shader declares. Offsets and strides follow the alignment rules in [Vertex input](using.md#vertex-input).
+- **Step rate:** `instance_step_rate` `0` means `1`. `RACHIS_VERTEX_STEP_VERTEX` accepts only that. `RACHIS_VERTEX_STEP_INSTANCE` advances once every `instance_step_rate` instances, up to `max_vertex_instance_step_rate`.
+- **Binding:** `rachis_command_bind_vertex_buffers` binds `binding_count` buffers created with `RACHIS_BUFFER_VERTEX` to consecutive slots from `first_slot`; if any binding is rejected, none of them changes. `rachis_command_bind_index_buffer` binds a `RACHIS_BUFFER_INDEX` buffer as `RACHIS_INDEX_FORMAT_UINT16` or `RACHIS_INDEX_FORMAT_UINT32`.
+- **Drawing:** `rachis_command_draw_indexed` reads `index_count` indices starting at index `first_index` of the bound index buffer and adds `base_vertex` to each.
+- **Indexed strips:** For a line or triangle strip drawn with an index buffer, set `strip_index_format` to the format of that index buffer. This turns on primitive restart at index `0xFFFF` or `0xFFFFFFFF`, and Metal requires it for indexed strip draws. Leave it `RACHIS_STRIP_INDEX_NONE` for list topologies, where any other value returns `RACHIS_STATUS_INVALID_ARGUMENT`.
 
 ## Adapters
 
@@ -164,7 +230,8 @@ Calls on a single `rachis_device*` are thread-safe, provided nothing else calls 
 
 - **Synchronization groups:**
   - *Exclusive operations* serialize with each other and wait for active concurrent operations: object create/destroy, lease acquire/release, timeline release, command acquire/discard/submit, swapchain acquire/cancel/resize, and pre/post-present bookkeeping.
-  - *Concurrent operations* run concurrently with each other (subject to backend locks below): command recording on distinct command handles, `rachis_buffer_write`, `rachis_buffer_read`, and queries.
+  - *Concurrent operations* run concurrently with each other (subject to backend locks below): command recording on distinct command handles, `rachis_buffer_write`, `rachis_buffer_read`, `rachis_buffer_map`, `rachis_buffer_unmap`, flushing and invalidating mapped ranges, and queries.
+  - *No call at all:* reading and writing through a pointer from `rachis_buffer_map` takes no lock and never waits for another thread's call (see [Mapped buffers](#mapped-buffers)).
   - *Fairness:* Waiters proceed in arrival order, and adjacent concurrent calls execute together—continuous recording/copying cannot starve exclusive calls, nor vice versa.
 - **Per-command-handle restriction:** Only one thread may record into a given command handle at a time; concurrent recording on the same handle returns `RACHIS_STATUS_INVALID_STATE`.
 - **Non-blocking waits and swapchain serialization:** `rachis_timeline_wait` does not block other calls. Presents serialize per swapchain (and on Vulkan block work targeting the presenting queue during the driver present call). On D3D12 and Vulkan, present may wait for the display; on Metal it does not. `rachis_swapchain_acquire`, `resize`, and `destroy` can block on the GPU or window system while holding device locks.
@@ -178,4 +245,6 @@ Calls on a single `rachis_device*` are thread-safe, provided nothing else calls 
 
 - Query `rachis_device_operational_state` to check whether a device is active or lost, and `rachis_device_loss_error` to read the stored cause (check `error.code`, since the function's return status only indicates whether querying succeeded). The first loss is also sent to `diagnostic_callback`.
 - Once lost, all create, record, submit, acquire, and present calls—plus `rachis_buffer_write` and `rachis_buffer_read` (even with stale handles or out-of-bounds ranges)—return `RACHIS_STATUS_DEVICE_LOST`.
+- `rachis_buffer_map`, `rachis_buffer_flush_mapped_ranges`, and `rachis_buffer_invalidate_mapped_ranges` also return `RACHIS_STATUS_DEVICE_LOST`.
+- A pointer mapped before the loss stays valid memory until `rachis_buffer_unmap`: reading and writing through it does not fault, but the bytes read are undefined and writes reach no GPU. `rachis_buffer_unmap` still succeeds, and a mapped buffer still needs it before `rachis_buffer_destroy`.
 - Diagnostics, `destroy`, and `release` calls continue working (including `rachis_swapchain_destroy` while an image is still acquired). Create a new device to recover.

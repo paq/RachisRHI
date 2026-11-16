@@ -1,4 +1,4 @@
-RACHIS_ABI_VERSION=1
+RACHIS_ABI_VERSION=2
 rachis_abi_version
 rachis_binding_layout_create
 rachis_binding_layout_destroy
@@ -8,7 +8,11 @@ rachis_binding_set_create
 rachis_binding_set_destroy
 rachis_buffer_create
 rachis_buffer_destroy
+rachis_buffer_flush_mapped_ranges
+rachis_buffer_invalidate_mapped_ranges
+rachis_buffer_map
 rachis_buffer_read
+rachis_buffer_unmap
 rachis_buffer_write
 rachis_command_acquire
 rachis_command_barriers
@@ -17,12 +21,15 @@ rachis_command_bind_compute_pipeline
 rachis_command_bind_compute_set
 rachis_command_bind_graphics_pipeline
 rachis_command_bind_graphics_set
+rachis_command_bind_index_buffer
+rachis_command_bind_vertex_buffers
 rachis_command_copy_buffer
 rachis_command_copy_buffer_to_texture
 rachis_command_copy_texture_to_buffer
 rachis_command_discard
 rachis_command_dispatch
 rachis_command_draw
+rachis_command_draw_indexed
 rachis_command_end_rendering
 rachis_command_pool_create
 rachis_command_pool_destroy
@@ -42,6 +49,7 @@ rachis_device_destroy
 rachis_device_diagnostic_counts
 rachis_device_loss_error
 rachis_device_operational_state
+rachis_device_query_capabilities
 rachis_graphics_pipeline_create
 rachis_pipeline_destroy
 rachis_pipeline_layout_create

@@ -63,6 +63,52 @@ namespace rachis::metal
             return offset < resourceSize && size != 0 && size <= resourceSize - offset;
         }
 
+        [[nodiscard]] rachis::Status validateMetalMappedRanges(const MetalBufferRecord* record,
+                                                               std::span<const rachis::MappedMemoryRange> ranges,
+                                                               rachis::MemoryType requiredMemoryType,
+                                                               std::string_view operation)
+        {
+            const auto failure = [&](rachis::ErrorCode code, std::string_view reason) {
+                return std::unexpected(metalSelectionError(
+                    code, std::string("Metal mapped-memory ") + std::string(operation) + std::string(reason)));
+            };
+            if (ranges.empty())
+            {
+                return failure(rachis::ErrorCode::invalidArgument, " requires at least one range.");
+            }
+            if (record == nullptr)
+            {
+                return failure(rachis::ErrorCode::invalidArgument, " received a stale or foreign buffer handle.");
+            }
+            if (record->desc.memoryType != requiredMemoryType)
+            {
+                return failure(rachis::ErrorCode::unsupported,
+                               requiredMemoryType == rachis::MemoryType::upload ? " requires an upload buffer."
+                                                                                : " requires a readback buffer.");
+            }
+            if (!record->mapped)
+            {
+                return failure(rachis::ErrorCode::invalidState, " requires an active mapping.");
+            }
+            const auto mappedEnd = record->mapOffset + record->mapSize;
+            for (const auto& range : ranges)
+            {
+                if (range.offset >= record->desc.size || range.size == 0 ||
+                    (range.size != rachis::wholeResource && range.size > record->desc.size - range.offset))
+                {
+                    return failure(rachis::ErrorCode::invalidArgument, " range is empty or out of bounds.");
+                }
+                const auto resolvedSize =
+                    range.size == rachis::wholeResource ? record->desc.size - range.offset : range.size;
+                if (range.offset < record->mapOffset || range.offset + resolvedSize > mappedEnd)
+                {
+                    return failure(rachis::ErrorCode::invalidArgument,
+                                   " range is not contained in the active mapping.");
+                }
+            }
+            return {};
+        }
+
         [[nodiscard]] constexpr bool validMetalTextureUsage(rachis::TextureUsage usage) noexcept
         {
             constexpr auto allowed = static_cast<std::uint32_t>(rachis::TextureUsage::copySource) |
@@ -1515,6 +1561,11 @@ namespace rachis::metal
             return std::unexpected(
                 metalSelectionError(ErrorCode::invalidArgument, "The buffer handle is not a live Metal allocation."));
         }
+        if (record->mapped)
+        {
+            return std::unexpected(metalSelectionError(ErrorCode::invalidState,
+                                                       "A mapped Metal buffer must be unmapped before destruction."));
+        }
         if (record->owner != nullptr && record->owner->placement == nullptr && record->owner->telemetry != nullptr)
         {
             record->owner->telemetry->logicalAlive = false;
@@ -1609,14 +1660,7 @@ namespace rachis::metal
             return std::unexpected(metalSelectionError(ErrorCode::invalidState,
                                                        "Metal flushMappedMemoryRanges requires an active device."));
         }
-        auto* record = native_->buffers.find(buffer);
-        if (record == nullptr || !record->mapped)
-        {
-            return std::unexpected(
-                metalSelectionError(ErrorCode::invalidState, "Flush requires a mapped Metal buffer."));
-        }
-        static_cast<void>(ranges);
-        return {};
+        return validateMetalMappedRanges(native_->buffers.find(buffer), ranges, MemoryType::upload, "flush");
     }
 
     Status MetalDevice::invalidateMappedMemoryRanges(BufferHandle buffer, std::span<const MappedMemoryRange> ranges)
@@ -1627,14 +1671,7 @@ namespace rachis::metal
             return std::unexpected(metalSelectionError(
                 ErrorCode::invalidState, "Metal invalidateMappedMemoryRanges requires an active device."));
         }
-        auto* record = native_->buffers.find(buffer);
-        if (record == nullptr || !record->mapped)
-        {
-            return std::unexpected(
-                metalSelectionError(ErrorCode::invalidState, "Invalidate requires a mapped Metal buffer."));
-        }
-        static_cast<void>(ranges);
-        return {};
+        return validateMetalMappedRanges(native_->buffers.find(buffer), ranges, MemoryType::readback, "invalidation");
     }
 
     Status MetalDevice::writeBuffer(BufferHandle buffer, std::uint64_t offset, std::span<const std::byte> data)

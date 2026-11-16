@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+- The C ABI is at `RACHIS_ABI_VERSION` 2, and the shared library is
+  `librachis.so.2` and `librachis.2.dylib`. Modules built against version 1
+  must be rebuilt. [C ABI](docs/c-abi.md) describes what version 2 adds:
+  - `rachis_buffer_map` and `rachis_buffer_unmap`, with
+    `rachis_buffer_flush_mapped_ranges` and
+    `rachis_buffer_invalidate_mapped_ranges` for memory that is not host
+    coherent. A mapped pointer needs no device lock and stays valid until the
+    buffer is unmapped, also after device loss.
+  - Vertex buffer layouts and `strip_index_format` in
+    `rachis_graphics_pipeline_desc`, and `vertex_input_locations` in
+    `rachis_shader_module_desc`.
+  - `rachis_command_bind_vertex_buffers`, `rachis_command_bind_index_buffer`,
+    and `rachis_command_draw_indexed`.
+  - `rachis_device_query_capabilities`, which reports unified memory,
+    persistent mapping, mapped-memory coherence, and the vertex-input limits.
+- On Metal, `destroyBuffer` fails with `ErrorCode::invalidState` while the
+  buffer is mapped, and `flushMappedMemoryRanges` and
+  `invalidateMappedMemoryRanges` check the buffer's memory type and that every
+  range lies inside the mapping, as Direct3D 12 and Vulkan already do.
+
 ## 0.1.0
 
 First release.
