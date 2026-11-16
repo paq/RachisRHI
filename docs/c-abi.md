@@ -23,6 +23,8 @@ The C ABI lives in the `rachis` shared library (`Rachis::C` in CMake) and export
 
 Call `rachis_abi_version()` before creating a device and abort unless it equals the `RACHIS_ABI_VERSION` your module compiled against (currently `1`). ABI versions are not backwards-compatible.
 
+Releases that share a `RACHIS_ABI_VERSION` ship the same `rachis.h` apart from whitespace, so a module built against one of them can load the `rachis` library from any other. Any other change to the header raises the version. CI compares `rachis.h` with the newest release tag using [`cmake/CheckCAbiFreeze.cmake`](../cmake/CheckCAbiFreeze.cmake); run `cmake -P cmake/CheckCAbiFreeze.cmake` from the source root to check locally.
+
 ## Creating a device
 
 ```c

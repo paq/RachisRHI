@@ -1949,6 +1949,33 @@ if(rachis_build_tests)
         PASS_REGULAR_EXPRESSION
             "Unexpected exports: fixture_leaked_function rachis_fixture_leaked_constant( rachis_fixture_leaked_weak)?\r?\n +Missing exports: none")
 
+    set(rachis_c_abi_freeze_fixtures "${CMAKE_CURRENT_SOURCE_DIR}/tests/c_abi/freeze")
+    foreach(rachis_freeze_case IN ITEMS Reformatted:Accepts Bumped:Accepts
+            Changed:Rejects JoinedDirective:Rejects Lowered:Rejects)
+        string(REPLACE ":" ";" rachis_freeze_case "${rachis_freeze_case}")
+        list(GET rachis_freeze_case 0 rachis_freeze_fixture)
+        list(GET rachis_freeze_case 1 rachis_freeze_outcome)
+        set(rachis_freeze_test RachisCAbiFreeze${rachis_freeze_outcome}${rachis_freeze_fixture})
+        add_test(NAME ${rachis_freeze_test}
+            COMMAND "${CMAKE_COMMAND}"
+                "-DHEADER=${rachis_c_abi_freeze_fixtures}/${rachis_freeze_fixture}.txt"
+                "-DBASELINE_HEADER=${rachis_c_abi_freeze_fixtures}/Baseline.txt"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckCAbiFreeze.cmake")
+        set_tests_properties(${rachis_freeze_test} PROPERTIES LABELS "size:small" TIMEOUT 30)
+        if(rachis_freeze_fixture STREQUAL "Lowered")
+            set_tests_properties(${rachis_freeze_test} PROPERTIES
+                PASS_REGULAR_EXPRESSION "RACHIS_ABI_VERSION went down from 2 in Baseline.txt to 1")
+        elseif(rachis_freeze_outcome STREQUAL "Rejects")
+            set_tests_properties(${rachis_freeze_test} PROPERTIES
+                PASS_REGULAR_EXPRESSION "rachis.h changed since Baseline.txt but RACHIS_ABI_VERSION is still 2")
+        endif()
+    endforeach()
+    unset(rachis_c_abi_freeze_fixtures)
+    unset(rachis_freeze_case)
+    unset(rachis_freeze_fixture)
+    unset(rachis_freeze_outcome)
+    unset(rachis_freeze_test)
+
     add_test(NAME RachisDeviceCreationGuards
         COMMAND "${CMAKE_COMMAND}" "-DTEST_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/tests"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/support/CheckDeviceCreationGuards.cmake")
