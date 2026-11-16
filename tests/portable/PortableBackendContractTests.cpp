@@ -3346,50 +3346,46 @@ TEST_CASE("Portable binding-set updates reuse an idle set's pool capacity and ne
 }
 #endif
 
-TEST_CASE("Portable variable-count binding arrays reach the published limit of their descriptor class",
-          RACHIS_PORTABLE_CONTRACT_TAGS)
+namespace
 {
-    const auto& spec = GENERATE_REF(from_range(enabledBackends()));
-    CAPTURE(spec.name);
+    void checkVariableCountArrayReachesLimit(const PortableBackendSpec& spec, rachis::BindingType type)
+    {
+        CAPTURE(spec.name);
 
-    auto maybeDevice = createPortableDeviceOrSkip(spec);
-    if (!maybeDevice)
-    {
-        return;
-    }
-    auto& device = *maybeDevice;
-    const auto capabilities = device.capabilities();
-    REQUIRE(capabilities.has_value());
-    REQUIRE(capabilities->partiallyBoundBindingArrays);
-    REQUIRE(capabilities->variableDescriptorCountBindingArrays);
-    const auto& limits = capabilities->limits;
-    REQUIRE(limits.maxVariableBufferDescriptors > 0);
-    REQUIRE(limits.maxVariableResourceDescriptors > 0);
+        auto maybeDevice = createPortableDeviceOrSkip(spec);
+        if (!maybeDevice)
+        {
+            return;
+        }
+        auto& device = *maybeDevice;
+        const auto capabilities = device.capabilities();
+        REQUIRE(capabilities.has_value());
+        REQUIRE(capabilities->partiallyBoundBindingArrays);
+        REQUIRE(capabilities->variableDescriptorCountBindingArrays);
+        const auto& limits = capabilities->limits;
+        REQUIRE(limits.maxVariableBufferDescriptors > 0);
+        REQUIRE(limits.maxVariableResourceDescriptors > 0);
 
-    struct VariableArrayCase final
-    {
-        rachis::BindingType type = rachis::BindingType::uniformBuffer;
-        std::uint32_t limit = 0;
-    };
-    std::vector<VariableArrayCase> cases{
-        {rachis::BindingType::uniformBuffer, limits.maxVariableBufferDescriptors},
-        {rachis::BindingType::readOnlyStorageBuffer, limits.maxVariableBufferDescriptors},
-        {rachis::BindingType::storageBuffer, limits.maxVariableBufferDescriptors},
-        {rachis::BindingType::sampledTexture, limits.maxVariableResourceDescriptors},
-        {rachis::BindingType::storageTexture, limits.maxVariableResourceDescriptors},
-    };
-    if (limits.maxVariableSamplerDescriptors > 0)
-    {
-        cases.push_back({rachis::BindingType::sampler, limits.maxVariableSamplerDescriptors});
-    }
+        auto limit = limits.maxVariableResourceDescriptors;
+        if (type == rachis::BindingType::uniformBuffer || type == rachis::BindingType::readOnlyStorageBuffer ||
+            type == rachis::BindingType::storageBuffer)
+        {
+            limit = limits.maxVariableBufferDescriptors;
+        }
+        else if (type == rachis::BindingType::sampler)
+        {
+            limit = limits.maxVariableSamplerDescriptors;
+            if (limit == 0)
+            {
+                return;
+            }
+        }
 
-    for (const auto& variableCase : cases)
-    {
-        INFO("type=" << static_cast<int>(variableCase.type) << " limit=" << variableCase.limit);
+        INFO("type=" << static_cast<int>(type) << " limit=" << limit);
         const std::array entries{
             rachis::BindingLayoutEntry{
                 .binding = 0,
-                .type = variableCase.type,
+                .type = type,
                 .visibility = rachis::ShaderStage::compute,
                 .count = rachis::unboundedBindingCount,
                 .flags = rachis::BindingFlag::partiallyBound | rachis::BindingFlag::variableDescriptorCount,
@@ -3398,14 +3394,14 @@ TEST_CASE("Portable variable-count binding arrays reach the published limit of t
         auto layout = device.createBindingLayout({.entries = entries, .label = "Portable variable-count layout"});
         REQUIRE(layout.has_value());
         const std::array sizes{
-            rachis::BindingPoolSize{.type = variableCase.type, .descriptorCount = variableCase.limit},
+            rachis::BindingPoolSize{.type = type, .descriptorCount = limit},
         };
         auto pool =
             device.createBindingPool({.maxBindingSets = 1, .sizes = sizes, .label = "Portable variable-count pool"});
         REQUIRE(pool.has_value());
         auto atLimit = device.createBindingSet({
             .layout = *layout,
-            .variableDescriptorCount = variableCase.limit,
+            .variableDescriptorCount = limit,
             .label = "Portable variable-count set at the limit",
             .pool = *pool,
         });
@@ -3416,8 +3412,50 @@ TEST_CASE("Portable variable-count binding arrays reach the published limit of t
         }
         REQUIRE(device.destroyBindingPool(*pool).has_value());
         REQUIRE(device.destroyBindingLayout(*layout).has_value());
+        checkNoDiagnosticsErrors(device);
     }
-    checkNoDiagnosticsErrors(device);
+} // namespace
+
+TEST_CASE("Portable variable-count uniform buffer arrays reach the published buffer descriptor limit",
+          RACHIS_PORTABLE_CONTRACT_TAGS)
+{
+    const auto& spec = GENERATE_REF(from_range(enabledBackends()));
+    checkVariableCountArrayReachesLimit(spec, rachis::BindingType::uniformBuffer);
+}
+
+TEST_CASE("Portable variable-count read-only storage buffer arrays reach the published buffer descriptor limit",
+          RACHIS_PORTABLE_CONTRACT_TAGS)
+{
+    const auto& spec = GENERATE_REF(from_range(enabledBackends()));
+    checkVariableCountArrayReachesLimit(spec, rachis::BindingType::readOnlyStorageBuffer);
+}
+
+TEST_CASE("Portable variable-count storage buffer arrays reach the published buffer descriptor limit",
+          RACHIS_PORTABLE_CONTRACT_TAGS)
+{
+    const auto& spec = GENERATE_REF(from_range(enabledBackends()));
+    checkVariableCountArrayReachesLimit(spec, rachis::BindingType::storageBuffer);
+}
+
+TEST_CASE("Portable variable-count sampled texture arrays reach the published resource descriptor limit",
+          RACHIS_PORTABLE_CONTRACT_TAGS)
+{
+    const auto& spec = GENERATE_REF(from_range(enabledBackends()));
+    checkVariableCountArrayReachesLimit(spec, rachis::BindingType::sampledTexture);
+}
+
+TEST_CASE("Portable variable-count storage texture arrays reach the published resource descriptor limit",
+          RACHIS_PORTABLE_CONTRACT_TAGS)
+{
+    const auto& spec = GENERATE_REF(from_range(enabledBackends()));
+    checkVariableCountArrayReachesLimit(spec, rachis::BindingType::storageTexture);
+}
+
+TEST_CASE("Portable variable-count sampler arrays reach the published sampler descriptor limit",
+          RACHIS_PORTABLE_CONTRACT_TAGS)
+{
+    const auto& spec = GENERATE_REF(from_range(enabledBackends()));
+    checkVariableCountArrayReachesLimit(spec, rachis::BindingType::sampler);
 }
 
 TEST_CASE("Portable compute reads StructuredBuffer and ByteAddressBuffer through one read-only interface and layout",
