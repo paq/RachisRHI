@@ -721,7 +721,7 @@ namespace rachis::d3d12
         {
             return scratch.desc.usage == BufferUsage::accelerationStructureScratch &&
                    offset % D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT == 0 &&
-                   validRange(scratch.desc.size, offset, size);
+                   (size == 0 ? offset < scratch.desc.size : validRange(scratch.desc.size, offset, size));
         }
 
         struct BuildTarget final
