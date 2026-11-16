@@ -1,0 +1,35 @@
+#ifndef RACHIS_FIXTURE_H
+#define RACHIS_FIXTURE_H
+
+#include <stdint.h>
+
+#define RACHIS_ABI_VERSION 2U
+#define RACHIS_FIXTURE_CAPACITY 16U
+#define RACHIS_FIXTURE_FLAGS 3U
+
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
+    enum
+    {
+        RACHIS_FIXTURE_STATUS_OK = 0,
+        RACHIS_FIXTURE_STATUS_FAILED = 2
+    };
+
+    typedef struct rachis_fixture_desc
+    {
+        uint32_t struct_size;
+        uint32_t abi_version;
+        const char* label;
+        uint64_t values[RACHIS_FIXTURE_CAPACITY];
+    } rachis_fixture_desc;
+
+    RACHIS_API int32_t rachis_fixture_create(const rachis_fixture_desc* desc, uint64_t* out_handle);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

@@ -135,8 +135,9 @@ ctest --test-dir out/build/macos-arm64-metal -C Debug -R "RachisRHI.Metal textur
 ### C ABI tests
 
 - `RachisCAbiManifest` checks agreement between `include/Rachis/rachis.h`, `src/C/rachis_abi_exports.txt`, and exported library symbols (`nm` on Linux/macOS, `dumpbin`/`llvm-readobj` on Windows). `RachisCAbiManifestFindsLeaks` verifies the check catches non-`rachis_` functions, `rachis_` constants, and weak `rachis_` symbols in `c_abi/exportleak/`.
+- `RachisCAbiFreeze*` run [`cmake/CheckCAbiFreeze.cmake`](../cmake/CheckCAbiFreeze.cmake) on the fixtures in `c_abi/freeze/`: whitespace-only changes and a raised `RACHIS_ABI_VERSION` pass, while a changed declaration, a joined preprocessor line, or a lowered version fail. Comparing the real `rachis.h` with the last release tag needs the git history, so the *C ABI freeze* CI job runs that instead of a test.
 - Size classification across `RachisCAbi*`:
-  - `size:small`: `RachisCAbiManifest`, `RachisCAbiLibraryVersion`, and device-free cases of `RachisCAbiTests` and `RachisCAbiFaultInjectionTests`.
+  - `size:small`: `RachisCAbiManifest`, `RachisCAbiFreeze*`, `RachisCAbiLibraryVersion`, and device-free cases of `RachisCAbiTests` and `RachisCAbiFaultInjectionTests`.
   - `size:medium`: `RachisCAbiExports` (Linux/macOS) and Windows presentation cases.
   - `size:large`: presentation fault cases and `RachisCAbiVulkanFaultInjectionTests`.
   - Remaining device cases are `size:medium` when D3D12 is enabled and `size:large` otherwise.

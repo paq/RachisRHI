@@ -226,6 +226,23 @@ jobs:
           java -version
           bash tools/tlc.sh
 
+  # A release fixes rachis.h for its RACHIS_ABI_VERSION. The check compares the header
+  # with the newest v* tag reachable from the commit, so it needs the history and tags.
+  c-abi:
+    name: C ABI freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Compare rachis.h with the last release
+        run: |
+          cmake --version
+          cmake -DREQUIRE_BASELINE=ON -P cmake/CheckCAbiFreeze.cmake
+
   format:
     name: clang-format
     runs-on: ubuntu-24.04
