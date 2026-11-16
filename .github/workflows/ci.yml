@@ -1,0 +1,248 @@
+# Uses no actions outside GitHub's own `actions/` organization. Tools that the runner
+# images do not pin are installed by the scripts in .github/scripts, and each download
+# is checked against a pinned SHA-256.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # GitHub-hosted runners have no GPU. Each job runs the tiers that docs/building.md
+  # and tests/README.md list for a GPU-less host:
+  # - Windows: D3D12 on WARP runs small and medium tests without `requires:` labels.
+  #   Vulkan has no software device on Windows, so the D3D12 + Vulkan build runs only
+  #   small tests.
+  # - Linux: Vulkan device tests skip when no hardware driver is present.
+  # - macOS: the runner's virtual GPU fails the Metal 4 profile, so the one medium
+  #   Metal device test, tagged `hardware`, is left out.
+  # The release-package entries build and install each product preset in Release.
+  windows:
+    name: Windows ${{ matrix.name }}
+    runs-on: windows-2025
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: D3D12 on WARP
+            configure: windows-x64-d3d12
+            build: windows-x64-d3d12-debug
+            test: '--preset windows-x64-d3d12-small-medium -LE requires:'
+            debug-layer: true
+          - name: D3D12 and Vulkan
+            configure: windows-x64-both
+            build: windows-x64-both-debug
+            test: '--test-dir out/build/windows-x64-both -C Debug -L size:small --no-tests=error'
+          - name: release package
+            configure: windows-x64-both-product
+            build: windows-x64-both-product-release
+            package: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the Direct3D 12 debug layer
+        if: matrix.debug-layer
+        shell: pwsh
+        run: |
+          $name = 'Tools.Graphics.DirectX~~~~0.0.1.0'
+          if ((Get-WindowsCapability -Online -Name $name).State -ne 'Installed') {
+            Add-WindowsCapability -Online -Name $name | Out-Null
+          }
+          if (-not (Test-Path "$env:SystemRoot\System32\d3d12SDKLayers.dll")) {
+            throw 'Graphics Tools did not install d3d12SDKLayers.dll.'
+          }
+
+      - name: Install CMake, Ninja, and the Vulkan SDK
+        shell: pwsh
+        run: ./.github/scripts/install-windows-tools.ps1
+
+      - name: Enter the Visual Studio x64 developer environment
+        shell: pwsh
+        run: ./.github/scripts/enter-vs-dev-env.ps1
+
+      - name: Show DXGI adapters
+        shell: pwsh
+        run: ./.github/scripts/show-dxgi-adapters.ps1
+
+      - name: Show tools
+        shell: pwsh
+        run: |
+          cmake --version
+          ninja --version
+          cl 2>&1 | Select-Object -First 1
+          & $env:RACHIS_WINDOWS_SDK_DXC --version
+          slangc -v
+
+      - name: Configure
+        run: cmake --preset ${{ matrix.configure }} "-DRACHIS_DXC_EXECUTABLE=$env:RACHIS_WINDOWS_SDK_DXC"
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.build }}
+
+      - name: Test
+        if: matrix.test
+        run: ctest ${{ matrix.test }} --output-on-failure -j $env:NUMBER_OF_PROCESSORS
+
+      - name: Upload test logs
+        if: failure() && matrix.test
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ctest-logs-${{ matrix.configure }}
+          path: out/build/${{ matrix.configure }}/Testing/Temporary/
+          if-no-files-found: ignore
+
+      - name: Install
+        if: matrix.package
+        run: cmake --install out/build/${{ matrix.configure }} --config Release --prefix out/install/rachis
+
+      - name: Upload package
+        if: matrix.package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rachis-${{ matrix.configure }}
+          path: out/install/rachis/
+          if-no-files-found: error
+          retention-days: 14
+
+  # Linux and macOS build inside the flake's development shell, so CI uses the same
+  # pinned CMake, Ninja, compilers, and shader tools as `nix develop`.
+  unix:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux Vulkan
+            runner: ubuntu-24.04
+            configure: linux-x64-vulkan
+            build: linux-x64-vulkan-debug
+            test: '--preset linux-x64-vulkan-small-medium -LE requires:'
+          - name: Linux release package
+            runner: ubuntu-24.04
+            configure: linux-x64-vulkan-product
+            build: linux-x64-vulkan-product-release
+            package: true
+          - name: macOS Metal
+            runner: macos-26
+            configure: macos-arm64-metal
+            build: macos-arm64-metal-debug
+            test: '--preset macos-arm64-metal-small-medium -LE hardware'
+          - name: macOS release package
+            runner: macos-26
+            configure: macos-arm64-metal-product
+            build: macos-arm64-metal-product-release
+            package: true
+    defaults:
+      run:
+        shell: nix develop --command bash --noprofile --norc -eo pipefail {0}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/install-nix.sh
+
+      - name: Show tools
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            xcodebuild -version
+            xcrun --sdk macosx --show-sdk-version
+          fi
+          cmake --version
+          ninja --version
+          "${CXX:-c++}" --version
+          slangc -v
+
+      - name: Configure
+        run: cmake --preset ${{ matrix.configure }}
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.build }}
+
+      - name: Test
+        if: matrix.test
+        run: ctest ${{ matrix.test }} --output-on-failure -j "$(getconf _NPROCESSORS_ONLN)"
+
+      - name: Upload test logs
+        if: failure() && matrix.test
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ctest-logs-${{ matrix.configure }}
+          path: out/build/${{ matrix.configure }}/Testing/Temporary/
+          if-no-files-found: ignore
+
+      - name: Install
+        if: matrix.package
+        run: cmake --install out/build/${{ matrix.configure }} --config Release --prefix out/install/rachis
+
+      - name: Upload package
+        if: matrix.package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rachis-${{ matrix.configure }}
+          path: out/install/rachis/
+          if-no-files-found: error
+          retention-days: 14
+
+  tla:
+    name: TLA+ models
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # tools/tlc.sh needs tla2tools.jar 1.8.0 or later. TLA+ publishes 1.8.0 as a
+      # rolling prerelease, so this follows its latest build.
+      - name: Download tla2tools.jar
+        run: >-
+          curl --fail --silent --show-error --location --retry 3
+          --output "$RUNNER_TEMP/tla2tools.jar"
+          https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar
+
+      - name: Check every configuration
+        env:
+          TLA2TOOLS: ${{ runner.temp }}/tla2tools.jar
+        run: |
+          java -version
+          bash tools/tlc.sh
+
+  format:
+    name: clang-format
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/install-nix.sh
+
+      # clang-tools comes from the nixpkgs revision in flake.lock.
+      - name: Check formatting
+        run: |
+          nix shell --inputs-from . nixpkgs#clang-tools --command clang-format --version
+          git ls-files -z -- '*.c' '*.cpp' '*.h' '*.hpp' '*.m' '*.mm' |
+            nix shell --inputs-from . nixpkgs#clang-tools --command xargs -0 clang-format --dry-run --Werror

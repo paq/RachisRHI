@@ -26,8 +26,11 @@
 #
 # TLA2TOOLS must name tla2tools.jar (1.8.0 or later); Java comes from JAVA,
 # JAVA_HOME, or `java` on PATH. Each run is limited to TLC_TIMEOUT seconds (1800 by default) with stdin
-# closed, and uses TLC_WORKERS workers (`auto` by default). TLC's state files
-# go to a temporary directory that is removed on exit.
+# closed, and uses TLC_WORKERS workers (`auto` by default). A configuration that
+# expects a violation always runs with one worker: when the model breaks more than
+# one of its invariants, TLC reports the first violation it finds, and with several
+# workers which one that is varies from run to run. TLC's state files go to a
+# temporary directory that is removed on exit.
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -173,10 +176,14 @@ for cfg in "${configs[@]}"; do
       continue
       ;;
   esac
+  run_workers=$workers
+  if [ "$expect" != pass ]; then
+    run_workers=1
+  fi
   log="$work/$name.log"
   status=0
   (cd "$dir" && run_bounded "$limit" "$java" -XX:+UseParallelGC -cp "$jar_native" tlc2.TLC \
-    -workers "$workers" -noGenerateSpecTE -metadir "$(native "$work/states-$name")" \
+    -workers "$run_workers" -noGenerateSpecTE -metadir "$(native "$work/states-$name")" \
     -config "$name.cfg" "$module.tla" </dev/null >"$log.raw" 2>&1) || status=$?
   # Java on Windows ends its lines with CRLF.
   tr -d '\r' <"$log.raw" >"$log"

@@ -1062,7 +1062,16 @@ TEST_CASE("deviceTokenSource is process-global monotonic and Device::submit hand
                 .validation = rachis::ValidationLevel::disabled,
             });
             REQUIRE_FALSE(exhaustedCreate.has_value());
-            CHECK(exhaustedCreate.error().code == ErrorCode::resourceExhausted);
+            if (exhaustedCreate.error().code != ErrorCode::resourceExhausted)
+            {
+                rachis::detail::setDeviceTokenSourceOverrideForTesting(nullptr);
+                const auto unrestrictedCreate = rachis::createDevice(rachis::DeviceDesc{
+                    .validation = rachis::ValidationLevel::disabled,
+                });
+                INFO(exhaustedCreate.error().message);
+                REQUIRE_FALSE(unrestrictedCreate.has_value());
+                CHECK(unrestrictedCreate.error().code == exhaustedCreate.error().code);
+            }
         }
     }
     const auto thirdToken = rachis::detail::deviceTokenSource().acquire();

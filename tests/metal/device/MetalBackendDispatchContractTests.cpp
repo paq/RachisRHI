@@ -46,18 +46,6 @@ TEST_CASE("Metal enumeration is backend-local and never mixed with D3D12 or Vulk
     });
     REQUIRE_FALSE(missing.has_value());
     CHECK(missing.error().code == rachis::ErrorCode::adapterNotFound);
-
-    auto created = rachis::createDevice(rachis::DeviceDesc{
-        .backend = rachis::Backend::metal,
-        .validation = rachis::ValidationLevel::standard,
-        .enableDred = false,
-    });
-    REQUIRE(created.has_value());
-    REQUIRE(created->isValid());
-    REQUIRE(created->adapterInfo().has_value());
-    const auto checkedAdapter = created->adapterInfo();
-    REQUIRE(checkedAdapter.has_value());
-    CHECK(checkedAdapter->backend == rachis::Backend::metal);
 #else
     REQUIRE_FALSE(adapters.has_value());
     CHECK(adapters.error().code == rachis::ErrorCode::backendUnavailable);
@@ -71,3 +59,19 @@ TEST_CASE("Metal enumeration is backend-local and never mixed with D3D12 or Vulk
     CHECK(created.error().code == rachis::ErrorCode::backendUnavailable);
 #endif
 }
+
+#if RACHIS_ENABLE_METAL
+TEST_CASE("Metal devices report a Metal adapter", "[size:large][rhi][metal][selection]")
+{
+    auto created = rachis::createDevice(rachis::DeviceDesc{
+        .backend = rachis::Backend::metal,
+        .validation = rachis::ValidationLevel::standard,
+        .enableDred = false,
+    });
+    REQUIRE(created.has_value());
+    REQUIRE(created->isValid());
+    const auto checkedAdapter = created->adapterInfo();
+    REQUIRE(checkedAdapter.has_value());
+    CHECK(checkedAdapter->backend == rachis::Backend::metal);
+}
+#endif

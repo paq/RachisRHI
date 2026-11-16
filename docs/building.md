@@ -121,6 +121,9 @@ ctest --preset windows-x64-d3d12-small-medium -LE "requires:" --output-on-failur
 # Linux machine without a GPU (excludes Wayland/X11/hardware cases; remaining Vulkan cases skip):
 ctest --preset linux-x64-vulkan-small-medium -LE "requires:" --output-on-failure
 
+# macOS virtual machine whose GPU fails the Metal 4 profile (such as a GitHub-hosted runner):
+ctest --preset macos-arm64-metal-small-medium -LE hardware --output-on-failure
+
 # Large tier tests:
 ctest --test-dir out/build/windows-x64-d3d12 -C Debug -L size:large --output-on-failure
 

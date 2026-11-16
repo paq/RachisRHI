@@ -80,7 +80,7 @@ namespace
 #define RACHIS_GENERATED_SHADER(reflection)                                                                            \
     GeneratedShader                                                                                                    \
     {                                                                                                                  \
-        &reflection::moduleDesc, &reflection::bindingSetCount, &reflection::bindingLayout,                            \
+        &reflection::moduleDesc, &reflection::bindingSetCount, &reflection::bindingLayout,                             \
             &reflection::bindingPoolSizes, &reflection::pushConstantRanges                                             \
     }
 
@@ -541,7 +541,8 @@ namespace
         auto pipeline = device.createComputePipeline({.layout = *pipelineLayout, .computeShader = *module});
         REQUIRE(pipeline.has_value());
 
-        auto resourcePool = device.createBindingPool({.maxBindingSets = 1, .sizes = shader.bindingPoolSizes(backend, 0)});
+        auto resourcePool =
+            device.createBindingPool({.maxBindingSets = 1, .sizes = shader.bindingPoolSizes(backend, 0)});
         auto paramsPool = device.createBindingPool({.maxBindingSets = 1, .sizes = shader.bindingPoolSizes(backend, 1)});
         REQUIRE(resourcePool.has_value());
         REQUIRE(paramsPool.has_value());
