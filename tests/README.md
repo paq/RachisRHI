@@ -90,7 +90,7 @@ ctest --preset windows-x64-d3d12-small-medium -LE "requires:" --output-on-failur
   - `RachisExample.<example>.vulkan` tests follow `skipWithoutCreatedDevice` (without `--force-vulkan`).
 - **Windows Vulkan reference features:** On Windows, Vulkan tests also expect optional features exposed by the reference desktop GPU (geometry/tessellation shaders, conservative rasterization, fragment barycentrics, rasterizer-ordered storage, 16- and 64-bit shader arithmetic). On other hosts, tests skip or omit checks when unsupported.
 - **Windows interactive sessions:** Some untagged medium tests (including D3D12 swapchain contracts and a Vulkan surface contract) create hidden/auxiliary windows—run the medium tier from a **signed-in desktop session**, not a headless Windows service.
-- **GPU-less machines:** On a GPU-less Windows runner, only `windows-x64-d3d12` with `-LE "requires:"` can pass the medium tier (`windows-x64-vulkan` and `windows-x64-both` fail without hardware Vulkan). On a GPU-less Linux runner, `-LE "requires:"` skips window-system and hardware tests and remaining Vulkan tests skip.
+- **GPU-less machines:** On a GPU-less Windows runner, only `windows-x64-d3d12` with `-LE "requires:"` can pass the medium tier (`windows-x64-vulkan` and `windows-x64-both` fail without hardware Vulkan). On a GPU-less Linux runner, `-LE "requires:"` skips window-system and hardware tests and remaining Vulkan tests skip. On a macOS virtual machine whose GPU fails the Metal 4 profile (such as a GitHub-hosted runner), `-LE hardware` leaves out the one medium Metal device test.
 
 ## Running a subset
 

@@ -23,8 +23,8 @@ jobs:
   #   Vulkan has no software device on Windows, so the D3D12 + Vulkan build runs only
   #   small tests.
   # - Linux: Vulkan device tests skip when no hardware driver is present.
-  # - macOS: small and medium tests. The one medium Metal device test needs the
-  #   runner's virtual GPU to report MTLGPUFamilyMetal4.
+  # - macOS: the runner's virtual GPU fails the Metal 4 profile, so the one medium
+  #   Metal device test, tagged `hardware`, is left out.
   # The release-package entries build and install each product preset in Release.
   windows:
     name: Windows ${{ matrix.name }}
@@ -136,7 +136,7 @@ jobs:
             runner: macos-26
             configure: macos-arm64-metal
             build: macos-arm64-metal-debug
-            test: '--preset macos-arm64-metal-small-medium'
+            test: '--preset macos-arm64-metal-small-medium -LE hardware'
           - name: macOS release package
             runner: macos-26
             configure: macos-arm64-metal-product
