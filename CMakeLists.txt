@@ -1695,6 +1695,7 @@ if(rachis_build_tests)
     set(rachis_c_abi_push_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/CAbiComputePush.hlsl")
     set(rachis_c_abi_graphics_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/CAbiGraphicsTriangle.hlsl")
     set(rachis_c_abi_vulkan_graphics_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/CAbiGraphicsTriangleVulkan.hlsl")
+    set(rachis_c_abi_indexed_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/CAbiGraphicsIndexed.hlsl")
     set(rachis_c_abi_shader_outputs)
     if(RACHIS_ENABLE_D3D12)
         rachis_cook_dxc_dxil(
@@ -1729,6 +1730,14 @@ if(rachis_build_tests)
                 COMMENT "Compiling the Rachis C ABI graphics ${stage} shader"
             )
             list(APPEND rachis_c_abi_shader_outputs "${rachis_c_abi_shader_dir}/CAbiGraphicsTriangle.${stage}.dxil")
+            rachis_cook_dxc_dxil(
+                SOURCE "${rachis_c_abi_indexed_source}"
+                ENTRY ${entry}
+                PROFILE ${profile}
+                OUTPUT "${rachis_c_abi_shader_dir}/CAbiGraphicsIndexed.${stage}.dxil"
+                COMMENT "Compiling the Rachis C ABI indexed graphics ${stage} shader"
+            )
+            list(APPEND rachis_c_abi_shader_outputs "${rachis_c_abi_shader_dir}/CAbiGraphicsIndexed.${stage}.dxil")
         endforeach()
     endif()
     if(RACHIS_ENABLE_VULKAN)
@@ -1762,9 +1771,25 @@ if(rachis_build_tests)
             OUTPUT "${rachis_c_abi_shader_dir}/CAbiGraphicsTriangle.pixel.spv"
             COMMENT "Cooking Vulkan SPIR-V CAbiGraphicsTriangle pixel"
         )
+        rachis_cook_dxc_spirv(
+            SOURCE "${rachis_c_abi_indexed_source}"
+            ENTRY vertexMain
+            PROFILE vs_6_0
+            OUTPUT "${rachis_c_abi_shader_dir}/CAbiGraphicsIndexed.vertex.spv"
+            COMMENT "Cooking Vulkan SPIR-V CAbiGraphicsIndexed vertex"
+        )
+        rachis_cook_dxc_spirv(
+            SOURCE "${rachis_c_abi_indexed_source}"
+            ENTRY pixelMain
+            PROFILE ps_6_0
+            OUTPUT "${rachis_c_abi_shader_dir}/CAbiGraphicsIndexed.pixel.spv"
+            COMMENT "Cooking Vulkan SPIR-V CAbiGraphicsIndexed pixel"
+        )
         list(APPEND rachis_c_abi_shader_outputs
             "${rachis_c_abi_shader_dir}/CAbiGraphicsTriangle.vertex.spv"
-            "${rachis_c_abi_shader_dir}/CAbiGraphicsTriangle.pixel.spv")
+            "${rachis_c_abi_shader_dir}/CAbiGraphicsTriangle.pixel.spv"
+            "${rachis_c_abi_shader_dir}/CAbiGraphicsIndexed.vertex.spv"
+            "${rachis_c_abi_shader_dir}/CAbiGraphicsIndexed.pixel.spv")
     endif()
     if(RACHIS_ENABLE_METAL)
         rachis_cook_slang_metallib(
@@ -1793,11 +1818,25 @@ if(rachis_build_tests)
             OUTPUT "${rachis_c_abi_shader_dir}/CAbiGraphicsTriangle.pixel.metallib"
             COMMENT "Cooking Metal PNMS CAbiGraphicsTriangle pixel"
         )
+        rachis_cook_slang_metallib(
+            SOURCE "${rachis_c_abi_indexed_source}"
+            ENTRY vertexMain
+            OUTPUT "${rachis_c_abi_shader_dir}/CAbiGraphicsIndexed.vertex.metallib"
+            COMMENT "Cooking Metal PNMS CAbiGraphicsIndexed vertex"
+        )
+        rachis_cook_slang_metallib(
+            SOURCE "${rachis_c_abi_indexed_source}"
+            ENTRY pixelMain
+            OUTPUT "${rachis_c_abi_shader_dir}/CAbiGraphicsIndexed.pixel.metallib"
+            COMMENT "Cooking Metal PNMS CAbiGraphicsIndexed pixel"
+        )
         list(APPEND rachis_c_abi_shader_outputs
             "${rachis_c_abi_shader_dir}/CAbiComputeWrite.pnms"
             "${rachis_c_abi_shader_dir}/CAbiComputePush.pnms"
             "${rachis_c_abi_shader_dir}/CAbiGraphicsTriangle.vertex.pnms"
-            "${rachis_c_abi_shader_dir}/CAbiGraphicsTriangle.pixel.pnms")
+            "${rachis_c_abi_shader_dir}/CAbiGraphicsTriangle.pixel.pnms"
+            "${rachis_c_abi_shader_dir}/CAbiGraphicsIndexed.vertex.pnms"
+            "${rachis_c_abi_shader_dir}/CAbiGraphicsIndexed.pixel.pnms")
     endif()
     if(rachis_c_abi_shader_outputs)
         add_custom_target(RachisCAbiShaders DEPENDS ${rachis_c_abi_shader_outputs})
@@ -1853,7 +1892,9 @@ if(rachis_build_tests)
             target_compile_definitions(${target} PRIVATE
                 RACHIS_CABI_COMPUTE_PUSH_SHADER_PATH="${rachis_c_abi_shader_dir}/CAbiComputePush.${graphics_extension}"
                 RACHIS_CABI_GRAPHICS_VERTEX_PATH="${rachis_c_abi_shader_dir}/CAbiGraphicsTriangle.vertex.${graphics_extension}"
-                RACHIS_CABI_GRAPHICS_PIXEL_PATH="${rachis_c_abi_shader_dir}/CAbiGraphicsTriangle.pixel.${graphics_extension}")
+                RACHIS_CABI_GRAPHICS_PIXEL_PATH="${rachis_c_abi_shader_dir}/CAbiGraphicsTriangle.pixel.${graphics_extension}"
+                RACHIS_CABI_INDEXED_VERTEX_PATH="${rachis_c_abi_shader_dir}/CAbiGraphicsIndexed.vertex.${graphics_extension}"
+                RACHIS_CABI_INDEXED_PIXEL_PATH="${rachis_c_abi_shader_dir}/CAbiGraphicsIndexed.pixel.${graphics_extension}")
         endif()
         catch_discover_tests(${target} TEST_PREFIX "${target}."
             DISCOVERY_MODE PRE_TEST ADD_TAGS_AS_LABELS PROPERTIES TIMEOUT 60)

@@ -2144,7 +2144,7 @@ TEST_CASE("C ABI retires command handle when rachis_command_submit fails after c
     requireOk(rachis_buffer_destroy(device.get(), upload, &error), error);
 }
 
-TEST_CASE("C ABI host buffer writes and reads report device loss before handle and range errors",
+TEST_CASE("C ABI host buffer writes, reads and mappings report device loss before handle and range errors",
           RACHIS_CABI_DEVICE_SIZE RACHIS_CABI_DEVICE_REQUIRES "[rachis][cabi][loss][fault]")
 {
     auto error = makeError();
@@ -2159,6 +2159,17 @@ TEST_CASE("C ABI host buffer writes and reads report device loss before handle a
     std::array<std::uint8_t, 4> copied{};
     requireOk(rachis_buffer_write(device.get(), upload, 0, bytes.data(), bytes.size(), &error), error);
     requireOk(rachis_buffer_read(device.get(), readback, 0, copied.data(), copied.size(), &error), error);
+    const auto mappedUpload =
+        createBuffer(device.get(), bytes.size(), RACHIS_BUFFER_COPY_SOURCE, RACHIS_MEMORY_UPLOAD, error);
+    const auto mappedReadback =
+        createBuffer(device.get(), bytes.size(), RACHIS_BUFFER_COPY_DESTINATION, RACHIS_MEMORY_READBACK, error);
+    rachis_mapped_memory mapped{};
+    mapped.struct_size = sizeof(mapped);
+    requireOk(rachis_buffer_map(device.get(), mappedUpload, 0, RACHIS_WHOLE_SIZE, &mapped, &error), error);
+    REQUIRE(mapped.data != nullptr);
+    rachis_mapped_memory mappedRead{};
+    mappedRead.struct_size = sizeof(mappedRead);
+    requireOk(rachis_buffer_map(device.get(), mappedReadback, 0, RACHIS_WHOLE_SIZE, &mappedRead, &error), error);
 
 #if RACHIS_CABI_FAULT_BACKEND_METAL
     const auto injected = rachis::metal::injectMetalDeviceLoss();
@@ -2190,6 +2201,50 @@ TEST_CASE("C ABI host buffer writes and reads report device loss before handle a
           RACHIS_STATUS_DEVICE_LOST);
     CHECK(rachis_buffer_read(device.get(), readback, 0, nullptr, copied.size(), &error) ==
           RACHIS_STATUS_INVALID_ARGUMENT);
+
+    rachis_mapped_memory rejected{};
+    rejected.struct_size = sizeof(rejected);
+    error = makeError();
+    CHECK(rachis_buffer_map(device.get(), upload, 0, RACHIS_WHOLE_SIZE, &rejected, &error) ==
+          RACHIS_STATUS_DEVICE_LOST);
+    CHECK(error.code == RACHIS_STATUS_DEVICE_LOST);
+    CHECK(std::string{error.message} == injected.error().message);
+    CHECK(rejected.data == nullptr);
+    CHECK(rachis_buffer_map(device.get(), stale, 0, RACHIS_WHOLE_SIZE, &rejected, &error) == RACHIS_STATUS_DEVICE_LOST);
+    CHECK(rachis_buffer_map(device.get(), upload, bytes.size(), 1, &rejected, &error) == RACHIS_STATUS_DEVICE_LOST);
+    CHECK(rachis_buffer_map(device.get(), upload, 0, RACHIS_WHOLE_SIZE, nullptr, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+
+    const rachis_mapped_range wholeRange{0, RACHIS_WHOLE_SIZE};
+    const rachis_mapped_range outsideRange{bytes.size(), 1};
+    error = makeError();
+    CHECK(rachis_buffer_flush_mapped_ranges(device.get(), mappedUpload, &wholeRange, 1, &error) ==
+          RACHIS_STATUS_DEVICE_LOST);
+    CHECK(error.code == RACHIS_STATUS_DEVICE_LOST);
+    CHECK(std::string{error.message} == injected.error().message);
+    error = makeError();
+    CHECK(rachis_buffer_invalidate_mapped_ranges(device.get(), mappedReadback, &wholeRange, 1, &error) ==
+          RACHIS_STATUS_DEVICE_LOST);
+    CHECK(error.code == RACHIS_STATUS_DEVICE_LOST);
+    CHECK(std::string{error.message} == injected.error().message);
+    CHECK(rachis_buffer_flush_mapped_ranges(device.get(), stale, &wholeRange, 1, &error) == RACHIS_STATUS_DEVICE_LOST);
+    CHECK(rachis_buffer_invalidate_mapped_ranges(device.get(), stale, &wholeRange, 1, &error) ==
+          RACHIS_STATUS_DEVICE_LOST);
+    CHECK(rachis_buffer_flush_mapped_ranges(device.get(), mappedUpload, &outsideRange, 1, &error) ==
+          RACHIS_STATUS_DEVICE_LOST);
+    CHECK(rachis_buffer_invalidate_mapped_ranges(device.get(), mappedReadback, &outsideRange, 1, &error) ==
+          RACHIS_STATUS_DEVICE_LOST);
+    CHECK(rachis_buffer_flush_mapped_ranges(device.get(), mappedUpload, nullptr, 1, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+
+    std::memcpy(mapped.data, bytes.data(), bytes.size());
+    CHECK(std::memcmp(mapped.data, bytes.data(), bytes.size()) == 0);
+    CHECK(rachis_buffer_destroy(device.get(), mappedUpload, &error) == RACHIS_STATUS_INVALID_STATE);
+    requireOk(rachis_buffer_unmap(device.get(), mappedUpload, &error), error);
+    requireOk(rachis_buffer_unmap(device.get(), mappedReadback, &error), error);
+    CHECK(rachis_buffer_unmap(device.get(), stale, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    requireOk(rachis_buffer_destroy(device.get(), mappedUpload, &error), error);
+    requireOk(rachis_buffer_destroy(device.get(), mappedReadback, &error), error);
 }
 #endif
 
@@ -2401,6 +2456,12 @@ TEST_CASE("C ABI destroy and release calls succeed after device loss and retire 
 
     const auto storage = createBuffer(device.get(), 256, RACHIS_BUFFER_STORAGE, RACHIS_MEMORY_DEVICE_LOCAL, error);
     const auto upload = createBuffer(device.get(), 256, RACHIS_BUFFER_COPY_SOURCE, RACHIS_MEMORY_UPLOAD, error);
+    const auto mappedUpload = createBuffer(device.get(), 256, RACHIS_BUFFER_COPY_SOURCE, RACHIS_MEMORY_UPLOAD, error);
+    rachis_mapped_memory mapped{};
+    mapped.struct_size = sizeof(mapped);
+    requireOk(rachis_buffer_map(device.get(), mappedUpload, 64, 128, &mapped, &error), error);
+    REQUIRE(mapped.data != nullptr);
+    REQUIRE(mapped.size == 128);
     const auto texture = createSampledTexture(device.get(), error);
     const auto viewedTexture = createSampledTexture(device.get(), error);
     const auto view = createSampledView(device.get(), viewedTexture, error);
@@ -2534,6 +2595,11 @@ TEST_CASE("C ABI destroy and release calls succeed after device loss and retire 
     released("rachis_command_pool_destroy(graphics)", rachis_command_pool_destroy(device.get(), graphicsPool, &error));
     released("rachis_command_pool_destroy(copy)", rachis_command_pool_destroy(device.get(), copyPool, &error));
     released("rachis_buffer_destroy(upload)", rachis_buffer_destroy(device.get(), upload, &error));
+    std::memset(mapped.data, 0x5A, static_cast<std::size_t>(mapped.size));
+    CHECK(static_cast<const std::uint8_t*>(mapped.data)[mapped.size - 1] == 0x5A);
+    CHECK(rachis_buffer_destroy(device.get(), mappedUpload, &error) == RACHIS_STATUS_INVALID_STATE);
+    released("rachis_buffer_unmap", rachis_buffer_unmap(device.get(), mappedUpload, &error));
+    released("rachis_buffer_destroy(mapped upload)", rachis_buffer_destroy(device.get(), mappedUpload, &error));
     released("rachis_buffer_destroy(storage)", rachis_buffer_destroy(device.get(), storage, &error));
 
     CHECK(rachis_buffer_destroy(device.get(), storage, &error) == RACHIS_STATUS_INVALID_ARGUMENT);

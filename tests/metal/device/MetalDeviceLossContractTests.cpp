@@ -869,4 +869,59 @@ TEST_CASE("Metal destroy and release calls succeed after device loss and retire 
     CHECK(errors.load() == 1);
 }
 
+TEST_CASE("injected Metal device loss rejects mapped-range flushes and still unmaps the buffers",
+          "[size:large][rhi][metal][device-lost][loss]")
+{
+    auto created = rachis::createDevice(metalDesc());
+    REQUIRE(created.has_value());
+    auto device = std::move(*created);
+    auto upload = device.createBuffer({
+        .size = 64,
+        .usage = rachis::BufferUsage::copySource,
+        .memoryType = rachis::MemoryType::upload,
+        .label = "lost-device mapped upload",
+    });
+    REQUIRE(upload);
+    auto readback = device.createBuffer({
+        .size = 64,
+        .usage = rachis::BufferUsage::copyDestination,
+        .memoryType = rachis::MemoryType::readback,
+        .label = "lost-device mapped readback",
+    });
+    REQUIRE(readback);
+    auto mappedUpload = device.mapBuffer(*upload);
+    REQUIRE(mappedUpload);
+    auto mappedReadback = device.mapBuffer(*readback);
+    REQUIRE(mappedReadback);
+    const std::array wholeRange{rachis::MappedMemoryRange{}};
+    REQUIRE(device.flushMappedMemoryRanges(*upload, wholeRange).has_value());
+    REQUIRE(device.invalidateMappedMemoryRanges(*readback, wholeRange).has_value());
+
+    auto injected = rachis::metal::injectMetalDeviceLoss();
+    REQUIRE_FALSE(injected);
+    const auto first = device.deviceLossError();
+    REQUIRE(first.has_value());
+
+    auto flushed = device.flushMappedMemoryRanges(*upload, wholeRange);
+    REQUIRE_FALSE(flushed);
+    CHECK(flushed.error().code == rachis::ErrorCode::deviceLost);
+    CHECK(flushed.error().message == first->message);
+    auto invalidated = device.invalidateMappedMemoryRanges(*readback, wholeRange);
+    REQUIRE_FALSE(invalidated);
+    CHECK(invalidated.error().code == rachis::ErrorCode::deviceLost);
+
+    mappedUpload->data[0] = std::byte{0x5A};
+    mappedUpload->data[mappedUpload->size - 1] = std::byte{0xA5};
+    CHECK(mappedUpload->data[0] == std::byte{0x5A});
+    CHECK(mappedUpload->data[mappedUpload->size - 1] == std::byte{0xA5});
+
+    auto destroyedWhileMapped = device.destroyBuffer(*upload);
+    REQUIRE_FALSE(destroyedWhileMapped);
+    CHECK(destroyedWhileMapped.error().code == rachis::ErrorCode::invalidState);
+    REQUIRE(device.unmapBuffer(*upload).has_value());
+    REQUIRE(device.unmapBuffer(*readback).has_value());
+    REQUIRE(device.destroyBuffer(*upload).has_value());
+    REQUIRE(device.destroyBuffer(*readback).has_value());
+}
+
 #endif

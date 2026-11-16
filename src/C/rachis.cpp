@@ -242,6 +242,45 @@ namespace
     static_assert(bitsOf(RACHIS_PRESENT_MODE_IMMEDIATE_BIT) == 1U << bitsOf(RACHIS_PRESENT_IMMEDIATE));
     static_assert(RACHIS_REMAINING_SUBRESOURCES == rachis::remainingSubresources);
     static_assert(RACHIS_WHOLE_SIZE == rachis::wholeResource);
+    static_assert(bitsOf(RACHIS_INDEX_FORMAT_UINT16) == bitsOf(rachis::IndexFormat::uint16));
+    static_assert(bitsOf(RACHIS_INDEX_FORMAT_UINT32) == bitsOf(rachis::IndexFormat::uint32));
+    static_assert(bitsOf(RACHIS_STRIP_INDEX_UINT16) == bitsOf(rachis::IndexFormat::uint16) + 1U);
+    static_assert(bitsOf(RACHIS_STRIP_INDEX_UINT32) == bitsOf(rachis::IndexFormat::uint32) + 1U);
+    static_assert(bitsOf(RACHIS_VERTEX_STEP_VERTEX) == bitsOf(rachis::VertexStepMode::vertex));
+    static_assert(bitsOf(RACHIS_VERTEX_STEP_INSTANCE) == bitsOf(rachis::VertexStepMode::instance));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_FLOAT32) == bitsOf(rachis::VertexFormat::float32));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_FLOAT32X2) == bitsOf(rachis::VertexFormat::float32x2));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_FLOAT32X3) == bitsOf(rachis::VertexFormat::float32x3));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_FLOAT32X4) == bitsOf(rachis::VertexFormat::float32x4));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_UINT32) == bitsOf(rachis::VertexFormat::uint32));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_UINT32X2) == bitsOf(rachis::VertexFormat::uint32x2));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_UINT32X3) == bitsOf(rachis::VertexFormat::uint32x3));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_UINT32X4) == bitsOf(rachis::VertexFormat::uint32x4));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_SINT32) == bitsOf(rachis::VertexFormat::sint32));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_SINT32X2) == bitsOf(rachis::VertexFormat::sint32x2));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_SINT32X3) == bitsOf(rachis::VertexFormat::sint32x3));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_SINT32X4) == bitsOf(rachis::VertexFormat::sint32x4));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_UINT8X2) == bitsOf(rachis::VertexFormat::uint8x2));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_UINT8X4) == bitsOf(rachis::VertexFormat::uint8x4));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_SINT8X2) == bitsOf(rachis::VertexFormat::sint8x2));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_SINT8X4) == bitsOf(rachis::VertexFormat::sint8x4));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_UNORM8X2) == bitsOf(rachis::VertexFormat::unorm8x2));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_UNORM8X4) == bitsOf(rachis::VertexFormat::unorm8x4));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_SNORM8X2) == bitsOf(rachis::VertexFormat::snorm8x2));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_SNORM8X4) == bitsOf(rachis::VertexFormat::snorm8x4));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_UINT16X2) == bitsOf(rachis::VertexFormat::uint16x2));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_UINT16X4) == bitsOf(rachis::VertexFormat::uint16x4));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_SINT16X2) == bitsOf(rachis::VertexFormat::sint16x2));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_SINT16X4) == bitsOf(rachis::VertexFormat::sint16x4));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_UNORM16X2) == bitsOf(rachis::VertexFormat::unorm16x2));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_UNORM16X4) == bitsOf(rachis::VertexFormat::unorm16x4));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_SNORM16X2) == bitsOf(rachis::VertexFormat::snorm16x2));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_SNORM16X4) == bitsOf(rachis::VertexFormat::snorm16x4));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_FLOAT16X2) == bitsOf(rachis::VertexFormat::float16x2));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_FLOAT16X4) == bitsOf(rachis::VertexFormat::float16x4));
+    static_assert(bitsOf(RACHIS_VERTEX_FORMAT_FLOAT16X4) + 1U == rachis::vertexFormatCount);
+    static_assert(RACHIS_MAX_VERTEX_BUFFERS == rachis::maxVertexBuffers);
+    static_assert(RACHIS_MAX_VERTEX_ATTRIBUTES == rachis::maxVertexAttributes);
 
     constexpr std::uint32_t knownStages =
         RACHIS_STAGE_ALL | RACHIS_STAGE_DRAW | RACHIS_STAGE_VERTEX_INPUT | RACHIS_STAGE_VERTEX_SHADER |
@@ -533,6 +572,13 @@ namespace
     [[nodiscard]] bool validHostBufferRange(std::uint64_t bufferSize, std::uint64_t offset, std::uint64_t size) noexcept
     {
         return offset < bufferSize && size != 0 && size <= bufferSize - offset;
+    }
+
+    [[nodiscard]] bool validMappedBufferRange(std::uint64_t bufferSize,
+                                              std::uint64_t offset,
+                                              std::uint64_t size) noexcept
+    {
+        return size == RACHIS_WHOLE_SIZE ? offset < bufferSize : validHostBufferRange(bufferSize, offset, size);
     }
 
     template<typename Value>
@@ -931,6 +977,46 @@ namespace
                           ? device->native.copyBufferToTexture(*commandBuffer, nativeBuffer, nativeTexture, regions)
                           : device->native.copyTextureToBuffer(*commandBuffer, nativeTexture, nativeBuffer, regions));
     }
+
+    [[nodiscard]] rachis_status synchronizeMappedRanges(rachis_device* device,
+                                                        rachis_handle buffer,
+                                                        const rachis_mapped_range* ranges,
+                                                        std::uint32_t rangeCount,
+                                                        rachis_error* error,
+                                                        bool flush)
+    {
+        if (device == nullptr || ranges == nullptr || rangeCount == 0)
+        {
+            return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "device is null or no mapped ranges were given");
+        }
+        std::vector<rachis::MappedMemoryRange> nativeRanges;
+        nativeRanges.reserve(rangeCount);
+        for (std::uint32_t i = 0; i < rangeCount; ++i)
+        {
+            nativeRanges.push_back({.offset = ranges[i].offset, .size = ranges[i].size});
+        }
+        std::shared_lock const lock(device->mutex);
+        if (const auto lost = rejectLostDevice(*device, error))
+        {
+            return *lost;
+        }
+        const auto* token = findToken(device->tokens, buffer, TokenKind::buffer);
+        if (token == nullptr)
+        {
+            return invalidHandle(error);
+        }
+        for (const auto& range : nativeRanges)
+        {
+            if (!validMappedBufferRange(token->byteSize, range.offset, range.size))
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "a mapped range is empty or outside the buffer");
+            }
+        }
+        const auto nativeBuffer = rachis::BufferHandle{token->native};
+        return result(error,
+                      flush ? device->native.flushMappedMemoryRanges(nativeBuffer, nativeRanges)
+                            : device->native.invalidateMappedMemoryRanges(nativeBuffer, nativeRanges));
+    }
 } // namespace
 
 extern "C"
@@ -1115,6 +1201,40 @@ extern "C"
         });
     }
 
+    rachis_status rachis_device_query_capabilities(rachis_device* device,
+                                                   rachis_device_capabilities* output,
+                                                   rachis_error* error)
+    {
+        return boundary(error, [&]() -> rachis_status {
+            if (device == nullptr || output == nullptr)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "device or capabilities output is null");
+            }
+            if (output->struct_size != sizeof(*output))
+            {
+                return fail(error, RACHIS_STATUS_ABI_MISMATCH, "invalid device capabilities output layout");
+            }
+            std::shared_lock const lock(device->mutex);
+            const auto capabilities = device->native.capabilities();
+            if (!capabilities)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_STATE, "device has no capabilities");
+            }
+            output->unified_memory = capabilities->unifiedMemory ? 1U : 0U;
+            output->persistent_mapping = capabilities->persistentMapping ? 1U : 0U;
+            output->mapped_memory_host_coherent = capabilities->mappedMemory.hostCoherent ? 1U : 0U;
+            output->mapped_memory_non_coherent_atom_size = capabilities->mappedMemory.nonCoherentAtomSize;
+            output->vertex_formats = capabilities->vertexInput.supportedFormats;
+            output->max_vertex_buffers = capabilities->limits.maxVertexBuffers;
+            output->max_vertex_attributes = capabilities->limits.maxVertexAttributes;
+            output->max_vertex_buffer_stride = capabilities->vertexInput.maxBufferStride;
+            output->max_vertex_attribute_offset = capabilities->vertexInput.maxAttributeOffset;
+            output->max_vertex_instance_step_rate = capabilities->vertexInput.maxInstanceStepRate;
+            output->reserved0 = 0;
+            return RACHIS_STATUS_OK;
+        });
+    }
+
     rachis_status rachis_queue_timestamp_frequency(rachis_device* device,
                                                    std::uint32_t queueType,
                                                    std::uint64_t* output,
@@ -1278,6 +1398,88 @@ extern "C"
                           device->native.readBuffer(rachis::BufferHandle{token->native},
                                                     offset,
                                                     {static_cast<std::byte*>(bytes), static_cast<std::size_t>(size)}));
+        });
+    }
+
+    rachis_status rachis_buffer_map(rachis_device* device,
+                                    rachis_handle buffer,
+                                    std::uint64_t offset,
+                                    std::uint64_t size,
+                                    rachis_mapped_memory* output,
+                                    rachis_error* error)
+    {
+        return boundary(error, [&]() -> rachis_status {
+            if (device == nullptr || output == nullptr)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "device or mapped memory output is null");
+            }
+            if (output->struct_size != sizeof(*output))
+            {
+                return fail(error, RACHIS_STATUS_ABI_MISMATCH, "invalid mapped memory output layout");
+            }
+            output->data = nullptr;
+            output->size = 0;
+            std::shared_lock const lock(device->mutex);
+            if (const auto lost = rejectLostDevice(*device, error))
+            {
+                return *lost;
+            }
+            const auto* token = findToken(device->tokens, buffer, TokenKind::buffer);
+            if (token == nullptr)
+            {
+                return invalidHandle(error);
+            }
+            if (!validMappedBufferRange(token->byteSize, offset, size))
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "the map range is empty or outside the buffer");
+            }
+            const auto mapped = device->native.mapBuffer(rachis::BufferHandle{token->native}, offset, size);
+            if (!mapped)
+            {
+                return result(error, mapped.error());
+            }
+            output->data = mapped->data;
+            output->size = mapped->size;
+            return RACHIS_STATUS_OK;
+        });
+    }
+
+    rachis_status rachis_buffer_unmap(rachis_device* device, rachis_handle buffer, rachis_error* error)
+    {
+        return boundary(error, [&]() -> rachis_status {
+            if (device == nullptr)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "device is null");
+            }
+            std::shared_lock const lock(device->mutex);
+            const auto* token = findToken(device->tokens, buffer, TokenKind::buffer);
+            if (token == nullptr)
+            {
+                return invalidHandle(error);
+            }
+            return result(error, device->native.unmapBuffer(rachis::BufferHandle{token->native}));
+        });
+    }
+
+    rachis_status rachis_buffer_flush_mapped_ranges(rachis_device* device,
+                                                    rachis_handle buffer,
+                                                    const rachis_mapped_range* ranges,
+                                                    std::uint32_t rangeCount,
+                                                    rachis_error* error)
+    {
+        return boundary(error, [&]() -> rachis_status {
+            return synchronizeMappedRanges(device, buffer, ranges, rangeCount, error, true);
+        });
+    }
+
+    rachis_status rachis_buffer_invalidate_mapped_ranges(rachis_device* device,
+                                                         rachis_handle buffer,
+                                                         const rachis_mapped_range* ranges,
+                                                         std::uint32_t rangeCount,
+                                                         rachis_error* error)
+    {
+        return boundary(error, [&]() -> rachis_status {
+            return synchronizeMappedRanges(device, buffer, ranges, rangeCount, error, false);
         });
     }
 
@@ -2365,6 +2567,8 @@ extern "C"
                 !validHostByteSpan(desc->bytecode, desc->bytecode_size) ||
                 !validArray(desc->bindings, desc->binding_count) ||
                 !validArray(desc->push_constants, desc->push_constant_count) ||
+                !validArray(desc->vertex_input_locations, desc->vertex_input_location_count) ||
+                desc->vertex_input_location_count > RACHIS_MAX_VERTEX_ATTRIBUTES ||
                 (desc->stage == RACHIS_SHADER_COMPUTE &&
                  (desc->workgroup_x == 0 || desc->workgroup_y == 0 || desc->workgroup_z == 0)) ||
                 (desc->stage != RACHIS_SHADER_COMPUTE &&
@@ -2409,6 +2613,11 @@ extern "C"
                 native.label = optionalString(desc->label);
                 native.shaderInterface.bindings = bindings;
                 native.shaderInterface.pushConstants = pushConstants;
+                if (desc->vertex_input_location_count != 0)
+                {
+                    native.shaderInterface.vertexInputLocations =
+                        std::span<const std::uint32_t>{desc->vertex_input_locations, desc->vertex_input_location_count};
+                }
                 if (desc->stage == RACHIS_SHADER_COMPUTE)
                 {
                     native.shaderInterface.workgroupSize =
@@ -2635,6 +2844,47 @@ extern "C"
                 depthStencil.depthWriteEnabled = depth.depth_write_enabled != 0;
                 depthStencil.depthCompare = static_cast<rachis::CompareOperation>(depth.depth_compare);
             }
+            if (!validArray(desc->vertex_buffers, desc->vertex_buffer_count) ||
+                desc->vertex_buffer_count > RACHIS_MAX_VERTEX_BUFFERS ||
+                desc->strip_index_format > RACHIS_STRIP_INDEX_UINT32)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "invalid graphics vertex input");
+            }
+            std::vector<std::vector<rachis::VertexAttribute>> vertexAttributes(desc->vertex_buffer_count);
+            std::vector<rachis::VertexBufferLayout> vertexBuffers;
+            vertexBuffers.reserve(desc->vertex_buffer_count);
+            for (std::uint32_t i = 0; i < desc->vertex_buffer_count; ++i)
+            {
+                const auto& layout = desc->vertex_buffers[i];
+                if (!validArray(layout.attributes, layout.attribute_count) ||
+                    layout.attribute_count > RACHIS_MAX_VERTEX_ATTRIBUTES ||
+                    layout.step_mode > RACHIS_VERTEX_STEP_INSTANCE)
+                {
+                    return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "invalid graphics vertex buffer layout");
+                }
+                auto& attributes = vertexAttributes[i];
+                attributes.reserve(layout.attribute_count);
+                for (std::uint32_t j = 0; j < layout.attribute_count; ++j)
+                {
+                    const auto& attribute = layout.attributes[j];
+                    if (attribute.format > RACHIS_VERTEX_FORMAT_FLOAT16X4)
+                    {
+                        return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "invalid graphics vertex attribute format");
+                    }
+                    attributes.push_back({.format = static_cast<rachis::VertexFormat>(attribute.format),
+                                          .offset = attribute.offset,
+                                          .shaderLocation = attribute.shader_location});
+                }
+                vertexBuffers.push_back(
+                    {.stride = layout.stride,
+                     .stepMode = static_cast<rachis::VertexStepMode>(layout.step_mode),
+                     .instanceStepRate = layout.instance_step_rate == 0 ? 1U : layout.instance_step_rate,
+                     .attributes = attributes});
+            }
+            const rachis::StripIndexFormat stripIndexFormat =
+                desc->strip_index_format == RACHIS_STRIP_INDEX_NONE
+                    ? rachis::StripIndexFormat{}
+                    : rachis::StripIndexFormat{static_cast<rachis::IndexFormat>(desc->strip_index_format - 1U)};
             std::scoped_lock const lock(device->mutex);
             if (const auto lost = rejectLostDevice(*device, error))
             {
@@ -2655,7 +2905,9 @@ extern "C"
                     .layout = nativeLayout,
                     .vertexShader = nativeVertex,
                     .pixelShader = nativePixel,
+                    .vertexBuffers = vertexBuffers,
                     .topology = static_cast<rachis::PrimitiveTopology>(desc->topology),
+                    .stripIndexFormat = stripIndexFormat,
                     .cullMode = static_cast<rachis::CullMode>(desc->cull_mode),
                     .colorTargets = colorTargets,
                     .depthStencil = depthStencil,
@@ -2904,6 +3156,116 @@ extern "C"
             }
             return result(error,
                           device->native.draw(*commandBuffer, vertexCount, instanceCount, firstVertex, firstInstance));
+        });
+    }
+
+    rachis_status rachis_command_bind_vertex_buffers(rachis_device* device,
+                                                     rachis_handle command,
+                                                     std::uint32_t firstSlot,
+                                                     const rachis_vertex_buffer_binding* bindings,
+                                                     std::uint32_t bindingCount,
+                                                     rachis_error* error)
+    {
+        return boundary(error, [&]() -> rachis_status {
+            if (device == nullptr || bindings == nullptr || bindingCount == 0 ||
+                firstSlot >= RACHIS_MAX_VERTEX_BUFFERS || bindingCount > RACHIS_MAX_VERTEX_BUFFERS - firstSlot)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "invalid vertex buffer bindings");
+            }
+            std::shared_lock const lock(device->mutex);
+            if (const auto lost = rejectLostDevice(*device, error))
+            {
+                return *lost;
+            }
+            CommandUseGuard commandUse;
+            rachis::CommandBuffer* commandBuffer = nullptr;
+            if (const auto status = acquireCommandForRecording(*device, command, commandUse, commandBuffer, error);
+                status != RACHIS_STATUS_OK)
+            {
+                return status;
+            }
+            std::array<rachis::VertexBufferBinding, RACHIS_MAX_VERTEX_BUFFERS> nativeBindings{};
+            for (std::uint32_t i = 0; i < bindingCount; ++i)
+            {
+                const auto* token = findToken(device->tokens, bindings[i].buffer, TokenKind::buffer);
+                if (token == nullptr)
+                {
+                    return invalidHandle(error);
+                }
+                nativeBindings[i] = {.buffer = rachis::BufferHandle{token->native}, .offset = bindings[i].offset};
+            }
+            return result(error,
+                          device->native.bindVertexBuffers(
+                              *commandBuffer, firstSlot, std::span{nativeBindings.data(), bindingCount}));
+        });
+    }
+
+    rachis_status rachis_command_bind_index_buffer(rachis_device* device,
+                                                   rachis_handle command,
+                                                   rachis_handle buffer,
+                                                   std::uint32_t indexFormat,
+                                                   std::uint64_t offset,
+                                                   rachis_error* error)
+    {
+        return boundary(error, [&]() -> rachis_status {
+            if (device == nullptr || indexFormat > RACHIS_INDEX_FORMAT_UINT32)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "device is null or the index format is invalid");
+            }
+            std::shared_lock const lock(device->mutex);
+            if (const auto lost = rejectLostDevice(*device, error))
+            {
+                return *lost;
+            }
+            CommandUseGuard commandUse;
+            rachis::CommandBuffer* commandBuffer = nullptr;
+            if (const auto status = acquireCommandForRecording(*device, command, commandUse, commandBuffer, error);
+                status != RACHIS_STATUS_OK)
+            {
+                return status;
+            }
+            const auto* token = findToken(device->tokens, buffer, TokenKind::buffer);
+            if (token == nullptr)
+            {
+                return invalidHandle(error);
+            }
+            return result(error,
+                          device->native.bindIndexBuffer(*commandBuffer,
+                                                         rachis::BufferHandle{token->native},
+                                                         static_cast<rachis::IndexFormat>(indexFormat),
+                                                         offset));
+        });
+    }
+
+    rachis_status rachis_command_draw_indexed(rachis_device* device,
+                                              rachis_handle command,
+                                              std::uint32_t indexCount,
+                                              std::uint32_t instanceCount,
+                                              std::uint32_t firstIndex,
+                                              std::int32_t baseVertex,
+                                              std::uint32_t firstInstance,
+                                              rachis_error* error)
+    {
+        return boundary(error, [&]() -> rachis_status {
+            if (device == nullptr)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "device is null");
+            }
+            std::shared_lock const lock(device->mutex);
+            if (const auto lost = rejectLostDevice(*device, error))
+            {
+                return *lost;
+            }
+            CommandUseGuard commandUse;
+            rachis::CommandBuffer* commandBuffer = nullptr;
+            if (const auto status = acquireCommandForRecording(*device, command, commandUse, commandBuffer, error);
+                status != RACHIS_STATUS_OK)
+            {
+                return status;
+            }
+            return result(error,
+                          device->native.drawIndexed(
+                              *commandBuffer, indexCount, instanceCount, firstIndex, baseVertex, firstInstance));
         });
     }
 

@@ -810,6 +810,510 @@ TEST_CASE("C ABI stage masks accept RACHIS_SHADER_ALL and reject stages outside 
     requireNoValidationErrors(device.get(), error);
 }
 
+#ifdef RACHIS_CABI_INDEXED_VERTEX_PATH
+namespace
+{
+    struct IndexedVertex final
+    {
+        float x;
+        float y;
+        std::array<std::uint8_t, 4> color;
+    };
+    static_assert(sizeof(IndexedVertex) == 12);
+} // namespace
+
+TEST_CASE("C ABI draws an indexed quad from mapped vertex and index buffers",
+          RACHIS_CABI_DEVICE_SIZE RACHIS_CABI_DEVICE_REQUIRES "[rachis][cabi][graphics]")
+{
+    const auto load = [](const char* path) {
+        std::ifstream input{path, std::ios::binary};
+        return std::vector<char>{std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
+    };
+    const auto vertexBytes = load(RACHIS_CABI_INDEXED_VERTEX_PATH);
+    const auto pixelBytes = load(RACHIS_CABI_INDEXED_PIXEL_PATH);
+    REQUIRE_FALSE(vertexBytes.empty());
+    REQUIRE_FALSE(pixelBytes.empty());
+
+    auto error = makeError();
+    auto device = createDevice(error, RACHIS_VALIDATION_STANDARD);
+    rachis_device_capabilities capabilities{};
+    capabilities.struct_size = sizeof(capabilities);
+    requireOk(rachis_device_query_capabilities(device.get(), &capabilities, &error), error);
+    REQUIRE((capabilities.vertex_formats & (std::uint64_t{1} << RACHIS_VERTEX_FORMAT_FLOAT32X2)) != 0);
+    REQUIRE((capabilities.vertex_formats & (std::uint64_t{1} << RACHIS_VERTEX_FORMAT_UNORM8X4)) != 0);
+    REQUIRE(capabilities.max_vertex_buffers >= 1);
+    REQUIRE(capabilities.max_vertex_attributes >= 2);
+    REQUIRE(capabilities.max_vertex_buffer_stride >= sizeof(IndexedVertex));
+
+    const std::array<std::uint32_t, 2> inputLocations{0, 1};
+    rachis_shader_module_desc shaderDesc{};
+    shaderDesc.struct_size = sizeof(shaderDesc);
+    shaderDesc.abi_version = RACHIS_ABI_VERSION;
+    shaderDesc.stage = RACHIS_SHADER_VERTEX;
+    shaderDesc.bytecode = vertexBytes.data();
+    shaderDesc.bytecode_size = vertexBytes.size();
+    shaderDesc.entry_point = "vertexMain";
+    shaderDesc.vertex_input_locations = inputLocations.data();
+    shaderDesc.vertex_input_location_count = static_cast<std::uint32_t>(inputLocations.size());
+    rachis_handle vertex = 0;
+    requireOk(rachis_shader_module_create(device.get(), &shaderDesc, &vertex, &error), error);
+    rachis_handle rejectedShader = 0;
+    shaderDesc.vertex_input_locations = nullptr;
+    CHECK(rachis_shader_module_create(device.get(), &shaderDesc, &rejectedShader, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rejectedShader == 0);
+    shaderDesc.vertex_input_locations = inputLocations.data();
+    shaderDesc.vertex_input_location_count = RACHIS_MAX_VERTEX_ATTRIBUTES + 1;
+    CHECK(rachis_shader_module_create(device.get(), &shaderDesc, &rejectedShader, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rejectedShader == 0);
+    shaderDesc.vertex_input_location_count = static_cast<std::uint32_t>(inputLocations.size());
+    shaderDesc.stage = RACHIS_SHADER_PIXEL;
+    shaderDesc.bytecode = pixelBytes.data();
+    shaderDesc.bytecode_size = pixelBytes.size();
+    shaderDesc.entry_point = "pixelMain";
+    shaderDesc.vertex_input_locations = inputLocations.data();
+    CHECK(rachis_shader_module_create(device.get(), &shaderDesc, &rejectedShader, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rejectedShader == 0);
+    shaderDesc.vertex_input_locations = nullptr;
+    shaderDesc.vertex_input_location_count = 0;
+    rachis_handle pixel = 0;
+    requireOk(rachis_shader_module_create(device.get(), &shaderDesc, &pixel, &error), error);
+
+    rachis_pipeline_layout_desc layoutDesc{};
+    layoutDesc.struct_size = sizeof(layoutDesc);
+    layoutDesc.abi_version = RACHIS_ABI_VERSION;
+    rachis_handle pipelineLayout = 0;
+    requireOk(rachis_pipeline_layout_create(device.get(), &layoutDesc, &pipelineLayout, &error), error);
+    rachis_color_target target{};
+    target.format = RACHIS_FORMAT_RGBA8_UNORM;
+    target.write_mask = RACHIS_COLOR_WRITE_ALL;
+    target.color_blend.source_factor = RACHIS_BLEND_ONE;
+    target.alpha_blend.source_factor = RACHIS_BLEND_ONE;
+    std::array<rachis_vertex_attribute, 2> attributes{{
+        {RACHIS_VERTEX_FORMAT_FLOAT32X2, 0, 0},
+        {RACHIS_VERTEX_FORMAT_UNORM8X4, 8, 1},
+    }};
+    rachis_vertex_buffer_layout vertexLayout{};
+    vertexLayout.stride = sizeof(IndexedVertex);
+    vertexLayout.step_mode = RACHIS_VERTEX_STEP_VERTEX;
+    vertexLayout.attributes = attributes.data();
+    vertexLayout.attribute_count = static_cast<std::uint32_t>(attributes.size());
+    rachis_graphics_pipeline_desc pipelineDesc{};
+    pipelineDesc.struct_size = sizeof(pipelineDesc);
+    pipelineDesc.abi_version = RACHIS_ABI_VERSION;
+    pipelineDesc.layout = pipelineLayout;
+    pipelineDesc.vertex_shader = vertex;
+    pipelineDesc.pixel_shader = pixel;
+    pipelineDesc.topology = RACHIS_TOPOLOGY_TRIANGLE_LIST;
+    pipelineDesc.cull_mode = RACHIS_CULL_NONE;
+    pipelineDesc.color_targets = &target;
+    pipelineDesc.color_target_count = 1;
+    pipelineDesc.vertex_buffers = &vertexLayout;
+    pipelineDesc.vertex_buffer_count = 1;
+    rachis_handle pipeline = 0;
+    requireOk(rachis_graphics_pipeline_create(device.get(), &pipelineDesc, &pipeline, &error), error);
+
+    rachis_handle rejectedPipeline = 0;
+    const auto rejectsPipeline = [&](rachis_status expected) {
+        CHECK(rachis_graphics_pipeline_create(device.get(), &pipelineDesc, &rejectedPipeline, &error) == expected);
+        CHECK(rejectedPipeline == 0);
+    };
+    pipelineDesc.vertex_buffer_count = RACHIS_MAX_VERTEX_BUFFERS + 1;
+    rejectsPipeline(RACHIS_STATUS_INVALID_ARGUMENT);
+    pipelineDesc.vertex_buffer_count = 1;
+    pipelineDesc.vertex_buffers = nullptr;
+    rejectsPipeline(RACHIS_STATUS_INVALID_ARGUMENT);
+    pipelineDesc.vertex_buffers = &vertexLayout;
+    attributes[1].format = RACHIS_VERTEX_FORMAT_FLOAT16X4 + 1;
+    rejectsPipeline(RACHIS_STATUS_INVALID_ARGUMENT);
+    attributes[1].format = RACHIS_VERTEX_FORMAT_UNORM8X4;
+    attributes[1].offset = 9;
+    rejectsPipeline(RACHIS_STATUS_INVALID_ARGUMENT);
+    attributes[1].offset = 8;
+    vertexLayout.step_mode = RACHIS_VERTEX_STEP_INSTANCE + 1;
+    rejectsPipeline(RACHIS_STATUS_INVALID_ARGUMENT);
+    vertexLayout.step_mode = RACHIS_VERTEX_STEP_VERTEX;
+    vertexLayout.attribute_count = RACHIS_MAX_VERTEX_ATTRIBUTES + 1;
+    rejectsPipeline(RACHIS_STATUS_INVALID_ARGUMENT);
+    vertexLayout.attribute_count = static_cast<std::uint32_t>(attributes.size());
+    vertexLayout.attributes = nullptr;
+    rejectsPipeline(RACHIS_STATUS_INVALID_ARGUMENT);
+    vertexLayout.attributes = attributes.data();
+    pipelineDesc.strip_index_format = RACHIS_STRIP_INDEX_UINT32 + 1;
+    rejectsPipeline(RACHIS_STATUS_INVALID_ARGUMENT);
+    pipelineDesc.strip_index_format = RACHIS_STRIP_INDEX_UINT16;
+    rejectsPipeline(RACHIS_STATUS_INVALID_ARGUMENT);
+    pipelineDesc.topology = RACHIS_TOPOLOGY_TRIANGLE_STRIP;
+    rachis_handle stripPipeline = 0;
+    requireOk(rachis_graphics_pipeline_create(device.get(), &pipelineDesc, &stripPipeline, &error), error);
+    requireOk(rachis_pipeline_destroy(device.get(), stripPipeline, &error), error);
+    pipelineDesc.topology = RACHIS_TOPOLOGY_TRIANGLE_LIST;
+    pipelineDesc.strip_index_format = RACHIS_STRIP_INDEX_NONE;
+    pipelineDesc.vertex_buffer_count = 0;
+    CHECK(rachis_graphics_pipeline_create(device.get(), &pipelineDesc, &rejectedPipeline, &error) != RACHIS_STATUS_OK);
+    CHECK(rejectedPipeline == 0);
+    pipelineDesc.vertex_buffer_count = 1;
+
+    const std::array<std::uint8_t, 4> green{0, 255, 0, 255};
+    const std::array<IndexedVertex, 5> vertices{{
+        {3.0F, 3.0F, {255, 255, 255, 255}},
+        {-1.0F, -1.0F, green},
+        {0.0F, -1.0F, green},
+        {-1.0F, 1.0F, green},
+        {0.0F, 1.0F, green},
+    }};
+    const std::array<std::uint16_t, 2> unusedIndices{3, 3};
+    const std::array<std::uint16_t, 6> quadIndices{0, 1, 2, 2, 1, 3};
+    const auto vertexBuffer =
+        createBuffer(device.get(), sizeof(vertices), RACHIS_BUFFER_VERTEX, RACHIS_MEMORY_UPLOAD, error);
+    const auto indexBuffer = createBuffer(
+        device.get(), sizeof(unusedIndices) + sizeof(quadIndices), RACHIS_BUFFER_INDEX, RACHIS_MEMORY_UPLOAD, error);
+
+    rachis_mapped_memory mappedVertices{};
+    mappedVertices.struct_size = sizeof(mappedVertices);
+    requireOk(rachis_buffer_map(device.get(), vertexBuffer, 0, RACHIS_WHOLE_SIZE, &mappedVertices, &error), error);
+    REQUIRE(mappedVertices.data != nullptr);
+    REQUIRE(mappedVertices.size == sizeof(vertices));
+    std::memcpy(mappedVertices.data, vertices.data(), sizeof(vertices));
+    const rachis_mapped_range wholeRange{0, RACHIS_WHOLE_SIZE};
+    requireOk(rachis_buffer_flush_mapped_ranges(device.get(), vertexBuffer, &wholeRange, 1, &error), error);
+    const bool keepVerticesMapped = capabilities.persistent_mapping != 0;
+    if (!keepVerticesMapped)
+    {
+        requireOk(rachis_buffer_unmap(device.get(), vertexBuffer, &error), error);
+    }
+
+    requireOk(rachis_buffer_write(device.get(), indexBuffer, 0, unusedIndices.data(), sizeof(unusedIndices), &error),
+              error);
+    rachis_mapped_memory mappedIndices{};
+    mappedIndices.struct_size = sizeof(mappedIndices);
+    requireOk(rachis_buffer_map(
+                  device.get(), indexBuffer, sizeof(unusedIndices), sizeof(quadIndices), &mappedIndices, &error),
+              error);
+    REQUIRE(mappedIndices.data != nullptr);
+    REQUIRE(mappedIndices.size == sizeof(quadIndices));
+    std::memcpy(mappedIndices.data, quadIndices.data(), sizeof(quadIndices));
+    requireOk(rachis_buffer_unmap(device.get(), indexBuffer, &error), error);
+
+    const auto texture = createTexture(device.get(),
+                                       RACHIS_FORMAT_RGBA8_UNORM,
+                                       textureSize,
+                                       textureSize,
+                                       RACHIS_TEXTURE_RENDER_TARGET | RACHIS_TEXTURE_COPY_SOURCE,
+                                       error);
+    const auto viewDesc = renderTargetViewDesc(texture);
+    rachis_handle view = 0;
+    requireOk(rachis_texture_view_create(device.get(), &viewDesc, &view, &error), error);
+    const auto region = wholeTextureRegion(textureSize, textureSize);
+    rachis_texture_transfer_layout transfer{};
+    transfer.struct_size = sizeof(transfer);
+    requireOk(rachis_texture_query_transfer_layout(device.get(), texture, &region, &transfer, &error), error);
+    const auto readback = createBuffer(
+        device.get(), transfer.required_buffer_size, RACHIS_BUFFER_COPY_DESTINATION, RACHIS_MEMORY_READBACK, error);
+
+    rachis_handle pool = 0;
+    const auto command = acquireCommand(device.get(), RACHIS_QUEUE_GRAPHICS, pool, error);
+    const auto toRender = textureBarrier(texture,
+                                         RACHIS_STAGE_ALL,
+                                         RACHIS_ACCESS_NONE,
+                                         RACHIS_LAYOUT_UNDEFINED,
+                                         RACHIS_STAGE_RENDER_TARGET,
+                                         RACHIS_ACCESS_RENDER_TARGET,
+                                         RACHIS_LAYOUT_RENDER_TARGET);
+    requireOk(recordBarriers(device.get(), command, nullptr, 0, &toRender, 1, error), error);
+    rachis_color_attachment attachment{};
+    attachment.view = view;
+    attachment.load_op = RACHIS_LOAD_OP_CLEAR;
+    attachment.store_op = RACHIS_STORE_OP_STORE;
+    attachment.clear_color[2] = 1.0F;
+    attachment.clear_color[3] = 1.0F;
+    rachis_rendering_desc rendering{};
+    rendering.struct_size = sizeof(rendering);
+    rendering.abi_version = RACHIS_ABI_VERSION;
+    rendering.color_attachments = &attachment;
+    rendering.color_attachment_count = 1;
+    requireOk(rachis_command_begin_rendering(device.get(), command, &rendering, &error), error);
+    const rachis_viewport viewport{0, 0, textureSize, textureSize, 0, 1};
+    const rachis_scissor scissor{0, 0, textureSize, textureSize};
+    requireOk(rachis_command_set_viewport(device.get(), command, &viewport, &error), error);
+    requireOk(rachis_command_set_scissor(device.get(), command, &scissor, &error), error);
+    requireOk(rachis_command_bind_graphics_pipeline(device.get(), command, pipeline, &error), error);
+
+    rachis_vertex_buffer_binding vertexBinding{vertexBuffer, 0};
+    CHECK(rachis_command_bind_vertex_buffers(device.get(), command, 0, nullptr, 1, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_command_bind_vertex_buffers(device.get(), command, 0, &vertexBinding, 0, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_command_bind_vertex_buffers(
+              device.get(), command, RACHIS_MAX_VERTEX_BUFFERS, &vertexBinding, 1, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_command_bind_vertex_buffers(
+              device.get(), command, 0, &vertexBinding, RACHIS_MAX_VERTEX_BUFFERS + 1, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    vertexBinding.buffer = pipeline;
+    CHECK(rachis_command_bind_vertex_buffers(device.get(), command, 0, &vertexBinding, 1, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    vertexBinding.buffer = vertexBuffer;
+    vertexBinding.offset = 2;
+    CHECK(rachis_command_bind_vertex_buffers(device.get(), command, 0, &vertexBinding, 1, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    vertexBinding.offset = 0;
+    requireOk(rachis_command_bind_vertex_buffers(device.get(), command, 0, &vertexBinding, 1, &error), error);
+    CHECK(rachis_command_draw_indexed(device.get(), command, 6, 1, 2, 1, 0, &error) != RACHIS_STATUS_OK);
+    CHECK(rachis_command_bind_index_buffer(
+              device.get(), command, indexBuffer, RACHIS_INDEX_FORMAT_UINT32 + 1, 0, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_command_bind_index_buffer(device.get(), command, pipeline, RACHIS_INDEX_FORMAT_UINT16, 0, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    requireOk(
+        rachis_command_bind_index_buffer(device.get(), command, indexBuffer, RACHIS_INDEX_FORMAT_UINT16, 0, &error),
+        error);
+    requireOk(rachis_command_draw_indexed(device.get(), command, 6, 1, 2, 1, 0, &error), error);
+    requireOk(rachis_command_end_rendering(device.get(), command, &error), error);
+    const auto toCopy = textureBarrier(texture,
+                                       RACHIS_STAGE_RENDER_TARGET,
+                                       RACHIS_ACCESS_RENDER_TARGET,
+                                       RACHIS_LAYOUT_RENDER_TARGET,
+                                       RACHIS_STAGE_COPY,
+                                       RACHIS_ACCESS_COPY_SOURCE,
+                                       RACHIS_LAYOUT_COPY_SOURCE);
+    requireOk(recordBarriers(device.get(), command, nullptr, 0, &toCopy, 1, error), error);
+    auto copyRegion = region;
+    copyRegion.bytes_per_row = transfer.bytes_per_row;
+    requireOk(copyBufferTexture(device.get(), command, readback, texture, copyRegion, false, error), error);
+    submitAndWait(device.get(), command, error);
+    if (keepVerticesMapped)
+    {
+        requireOk(rachis_buffer_unmap(device.get(), vertexBuffer, &error), error);
+    }
+
+    rachis_mapped_memory mappedPixels{};
+    mappedPixels.struct_size = sizeof(mappedPixels);
+    requireOk(rachis_buffer_map(device.get(), readback, 0, RACHIS_WHOLE_SIZE, &mappedPixels, &error), error);
+    REQUIRE(mappedPixels.data != nullptr);
+    REQUIRE(mappedPixels.size == transfer.required_buffer_size);
+    requireOk(rachis_buffer_invalidate_mapped_ranges(device.get(), readback, &wholeRange, 1, &error), error);
+    std::vector<std::uint8_t> pixels(static_cast<std::size_t>(transfer.required_buffer_size));
+    std::memcpy(pixels.data(), mappedPixels.data, pixels.size());
+    requireOk(rachis_buffer_unmap(device.get(), readback, &error), error);
+    for (std::uint32_t y = 0; y < textureSize; ++y)
+    {
+        for (std::uint32_t x = 0; x < textureSize; ++x)
+        {
+            INFO("pixel " << x << ", " << y);
+            const auto* texel = pixels.data() + static_cast<std::size_t>(y) * transfer.bytes_per_row + x * 4U;
+            const bool insideQuad = x < textureSize / 2;
+            CHECK(texel[0] == 0);
+            CHECK(texel[1] == (insideQuad ? 255 : 0));
+            CHECK(texel[2] == (insideQuad ? 0 : 255));
+            CHECK(texel[3] == 255);
+        }
+    }
+
+    requireOk(rachis_command_pool_destroy(device.get(), pool, &error), error);
+    requireOk(rachis_buffer_destroy(device.get(), readback, &error), error);
+    requireOk(rachis_buffer_destroy(device.get(), indexBuffer, &error), error);
+    requireOk(rachis_buffer_destroy(device.get(), vertexBuffer, &error), error);
+    requireOk(rachis_texture_view_destroy(device.get(), view, &error), error);
+    requireOk(rachis_texture_destroy(device.get(), texture, &error), error);
+    requireOk(rachis_pipeline_destroy(device.get(), pipeline, &error), error);
+    requireOk(rachis_pipeline_layout_destroy(device.get(), pipelineLayout, &error), error);
+    requireOk(rachis_shader_module_destroy(device.get(), pixel, &error), error);
+    requireOk(rachis_shader_module_destroy(device.get(), vertex, &error), error);
+    requireNoValidationErrors(device.get(), error);
+}
+#endif
+
+TEST_CASE("C ABI maps one range per buffer and validates mapped ranges",
+          RACHIS_CABI_DEVICE_SIZE RACHIS_CABI_DEVICE_REQUIRES "[rachis][cabi]")
+{
+    constexpr std::uint64_t bufferSize = 64;
+    constexpr std::uint64_t mapOffset = 16;
+    constexpr std::uint64_t mapSize = 32;
+    auto error = makeError();
+    auto device = createDevice(error);
+    const auto upload = createBuffer(device.get(), bufferSize, RACHIS_BUFFER_COPY_SOURCE, RACHIS_MEMORY_UPLOAD, error);
+    const auto readback =
+        createBuffer(device.get(), bufferSize, RACHIS_BUFFER_COPY_DESTINATION, RACHIS_MEMORY_READBACK, error);
+    const auto deviceLocal =
+        createBuffer(device.get(), bufferSize, RACHIS_BUFFER_COPY_SOURCE, RACHIS_MEMORY_DEVICE_LOCAL, error);
+    std::array<std::uint8_t, bufferSize> zeros{};
+    requireOk(rachis_buffer_write(device.get(), upload, 0, zeros.data(), zeros.size(), &error), error);
+
+    rachis_mapped_memory mapped{};
+    mapped.struct_size = sizeof(mapped);
+    CHECK(rachis_buffer_map(device.get(), upload, 0, RACHIS_WHOLE_SIZE, nullptr, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    mapped.struct_size = sizeof(mapped) - 1;
+    CHECK(rachis_buffer_map(device.get(), upload, 0, RACHIS_WHOLE_SIZE, &mapped, &error) == RACHIS_STATUS_ABI_MISMATCH);
+    mapped.struct_size = sizeof(mapped);
+
+    struct Range
+    {
+        std::uint64_t offset;
+        std::uint64_t size;
+    };
+    const std::array<Range, 7> rejected{{
+        {0, 0},
+        {bufferSize, RACHIS_WHOLE_SIZE},
+        {bufferSize, 1},
+        {0, bufferSize + 1},
+        {8, bufferSize - 7},
+        {RACHIS_WHOLE_SIZE, 1},
+        {8, RACHIS_WHOLE_SIZE - 3},
+    }};
+    std::uint8_t sentinel = 0;
+    for (const auto& range : rejected)
+    {
+        INFO("offset " << range.offset << ", size " << range.size);
+        for (const auto target : {upload, readback, deviceLocal})
+        {
+            mapped.data = &sentinel;
+            mapped.size = 1;
+            CHECK(rachis_buffer_map(device.get(), target, range.offset, range.size, &mapped, &error) ==
+                  RACHIS_STATUS_INVALID_ARGUMENT);
+            CHECK(mapped.data == nullptr);
+            CHECK(mapped.size == 0);
+        }
+    }
+    mapped.data = &sentinel;
+    mapped.size = 1;
+    CHECK(rachis_buffer_map(device.get(), deviceLocal, 0, RACHIS_WHOLE_SIZE, &mapped, &error) ==
+          RACHIS_STATUS_UNSUPPORTED);
+    CHECK(mapped.data == nullptr);
+    CHECK(mapped.size == 0);
+    CHECK(rachis_buffer_map(device.get(), 0, 0, RACHIS_WHOLE_SIZE, &mapped, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_buffer_unmap(device.get(), 0, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+
+    const rachis_mapped_range mappedRange{mapOffset, mapSize};
+    CHECK(rachis_buffer_unmap(device.get(), upload, &error) == RACHIS_STATUS_INVALID_STATE);
+    CHECK(rachis_buffer_flush_mapped_ranges(device.get(), upload, &mappedRange, 1, &error) ==
+          RACHIS_STATUS_INVALID_STATE);
+    CHECK(rachis_buffer_invalidate_mapped_ranges(device.get(), readback, &mappedRange, 1, &error) ==
+          RACHIS_STATUS_INVALID_STATE);
+
+    requireOk(rachis_buffer_map(device.get(), upload, mapOffset, mapSize, &mapped, &error), error);
+    REQUIRE(mapped.data != nullptr);
+    REQUIRE(mapped.size == mapSize);
+    rachis_mapped_memory second{};
+    second.struct_size = sizeof(second);
+    CHECK(rachis_buffer_map(device.get(), upload, 0, 8, &second, &error) == RACHIS_STATUS_INVALID_STATE);
+    CHECK(second.data == nullptr);
+    CHECK(rachis_buffer_write(device.get(), upload, 0, zeros.data(), 8, &error) == RACHIS_STATUS_INVALID_STATE);
+    CHECK(rachis_buffer_destroy(device.get(), upload, &error) == RACHIS_STATUS_INVALID_STATE);
+
+    std::array<std::uint8_t, mapSize> expected{};
+    for (std::size_t index = 0; index < expected.size(); ++index)
+    {
+        expected[index] = static_cast<std::uint8_t>(index + 1);
+    }
+    std::memcpy(mapped.data, expected.data(), expected.size());
+
+    CHECK(rachis_buffer_flush_mapped_ranges(device.get(), upload, nullptr, 1, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_buffer_flush_mapped_ranges(device.get(), upload, &mappedRange, 0, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    const std::array<Range, 5> outsideMapping{{
+        {0, 8},
+        {mapOffset, RACHIS_WHOLE_SIZE},
+        {mapOffset, mapSize + 1},
+        {mapOffset, 0},
+        {bufferSize, 1},
+    }};
+    for (const auto& range : outsideMapping)
+    {
+        INFO("offset " << range.offset << ", size " << range.size);
+        const rachis_mapped_range outside{range.offset, range.size};
+        CHECK(rachis_buffer_flush_mapped_ranges(device.get(), upload, &outside, 1, &error) ==
+              RACHIS_STATUS_INVALID_ARGUMENT);
+    }
+    CHECK(rachis_buffer_invalidate_mapped_ranges(device.get(), upload, &mappedRange, 1, &error) ==
+          RACHIS_STATUS_UNSUPPORTED);
+    const std::array<rachis_mapped_range, 2> splitRanges{{{mapOffset, 8}, {mapOffset + 8, mapSize - 8}}};
+    requireOk(rachis_buffer_flush_mapped_ranges(device.get(), upload, splitRanges.data(), 2, &error), error);
+    requireOk(rachis_buffer_unmap(device.get(), upload, &error), error);
+    CHECK(rachis_buffer_unmap(device.get(), upload, &error) == RACHIS_STATUS_INVALID_STATE);
+
+    rachis_handle pool = 0;
+    const auto command = acquireCommand(device.get(), RACHIS_QUEUE_COPY, pool, error);
+    requireOk(rachis_command_copy_buffer(device.get(), command, upload, readback, 0, 0, bufferSize, &error), error);
+    submitAndWait(device.get(), command, error);
+
+    requireOk(rachis_buffer_map(device.get(), readback, 0, RACHIS_WHOLE_SIZE, &mapped, &error), error);
+    REQUIRE(mapped.data != nullptr);
+    REQUIRE(mapped.size == bufferSize);
+    std::array<std::uint8_t, bufferSize> copied{};
+    CHECK(rachis_buffer_read(device.get(), readback, 0, copied.data(), copied.size(), &error) ==
+          RACHIS_STATUS_INVALID_STATE);
+    const rachis_mapped_range wholeRange{0, RACHIS_WHOLE_SIZE};
+    CHECK(rachis_buffer_flush_mapped_ranges(device.get(), readback, &wholeRange, 1, &error) ==
+          RACHIS_STATUS_UNSUPPORTED);
+    requireOk(rachis_buffer_invalidate_mapped_ranges(device.get(), readback, &wholeRange, 1, &error), error);
+    std::memcpy(copied.data(), mapped.data, copied.size());
+    requireOk(rachis_buffer_unmap(device.get(), readback, &error), error);
+    for (std::size_t index = 0; index < copied.size(); ++index)
+    {
+        INFO("byte " << index);
+        const bool written = index >= mapOffset && index < mapOffset + mapSize;
+        CHECK(copied[index] == (written ? expected[index - mapOffset] : 0));
+    }
+
+    requireOk(rachis_command_pool_destroy(device.get(), pool, &error), error);
+    requireOk(rachis_buffer_destroy(device.get(), deviceLocal, &error), error);
+    requireOk(rachis_buffer_destroy(device.get(), readback, &error), error);
+    requireOk(rachis_buffer_destroy(device.get(), upload, &error), error);
+    CHECK(rachis_buffer_map(device.get(), upload, 0, RACHIS_WHOLE_SIZE, &mapped, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_buffer_unmap(device.get(), upload, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_buffer_flush_mapped_ranges(device.get(), upload, &wholeRange, 1, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+}
+
+TEST_CASE("C ABI reports mapping and vertex input capabilities",
+          RACHIS_CABI_DEVICE_SIZE RACHIS_CABI_DEVICE_REQUIRES "[rachis][cabi]")
+{
+    auto error = makeError();
+    auto device = createDevice(error);
+    rachis_device_capabilities capabilities{};
+    CHECK(rachis_device_query_capabilities(device.get(), nullptr, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_device_query_capabilities(device.get(), &capabilities, &error) == RACHIS_STATUS_ABI_MISMATCH);
+    capabilities.struct_size = sizeof(capabilities);
+    capabilities.reserved0 = 7;
+    requireOk(rachis_device_query_capabilities(device.get(), &capabilities, &error), error);
+
+    CHECK(capabilities.unified_memory <= 1);
+    CHECK(capabilities.persistent_mapping == 1);
+    CHECK(capabilities.mapped_memory_host_coherent <= 1);
+    CHECK(capabilities.mapped_memory_non_coherent_atom_size >= 1);
+    if (RACHIS_SMOKE_BACKEND != RACHIS_BACKEND_VULKAN)
+    {
+        CHECK(capabilities.mapped_memory_host_coherent == 1);
+        CHECK(capabilities.mapped_memory_non_coherent_atom_size == 1);
+    }
+    constexpr std::uint64_t knownFormats = (std::uint64_t{1} << (RACHIS_VERTEX_FORMAT_FLOAT16X4 + 1)) - 1;
+    CHECK((capabilities.vertex_formats & ~knownFormats) == 0);
+    const std::array<std::uint32_t, 6> commonFormats{RACHIS_VERTEX_FORMAT_FLOAT32,
+                                                     RACHIS_VERTEX_FORMAT_FLOAT32X2,
+                                                     RACHIS_VERTEX_FORMAT_FLOAT32X3,
+                                                     RACHIS_VERTEX_FORMAT_FLOAT32X4,
+                                                     RACHIS_VERTEX_FORMAT_UINT32,
+                                                     RACHIS_VERTEX_FORMAT_UNORM8X4};
+    for (const auto format : commonFormats)
+    {
+        INFO("vertex format " << format);
+        CHECK((capabilities.vertex_formats & (std::uint64_t{1} << format)) != 0);
+    }
+    CHECK(capabilities.max_vertex_buffers >= 1);
+    CHECK(capabilities.max_vertex_buffers <= RACHIS_MAX_VERTEX_BUFFERS);
+    CHECK(capabilities.max_vertex_attributes >= 1);
+    CHECK(capabilities.max_vertex_attributes <= RACHIS_MAX_VERTEX_ATTRIBUTES);
+    CHECK(capabilities.max_vertex_buffer_stride >= 1);
+    CHECK(capabilities.max_vertex_instance_step_rate >= 1);
+    CHECK(capabilities.reserved0 == 0);
+}
+
 TEST_CASE("C ABI rejects descriptor version and layout mismatch", "[size:small]")
 {
     auto error = makeError();
@@ -1126,6 +1630,22 @@ TEST_CASE("C ABI rejects a null device or output with invalid argument", "[size:
     CHECK(rachis_buffer_read(nullptr, 1, 0, &byte, 1, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
     CHECK(rachis_buffer_write(nullptr, 1, 0, &byte, RACHIS_WHOLE_SIZE, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
     CHECK(rachis_buffer_read(nullptr, 1, 0, &byte, RACHIS_WHOLE_SIZE, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    rachis_device_capabilities deviceCapabilities{};
+    deviceCapabilities.struct_size = sizeof(deviceCapabilities);
+    rachis_mapped_memory mapped{};
+    mapped.struct_size = sizeof(mapped);
+    const rachis_mapped_range range{0, 1};
+    const rachis_vertex_buffer_binding vertexBinding{1, 0};
+    CHECK(rachis_device_query_capabilities(nullptr, &deviceCapabilities, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_buffer_map(nullptr, 1, 0, 1, &mapped, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_buffer_unmap(nullptr, 1, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_buffer_flush_mapped_ranges(nullptr, 1, &range, 1, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_buffer_invalidate_mapped_ranges(nullptr, 1, &range, 1, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_command_bind_vertex_buffers(nullptr, 1, 0, &vertexBinding, 1, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_command_bind_index_buffer(nullptr, 1, 1, RACHIS_INDEX_FORMAT_UINT16, 0, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_command_draw_indexed(nullptr, 1, 3, 1, 0, 0, 0, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
     rachis_device_destroy(nullptr);
 }
 
@@ -2787,6 +3307,79 @@ TEST_CASE("C ABI publishes D3D12 device loss through status, state, record and c
     requireOk(rachis_command_pool_destroy(device.get(), pool, &error), error);
     requireOk(rachis_buffer_destroy(device.get(), readback, &error), error);
     requireOk(rachis_buffer_destroy(device.get(), upload, &error), error);
+}
+
+TEST_CASE("C ABI keeps a mapped pointer writable after D3D12 device loss and still unmaps it",
+          "[size:medium][rachis][cabi][warp]")
+{
+    constexpr std::uint64_t bufferSize = 256;
+    auto error = makeError();
+    auto device = createDevice(error);
+    const auto mappedUpload =
+        createBuffer(device.get(), bufferSize, RACHIS_BUFFER_COPY_SOURCE, RACHIS_MEMORY_UPLOAD, error);
+    const auto unmappedUpload =
+        createBuffer(device.get(), bufferSize, RACHIS_BUFFER_COPY_SOURCE, RACHIS_MEMORY_UPLOAD, error);
+    const auto readback =
+        createBuffer(device.get(), bufferSize, RACHIS_BUFFER_COPY_DESTINATION, RACHIS_MEMORY_READBACK, error);
+    rachis_mapped_memory mapped{};
+    mapped.struct_size = sizeof(mapped);
+    requireOk(rachis_buffer_map(device.get(), mappedUpload, 0, RACHIS_WHOLE_SIZE, &mapped, &error), error);
+    REQUIRE(mapped.data != nullptr);
+    std::memset(mapped.data, 0x5A, static_cast<std::size_t>(mapped.size));
+    rachis_handle pool = 0;
+    const auto command = acquireCommand(device.get(), RACHIS_QUEUE_COPY, pool, error);
+    requireOk(rachis_command_copy_buffer(device.get(), command, mappedUpload, readback, 0, 0, bufferSize, &error),
+              error);
+
+    IDXGIFactory4* factory = nullptr;
+    REQUIRE(SUCCEEDED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory))));
+    IDXGIAdapter* adapter = nullptr;
+    REQUIRE(SUCCEEDED(factory->EnumWarpAdapter(IID_PPV_ARGS(&adapter))));
+    ID3D12Device5* removable = nullptr;
+    REQUIRE(SUCCEEDED(D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&removable))));
+    removable->RemoveDevice();
+    removable->Release();
+    adapter->Release();
+    factory->Release();
+
+    rachis_handle timeline = 0;
+    auto status = rachis_command_submit(device.get(), command, &timeline, &error);
+    if (status == RACHIS_STATUS_OK)
+    {
+        status = rachis_timeline_wait(device.get(), timeline, &error);
+    }
+    CHECK(status == RACHIS_STATUS_DEVICE_LOST);
+    std::uint32_t state = RACHIS_DEVICE_INVALID;
+    requireOk(rachis_device_operational_state(device.get(), &state, &error), error);
+    REQUIRE(state == RACHIS_DEVICE_LOST);
+
+    std::memset(mapped.data, 0xA5, static_cast<std::size_t>(mapped.size));
+    CHECK(static_cast<const std::uint8_t*>(mapped.data)[bufferSize - 1] == 0xA5);
+
+    const rachis_mapped_range wholeRange{0, RACHIS_WHOLE_SIZE};
+    CHECK(rachis_buffer_flush_mapped_ranges(device.get(), mappedUpload, &wholeRange, 1, &error) ==
+          RACHIS_STATUS_DEVICE_LOST);
+    rachis_mapped_memory rejected{};
+    rejected.struct_size = sizeof(rejected);
+    CHECK(rachis_buffer_map(device.get(), unmappedUpload, 0, RACHIS_WHOLE_SIZE, &rejected, &error) ==
+          RACHIS_STATUS_DEVICE_LOST);
+    CHECK(rejected.data == nullptr);
+    CHECK(rejected.size == 0);
+    CHECK(rachis_buffer_destroy(device.get(), mappedUpload, &error) == RACHIS_STATUS_INVALID_STATE);
+    rachis_device_capabilities capabilities{};
+    capabilities.struct_size = sizeof(capabilities);
+    requireOk(rachis_device_query_capabilities(device.get(), &capabilities, &error), error);
+    CHECK(capabilities.persistent_mapping == 1);
+
+    requireOk(rachis_buffer_unmap(device.get(), mappedUpload, &error), error);
+    if (timeline != 0)
+    {
+        requireOk(rachis_timeline_release(device.get(), timeline, &error), error);
+    }
+    requireOk(rachis_command_pool_destroy(device.get(), pool, &error), error);
+    requireOk(rachis_buffer_destroy(device.get(), readback, &error), error);
+    requireOk(rachis_buffer_destroy(device.get(), unmappedUpload, &error), error);
+    requireOk(rachis_buffer_destroy(device.get(), mappedUpload, &error), error);
 }
 #endif
 

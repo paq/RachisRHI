@@ -1038,7 +1038,13 @@ namespace rachis::vulkan
 
     Status VulkanDevice::unmapBuffer(BufferHandle buffer, std::uint64_t offset, std::uint64_t size)
     {
-        return resources_.unmapBuffer(buffer, offset, size);
+        auto unmapped = resources_.unmapBuffer(buffer, offset, size, requireActive().has_value());
+        if (!unmapped && unmapped.error().code == ErrorCode::deviceLost)
+        {
+            publishLoss(unmapped.error(), DeviceFaultStatus::unknown, false);
+            return resources_.unmapBuffer(buffer, offset, size, false);
+        }
+        return unmapped;
     }
 
     Status VulkanDevice::flushMappedMemoryRanges(BufferHandle buffer, std::span<const MappedMemoryRange> ranges)

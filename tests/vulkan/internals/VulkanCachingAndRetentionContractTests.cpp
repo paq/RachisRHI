@@ -199,6 +199,8 @@ namespace
         std::atomic<std::uint32_t> unmapMemoryCalls{0};
         std::atomic<std::uint32_t> flushRangeCalls{0};
         std::atomic<std::uint32_t> invalidateRangeCalls{0};
+        std::atomic<VkDeviceSize> lastFlushSize{0};
+        std::atomic<VkResult> flushResult{VK_SUCCESS};
 
         std::atomic<std::uint32_t> createBufferCalls{0};
         std::atomic<std::uint32_t> destroyBufferCalls{0};
@@ -531,10 +533,14 @@ namespace
         gPerfMock->unmapMemoryCalls.fetch_add(1, std::memory_order_relaxed);
     }
 
-    VKAPI_ATTR VkResult VKAPI_CALL perfFlushRanges(VkDevice, std::uint32_t count, const VkMappedMemoryRange*)
+    VKAPI_ATTR VkResult VKAPI_CALL perfFlushRanges(VkDevice, std::uint32_t count, const VkMappedMemoryRange* ranges)
     {
         gPerfMock->flushRangeCalls.fetch_add(count, std::memory_order_relaxed);
-        return VK_SUCCESS;
+        if (count != 0)
+        {
+            gPerfMock->lastFlushSize.store(ranges[count - 1].size, std::memory_order_relaxed);
+        }
+        return gPerfMock->flushResult.load(std::memory_order_relaxed);
     }
 
     VKAPI_ATTR VkResult VKAPI_CALL perfInvalidateRanges(VkDevice, std::uint32_t count, const VkMappedMemoryRange*)
@@ -2663,6 +2669,33 @@ TEST_CASE("VulkanResourceAllocator persistently maps VMA host buffers with zero 
         std::array<std::byte, 32> out{};
         REQUIRE(resources.readBuffer(*readback, 0, out).has_value());
         CHECK(mock.state.invalidateRangeCalls.load() == 1U);
+
+        auto partial = resources.mapBuffer(*upload, 64, 64);
+        REQUIRE(partial.has_value());
+        const auto outsideUnmap = resources.unmapBuffer(*upload, 0, 32);
+        REQUIRE_FALSE(outsideUnmap.has_value());
+        CHECK(outsideUnmap.error().code == rachis::ErrorCode::invalidArgument);
+        mock.state.lastFlushSize.store(0);
+        REQUIRE(resources.unmapBuffer(*upload, 0, rachis::wholeResource).has_value());
+        CHECK(mock.state.flushRangeCalls.load() == 3U);
+        CHECK(mock.state.lastFlushSize.load() == 64U);
+
+        auto mappedAtLoss = resources.mapBuffer(*upload, 0, 128);
+        REQUIRE(mappedAtLoss.has_value());
+        mock.state.flushResult.store(VK_ERROR_DEVICE_LOST);
+        const auto failedUnmap = resources.unmapBuffer(*upload, 0, 128);
+        REQUIRE_FALSE(failedUnmap.has_value());
+        CHECK(failedUnmap.error().code == rachis::ErrorCode::deviceLost);
+        const auto stillMapped = resources.mapBuffer(*upload, 0, 128);
+        REQUIRE_FALSE(stillMapped.has_value());
+        CHECK(stillMapped.error().code == rachis::ErrorCode::invalidState);
+        const auto flushesBeforeLostUnmap = mock.state.flushRangeCalls.load();
+        REQUIRE(resources.unmapBuffer(*upload, 0, 128, false).has_value());
+        CHECK(mock.state.flushRangeCalls.load() == flushesBeforeLostUnmap);
+        mock.state.flushResult.store(VK_SUCCESS);
+        auto remapped = resources.mapBuffer(*upload, 0, 128);
+        REQUIRE(remapped.has_value());
+        REQUIRE(resources.unmapBuffer(*upload, 0, 128).has_value());
 
         CHECK(mock.state.mapMemoryCalls.load() == 0U);
         CHECK(mock.state.unmapMemoryCalls.load() == 0U);
