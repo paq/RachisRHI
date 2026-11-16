@@ -1,0 +1,265 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # GitHub-hosted runners have no GPU. Each job runs the tiers that docs/building.md
+  # and tests/README.md list for a GPU-less host:
+  # - Windows: D3D12 on WARP runs small and medium tests without `requires:` labels.
+  #   Vulkan has no software device on Windows, so the D3D12 + Vulkan build runs only
+  #   small tests.
+  # - Linux: Vulkan device tests skip when no hardware driver is present.
+  # - macOS: small and medium tests. The one medium Metal device test needs the
+  #   runner's virtual GPU to report MTLGPUFamilyMetal4.
+  # The release-package entries build and install each product preset in Release.
+  windows:
+    name: Windows ${{ matrix.name }}
+    runs-on: windows-2025
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: D3D12 on WARP
+            configure: windows-x64-d3d12
+            build: windows-x64-d3d12-debug
+            test: '--preset windows-x64-d3d12-small-medium -LE requires:'
+            debug-layer: true
+          - name: D3D12 and Vulkan
+            configure: windows-x64-both
+            build: windows-x64-both-debug
+            test: '--test-dir out/build/windows-x64-both -C Debug -L size:small --no-tests=error'
+          - name: release package
+            configure: windows-x64-both-product
+            build: windows-x64-both-product-release
+            package: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the Direct3D 12 debug layer
+        if: matrix.debug-layer
+        shell: pwsh
+        run: |
+          $name = 'Tools.Graphics.DirectX~~~~0.0.1.0'
+          if ((Get-WindowsCapability -Online -Name $name).State -ne 'Installed') {
+            Add-WindowsCapability -Online -Name $name | Out-Null
+          }
+          if (-not (Test-Path "$env:SystemRoot\System32\d3d12SDKLayers.dll")) {
+            throw 'Graphics Tools did not install d3d12SDKLayers.dll.'
+          }
+
+      # Supplies the SPIR-V dxc, spirv-val, glslangValidator, and slangc (with the
+      # dxcompiler that Slang's DXIL target loads).
+      - uses: jakoch/install-vulkan-sdk-action@7fe84289ddbf750f7eff9f8e4588e600e1dd06c8 # v1.8.1
+        with:
+          vulkan_version: 1.4.341.1
+          cache: true
+
+      - name: Enter the Visual Studio x64 developer environment
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw 'No Visual Studio installation has the x64 C++ tools.' }
+          $before = @{}
+          Get-ChildItem env: | ForEach-Object { $before[$_.Name] = $_.Value }
+          $lines = cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set"
+          if ($LASTEXITCODE -ne 0) { throw 'vcvars64.bat failed.' }
+          foreach ($line in $lines) {
+            if ($line -match '^([^=]+)=(.*)$' -and $before[$Matches[1]] -ne $Matches[2]) {
+              "$($Matches[1])=$($Matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            }
+          }
+
+      # The versions in flake.lock's nixpkgs, so every host builds with the same CMake.
+      # The action prepends them to PATH, ahead of the copies bundled with Visual Studio.
+      - uses: lukka/get-cmake@16e8153a8b4918849d92aad131befe67a3705daa # v4.5.0
+        with:
+          cmakeVersion: 4.4.4
+          ninjaVersion: 1.13.2
+
+      # The Vulkan SDK's dxc comes first on PATH, but DXIL is cooked with the Windows
+      # SDK's dxc, as in a developer shell with the Vulkan SDK installed.
+      - name: Show tools
+        shell: pwsh
+        run: |
+          $dxc = (Join-Path $env:WindowsSdkVerBinPath 'x64\dxc.exe') -replace '\\', '/'
+          if (-not (Test-Path $dxc)) { throw "The Windows SDK has no dxc at $dxc." }
+          "RACHIS_WINDOWS_SDK_DXC=$dxc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          cmake --version
+          ninja --version
+          cl 2>&1 | Select-Object -First 1
+          & $dxc --version
+          slangc -v
+
+      - name: Configure
+        run: cmake --preset ${{ matrix.configure }} "-DRACHIS_DXC_EXECUTABLE=$env:RACHIS_WINDOWS_SDK_DXC"
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.build }}
+
+      - name: Test
+        if: matrix.test
+        run: ctest ${{ matrix.test }} --output-on-failure -j $env:NUMBER_OF_PROCESSORS
+
+      - name: Upload test logs
+        if: failure() && matrix.test
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ctest-logs-${{ matrix.configure }}
+          path: out/build/${{ matrix.configure }}/Testing/Temporary/
+          if-no-files-found: ignore
+
+      - name: Install
+        if: matrix.package
+        run: cmake --install out/build/${{ matrix.configure }} --config Release --prefix out/install/rachis
+
+      - name: Upload package
+        if: matrix.package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rachis-${{ matrix.configure }}
+          path: out/install/rachis/
+          if-no-files-found: error
+          retention-days: 14
+
+  # Linux and macOS build inside the flake's development shell, so CI uses the same
+  # pinned CMake, Ninja, compilers, and shader tools as `nix develop`.
+  unix:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux Vulkan
+            runner: ubuntu-24.04
+            configure: linux-x64-vulkan
+            build: linux-x64-vulkan-debug
+            test: '--preset linux-x64-vulkan-small-medium -LE requires:'
+          - name: Linux release package
+            runner: ubuntu-24.04
+            configure: linux-x64-vulkan-product
+            build: linux-x64-vulkan-product-release
+            package: true
+          - name: macOS Metal
+            runner: macos-26
+            configure: macos-arm64-metal
+            build: macos-arm64-metal-debug
+            test: '--preset macos-arm64-metal-small-medium'
+          - name: macOS release package
+            runner: macos-26
+            configure: macos-arm64-metal-product
+            build: macos-arm64-metal-product-release
+            package: true
+    defaults:
+      run:
+        shell: nix develop --command bash --noprofile --norc -eo pipefail {0}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Show tools
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            xcodebuild -version
+            xcrun --sdk macosx --show-sdk-version
+          fi
+          cmake --version
+          ninja --version
+          "${CXX:-c++}" --version
+          slangc -v
+
+      - name: Configure
+        run: cmake --preset ${{ matrix.configure }}
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.build }}
+
+      - name: Test
+        if: matrix.test
+        run: ctest ${{ matrix.test }} --output-on-failure -j "$(getconf _NPROCESSORS_ONLN)"
+
+      - name: Upload test logs
+        if: failure() && matrix.test
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ctest-logs-${{ matrix.configure }}
+          path: out/build/${{ matrix.configure }}/Testing/Temporary/
+          if-no-files-found: ignore
+
+      - name: Install
+        if: matrix.package
+        run: cmake --install out/build/${{ matrix.configure }} --config Release --prefix out/install/rachis
+
+      - name: Upload package
+        if: matrix.package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rachis-${{ matrix.configure }}
+          path: out/install/rachis/
+          if-no-files-found: error
+          retention-days: 14
+
+  tla:
+    name: TLA+ models
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # tools/tlc.sh needs tla2tools.jar 1.8.0 or later. TLA+ publishes 1.8.0 as a
+      # rolling prerelease, so this follows its latest build.
+      - name: Download tla2tools.jar
+        run: >-
+          curl --fail --silent --show-error --location --retry 3
+          --output "$RUNNER_TEMP/tla2tools.jar"
+          https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar
+
+      - name: Check every configuration
+        env:
+          TLA2TOOLS: ${{ runner.temp }}/tla2tools.jar
+        run: |
+          java -version
+          bash tools/tlc.sh
+
+  format:
+    name: clang-format
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      # clang-tools comes from the nixpkgs revision in flake.lock.
+      - name: Check formatting
+        run: |
+          nix shell --inputs-from . nixpkgs#clang-tools --command clang-format --version
+          git ls-files -z -- '*.c' '*.cpp' '*.h' '*.hpp' '*.m' '*.mm' |
+            nix shell --inputs-from . nixpkgs#clang-tools --command xargs -0 clang-format --dry-run --Werror
