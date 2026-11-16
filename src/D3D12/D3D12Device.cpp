@@ -143,6 +143,11 @@ namespace rachis::d3d12
             return factory;
         }
 
+        [[nodiscard]] constexpr bool isBasicRenderDriver(const DXGI_ADAPTER_DESC1& desc) noexcept
+        {
+            return desc.VendorId == 0x1414 && desc.DeviceId == 0x8c;
+        }
+
         [[nodiscard]] Result<std::vector<ComPtr<IDXGIAdapter1>>> enumerateHardwareAdapters(
             IDXGIFactory6& factory, DXGI_GPU_PREFERENCE preference)
         {
@@ -162,7 +167,8 @@ namespace rachis::d3d12
                 }
 
                 DXGI_ADAPTER_DESC1 desc{};
-                if (FAILED(adapter->GetDesc1(&desc)) || (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0)
+                if (FAILED(adapter->GetDesc1(&desc)) || (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0 ||
+                    isBasicRenderDriver(desc))
                 {
                     continue;
                 }
