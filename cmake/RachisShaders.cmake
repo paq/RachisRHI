@@ -7,6 +7,7 @@
 #       [LANGUAGE <HLSL|SLANG|GLSL>]
 #       ENTRY <entry point>
 #       STAGE <vertex|pixel|compute>
+#       [SHADER_MODEL <6_0|6_1|6_2|6_3|6_4|6_5|6_6>]
 #       [DEFINES <NAME=VALUE>...]
 #       [REFLECT])
 #
@@ -14,6 +15,11 @@
 # .glsl, .vert, .frag, and .comp are GLSL. Any other extension needs LANGUAGE. ENTRY is required
 # for HLSL and Slang. A GLSL shader's entry function is main, and ENTRY, which defaults to main,
 # names its SPIR-V entry point.
+#
+# SHADER_MODEL, 6_0 by default, is the HLSL shader model an HLSL or Slang shader is compiled for on
+# every backend: the dxc profile (cs_6_6 for SHADER_MODEL 6_6 and STAGE compute) and the slangc
+# -profile (sm_6_6). Raise it for shaders that use a feature of a later shader model, such as
+# 64-bit atomics (6_6). GLSL shaders ignore it.
 #
 # For every backend that Rachis::RHI was built with, the entry point is compiled with the
 # toolchain that backend and language expect:
@@ -85,7 +91,8 @@ function(_rachis_shaders_embed target name backend binary symbol out_header)
 endfunction()
 
 # Runs slangc -reflection-json on one backend's compilation of the source; no code is generated.
-function(_rachis_shaders_reflect target name backend slang_target source entry stage stem defines includes out_json)
+function(_rachis_shaders_reflect target name backend slang_target source entry stage profile stem defines includes
+    out_json)
     set(json "${stem}.${backend}.reflection.json")
     set(define_args)
     foreach(define IN LISTS defines)
@@ -115,7 +122,7 @@ function(_rachis_shaders_reflect target name backend slang_target source entry s
             "${source}"
             ${target_args}
             -no-codegen
-            -profile sm_6_0
+            -profile "${profile}"
             -matrix-layout-column-major
             -Wno-39029
             -Wno-39001
@@ -158,7 +165,7 @@ function(_rachis_shaders_language source language out_language)
 endfunction()
 
 function(rachis_add_shader target)
-    cmake_parse_arguments(PARSE_ARGV 1 SHADER "REFLECT" "NAME;SOURCE;LANGUAGE;ENTRY;STAGE" "DEFINES")
+    cmake_parse_arguments(PARSE_ARGV 1 SHADER "REFLECT" "NAME;SOURCE;LANGUAGE;ENTRY;STAGE;SHADER_MODEL" "DEFINES")
     if(SHADER_UNPARSED_ARGUMENTS)
         message(FATAL_ERROR "rachis_add_shader: unknown arguments '${SHADER_UNPARSED_ARGUMENTS}'.")
     endif()
@@ -190,12 +197,21 @@ function(rachis_add_shader target)
             "NAME must be unique within a target.")
     endif()
     set_property(GLOBAL APPEND PROPERTY RACHIS_SHADER_NAMES "${target}/${SHADER_NAME}")
+    if("${SHADER_SHADER_MODEL}" STREQUAL "")
+        set(SHADER_SHADER_MODEL 6_0)
+    endif()
+    if(NOT SHADER_SHADER_MODEL MATCHES "^6_[0-6]$")
+        message(FATAL_ERROR
+            "rachis_add_shader: SHADER_MODEL must be 6_0, 6_1, 6_2, 6_3, 6_4, 6_5, or 6_6 "
+            "(got '${SHADER_SHADER_MODEL}').")
+    endif()
+    set(slang_profile "sm_${SHADER_SHADER_MODEL}")
     if(SHADER_STAGE STREQUAL "vertex")
-        set(dxc_profile vs_6_0)
+        set(dxc_profile "vs_${SHADER_SHADER_MODEL}")
     elseif(SHADER_STAGE STREQUAL "pixel")
-        set(dxc_profile ps_6_0)
+        set(dxc_profile "ps_${SHADER_SHADER_MODEL}")
     elseif(SHADER_STAGE STREQUAL "compute")
-        set(dxc_profile cs_6_0)
+        set(dxc_profile "cs_${SHADER_SHADER_MODEL}")
     else()
         message(FATAL_ERROR
             "rachis_add_shader: STAGE must be vertex, pixel, or compute (got '${SHADER_STAGE}').")
@@ -300,6 +316,7 @@ function(rachis_add_shader target)
                 SOURCE "${SHADER_SOURCE}"
                 ENTRY "${SHADER_ENTRY}"
                 STAGE "${SHADER_STAGE}"
+                PROFILE "${slang_profile}"
                 OUTPUT "${binary_stem}.dxil"
                 DEFINES RACHIS_D3D12=1 ${SHADER_DEFINES}
                 INCLUDE_DIRECTORIES ${shader_includes}
@@ -319,7 +336,8 @@ function(rachis_add_shader target)
         _rachis_shaders_embed("${target}" "${SHADER_NAME}" d3d12 "${binary_stem}.dxil" "${symbol_stem}_dxil" header)
         if(SHADER_REFLECT)
             _rachis_shaders_reflect("${target}" "${SHADER_NAME}" d3d12 hlsl "${SHADER_SOURCE}" "${SHADER_ENTRY}"
-                "${SHADER_STAGE}" "${binary_stem}" "RACHIS_D3D12=1;${SHADER_DEFINES}" "${shader_includes}" reflection)
+                "${SHADER_STAGE}" "${slang_profile}" "${binary_stem}" "RACHIS_D3D12=1;${SHADER_DEFINES}" "${shader_includes}"
+                reflection)
             list(APPEND reflections "d3d12=${reflection}")
             # slangc reflects every resource the source declares; the DXIL tells whether this entry point reads
             # the draw index.
@@ -340,6 +358,7 @@ function(rachis_add_shader target)
                 SOURCE "${SHADER_SOURCE}"
                 ENTRY "${SHADER_ENTRY}"
                 STAGE "${SHADER_STAGE}"
+                PROFILE "${slang_profile}"
                 OUTPUT "${binary_stem}.spv"
                 DEFINES RACHIS_VULKAN=1 __spirv__=1 ${SHADER_DEFINES}
                 INCLUDE_DIRECTORIES ${shader_includes}
@@ -373,7 +392,8 @@ function(rachis_add_shader target)
         elseif(SHADER_REFLECT)
             # dxc -spirv defines __spirv__; define it for slangc too, so both see the same source.
             _rachis_shaders_reflect("${target}" "${SHADER_NAME}" vulkan spirv "${SHADER_SOURCE}" "${SHADER_ENTRY}"
-                "${SHADER_STAGE}" "${binary_stem}" "RACHIS_VULKAN=1;__spirv__=1;${SHADER_DEFINES}" "${shader_includes}"
+                "${SHADER_STAGE}" "${slang_profile}" "${binary_stem}" "RACHIS_VULKAN=1;__spirv__=1;${SHADER_DEFINES}"
+                "${shader_includes}"
                 reflection)
             list(APPEND reflections "vulkan=${reflection}")
             # dxc's relaxed std140 and std430 rules differ from Slang's, so Vulkan data layouts come from the
@@ -393,6 +413,7 @@ function(rachis_add_shader target)
             SOURCE "${SHADER_SOURCE}"
             ENTRY "${SHADER_ENTRY}"
             STAGE "${SHADER_STAGE}"
+            PROFILE "${slang_profile}"
             OUTPUT "${binary_stem}.metallib"
             DEFINES ${SHADER_DEFINES}
             INCLUDE_DIRECTORIES ${shader_includes}
@@ -402,11 +423,13 @@ function(rachis_add_shader target)
         if(SHADER_REFLECT)
             # Metal's logical sets and bindings follow the SPIR-V layout, as RachisShaderBinaryTool plans them.
             _rachis_shaders_reflect("${target}" "${SHADER_NAME}" metal spirv "${SHADER_SOURCE}" "${SHADER_ENTRY}"
-                "${SHADER_STAGE}" "${binary_stem}" "RACHIS_METAL=1;${SHADER_DEFINES}" "${shader_includes}" reflection)
+                "${SHADER_STAGE}" "${slang_profile}" "${binary_stem}" "RACHIS_METAL=1;${SHADER_DEFINES}" "${shader_includes}"
+                reflection)
             list(APPEND reflections "metal=${reflection}")
             # Slang compiles Metal itself, so its Metal reflection gives the data layouts.
             _rachis_shaders_reflect("${target}" "${SHADER_NAME}" metal-layout metal "${SHADER_SOURCE}"
-                "${SHADER_ENTRY}" "${SHADER_STAGE}" "${binary_stem}" "RACHIS_METAL=1;${SHADER_DEFINES}" "${shader_includes}"
+                "${SHADER_ENTRY}" "${SHADER_STAGE}" "${slang_profile}" "${binary_stem}" "RACHIS_METAL=1;${SHADER_DEFINES}"
+                "${shader_includes}"
                 layout)
             list(APPEND layouts "metal=${layout}")
             list(APPEND bytecodes "metal=${binary_stem}.pnms")

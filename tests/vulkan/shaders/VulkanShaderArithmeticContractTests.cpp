@@ -1,5 +1,6 @@
 #include "Rachis/Device.h"
 #include "RhiTestSupport.h"
+#include "ShaderInt64AtomicStorageBuffer.h"
 
 #ifdef _WINDOWS_
 #error Public Rachis headers must not include Windows.h.
@@ -18,6 +19,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <span>
 #include <vector>
@@ -26,6 +28,28 @@ namespace
 {
 
     constexpr std::uint64_t atomicSum = (64U * 65U) / 2U;
+
+    constexpr std::uint32_t storageAtomicGroupSize = 64;
+    constexpr std::uint32_t storageAtomicGroupCount = 16;
+
+    [[nodiscard]] constexpr std::uint64_t storageAtomicKey(std::uint32_t lane) noexcept
+    {
+        const std::uint32_t high = ((lane >> 1U) + 1U) * 2654435761U;
+        const std::uint32_t low = lane * 2246822519U;
+        return (std::uint64_t{high} << 32U) | low;
+    }
+
+    [[nodiscard]] constexpr std::array<std::uint64_t, 2> expectedStorageAtomicExtremes() noexcept
+    {
+        std::array<std::uint64_t, 2> extremes{0, std::numeric_limits<std::uint64_t>::max()};
+        for (std::uint32_t lane = 0; lane < storageAtomicGroupSize * storageAtomicGroupCount; ++lane)
+        {
+            const auto key = storageAtomicKey(lane);
+            extremes[0] = key > extremes[0] ? key : extremes[0];
+            extremes[1] = key < extremes[1] ? key : extremes[1];
+        }
+        return extremes;
+    }
 
     [[nodiscard]] rachis::DeviceDesc vulkanDesc() noexcept
     {
@@ -607,7 +631,7 @@ TEST_CASE("Vulkan 16-bit storage, 16-bit stage I/O, and 64-bit float shaders run
     CHECK(device.diagnosticCounts().errors == 0);
 }
 
-TEST_CASE("Vulkan group-shared and typed 64-bit atomics stay independent and storage-buffer atomics fail",
+TEST_CASE("Vulkan group-shared and typed 64-bit atomics accumulate every compute lane",
           "[size:medium][requires:HardwareVulkan][rhi][vulkan][shader][atomic][compute]")
 {
     auto created = rachis::createDevice(vulkanDesc());
@@ -626,22 +650,8 @@ TEST_CASE("Vulkan group-shared and typed 64-bit atomics stay independent and sto
 
     const auto groupBytecode = loadSpirv("ShaderInt64AtomicGroupShared.spv");
     const auto typedBytecode = loadSpirv("ShaderInt64AtomicTypedResource.spv");
-    const auto storageBytecode = loadSpirv("ShaderInt64AtomicStorageBuffer.spv");
     REQUIRE_FALSE(groupBytecode.empty());
     REQUIRE_FALSE(typedBytecode.empty());
-    REQUIRE_FALSE(storageBytecode.empty());
-
-    auto storageShader = device.createShaderModule({
-        .stage = rachis::ShaderStage::compute,
-        .bytecode = storageBytecode,
-        .entryPoint = "main",
-        .label = "Vulkan storage-buffer int64 atomics",
-        .shaderInterface = rachis::test::computeShaderInterface(
-            {1, 1, 1},
-            std::array{rachis::ShaderBindingRequirement{0, 0, rachis::ShaderResourceType::storageBuffer, 1}}),
-    });
-    REQUIRE_FALSE(storageShader);
-    CHECK(storageShader.error().code == rachis::ErrorCode::unsupported);
 
     auto groupShader = device.createShaderModule({
         .stage = rachis::ShaderStage::compute,
@@ -827,6 +837,129 @@ TEST_CASE("Vulkan group-shared and typed 64-bit atomics stay independent and sto
     REQUIRE(device.destroyShaderModule(*groupShader));
     REQUIRE(device.destroyBuffer(*groupOutput));
     REQUIRE(device.destroyBuffer(*groupReadback));
+    CHECK(device.diagnosticCounts().errors == 0);
+}
+
+TEST_CASE("Vulkan storage-buffer 64-bit atomics keep the unsigned maximum and minimum of every compute lane",
+          "[size:medium][requires:HardwareVulkan][rhi][vulkan][shader][atomic][compute]")
+{
+    auto created = rachis::createDevice(vulkanDesc());
+    if (rachis::test::skipWithoutCreatedDevice(created))
+    {
+        return;
+    }
+    auto device = std::move(*created);
+    const auto capabilities = rachis::test::requireCapabilities(device);
+
+    const auto bytecode = rachis_shaders::ShaderInt64AtomicStorageBuffer(rachis::Backend::vulkan);
+    REQUIRE_FALSE(bytecode.empty());
+    auto shader = device.createShaderModule({
+        .stage = rachis::ShaderStage::compute,
+        .bytecode = bytecode,
+        .entryPoint = "main",
+        .label = "Vulkan storage-buffer int64 atomics",
+        .shaderInterface = rachis::test::computeShaderInterface(
+            {storageAtomicGroupSize, 1, 1},
+            std::array{rachis::ShaderBindingRequirement{0, 0, rachis::ShaderResourceType::storageBuffer, 1}}),
+    });
+    if (!capabilities.shaderInt64AtomicStorageBuffer)
+    {
+        REQUIRE_FALSE(shader);
+        CHECK(shader.error().code == rachis::ErrorCode::unsupported);
+        SKIP("This Vulkan device does not advertise shaderInt64AtomicStorageBuffer.");
+    }
+    if (!shader)
+    {
+        UNSCOPED_INFO(shader.error().message);
+    }
+    REQUIRE(shader);
+    CHECK(capabilities.shaderInt64);
+
+    constexpr std::array<std::uint64_t, 2> initial{0, std::numeric_limits<std::uint64_t>::max()};
+    constexpr std::uint64_t extremesBytes = sizeof(initial);
+    auto extremes = device.createBuffer({
+        .size = extremesBytes,
+        .usage = rachis::BufferUsage::storage | rachis::BufferUsage::copySource | rachis::BufferUsage::copyDestination,
+        .label = "Vulkan storage-buffer atomic extremes",
+    });
+    auto upload = device.createBuffer({
+        .size = extremesBytes,
+        .usage = rachis::BufferUsage::copySource,
+        .memoryType = rachis::MemoryType::upload,
+        .label = "Vulkan storage-buffer atomic upload",
+    });
+    auto readback = device.createBuffer({
+        .size = extremesBytes,
+        .usage = rachis::BufferUsage::copyDestination,
+        .memoryType = rachis::MemoryType::readback,
+        .label = "Vulkan storage-buffer atomic readback",
+    });
+    REQUIRE(extremes);
+    REQUIRE(upload);
+    REQUIRE(readback);
+    REQUIRE(device.writeBuffer(*upload, 0, std::as_bytes(std::span(initial))));
+
+    const std::array entries{
+        rachis::BindingLayoutEntry{0, rachis::BindingType::storageBuffer, rachis::ShaderStage::compute},
+    };
+    auto layout = device.createBindingLayout({.entries = entries});
+    REQUIRE(layout);
+    const std::array writes{
+        rachis::BindingWrite{0, 0, rachis::BufferBinding{*extremes, 0, extremesBytes, sizeof(std::uint64_t)}},
+    };
+    auto set = rachis::test::createBindingSet(device, {.layout = *layout, .writes = writes});
+    REQUIRE(set);
+    const std::array layouts{*layout};
+    auto pipelineLayout = device.createPipelineLayout({.bindingLayouts = layouts});
+    REQUIRE(pipelineLayout);
+    auto pipeline = device.createComputePipeline({.layout = *pipelineLayout, .computeShader = *shader});
+    REQUIRE(pipeline);
+
+    auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+    REQUIRE(command);
+    REQUIRE(device.copyBuffer(*command, {*upload, 0, *extremes, 0, extremesBytes}));
+    REQUIRE(device
+                .bufferBarrier(*command,
+                               {
+                                   .buffer = *extremes,
+                                   .stagesBefore = rachis::PipelineStage::copy,
+                                   .stagesAfter = rachis::PipelineStage::computeShader,
+                                   .accessBefore = rachis::Access::copyDestination,
+                                   .accessAfter = rachis::Access::unorderedAccess,
+                               })
+                .has_value());
+    REQUIRE(device.bindComputePipeline(*command, *pipeline));
+    REQUIRE(device.bindComputeBindingSet(*command, 0, *set));
+    REQUIRE(device.dispatch(*command, storageAtomicGroupCount));
+    REQUIRE(device
+                .bufferBarrier(*command,
+                               {
+                                   .buffer = *extremes,
+                                   .stagesBefore = rachis::PipelineStage::computeShader,
+                                   .stagesAfter = rachis::PipelineStage::copy,
+                                   .accessBefore = rachis::Access::unorderedAccess,
+                                   .accessAfter = rachis::Access::copySource,
+                               })
+                .has_value());
+    REQUIRE(device.copyBuffer(*command, {*extremes, 0, *readback, 0, extremesBytes}));
+    auto submitted = device.submit(std::move(*command));
+    REQUIRE(submitted);
+    REQUIRE(device.wait(*submitted));
+    auto mapped = device.mapBuffer(*readback);
+    REQUIRE(mapped);
+    std::array<std::uint64_t, 2> result{};
+    std::memcpy(result.data(), mapped->data, extremesBytes);
+    CHECK(result == expectedStorageAtomicExtremes());
+    REQUIRE(device.unmapBuffer(*readback));
+
+    REQUIRE(device.destroyPipeline(*pipeline));
+    REQUIRE(device.destroyPipelineLayout(*pipelineLayout));
+    REQUIRE(device.destroyBindingSet(*set));
+    REQUIRE(device.destroyBindingLayout(*layout));
+    REQUIRE(device.destroyShaderModule(*shader));
+    REQUIRE(device.destroyBuffer(*extremes));
+    REQUIRE(device.destroyBuffer(*upload));
+    REQUIRE(device.destroyBuffer(*readback));
     CHECK(device.diagnosticCounts().errors == 0);
 }
 

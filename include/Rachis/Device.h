@@ -292,6 +292,7 @@ namespace rachis
 
         bool shaderInt64AtomicGroupShared = false;
         bool shaderInt64AtomicTypedResource = false;
+        bool shaderInt64AtomicStorageBuffer = false;
 
         bool subgroupOperations = false;
         SubgroupCapabilities subgroup = {};

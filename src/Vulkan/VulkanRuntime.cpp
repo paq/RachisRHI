@@ -1324,6 +1324,7 @@ namespace rachis::vulkan
             record.shaderInt16 = features.base.shaderInt16 == VK_TRUE;
             record.shaderInt64 = features.base.shaderInt64 == VK_TRUE;
             record.shaderSharedInt64Atomics = features.v12.shaderSharedInt64Atomics == VK_TRUE;
+            record.shaderBufferInt64Atomics = features.v12.shaderBufferInt64Atomics == VK_TRUE;
             record.geometryShaders = features.base.geometryShader == VK_TRUE;
             record.tessellationShaders = features.base.tessellationShader == VK_TRUE;
             record.tessellationMaxPatchControlPoints =
@@ -2718,6 +2719,7 @@ namespace rachis::vulkan
             chain.v12.descriptorIndexing = available.v12.descriptorIndexing;
             chain.v12.shaderFloat16 = available.v12.shaderFloat16;
             chain.v12.shaderSharedInt64Atomics = available.v12.shaderSharedInt64Atomics;
+            chain.v12.shaderBufferInt64Atomics = available.v12.shaderBufferInt64Atomics;
             chain.v12.shaderOutputLayer = available.v12.shaderOutputLayer;
             chain.v12.shaderOutputViewportIndex = available.v12.shaderOutputViewportIndex;
             chain.v12.samplerFilterMinmax = available.v12.samplerFilterMinmax;
@@ -3059,6 +3061,7 @@ namespace rachis::vulkan
             capabilities.shaderInt64 = record.shaderInt64;
             capabilities.shaderInt64AtomicGroupShared = record.shaderInt64 && record.shaderSharedInt64Atomics;
             capabilities.shaderInt64AtomicTypedResource = record.shaderInt64 && record.shaderImageInt64Atomics;
+            capabilities.shaderInt64AtomicStorageBuffer = record.shaderInt64 && record.shaderBufferInt64Atomics;
             capabilities.subgroupOperations = record.subgroupOperations;
             if (capabilities.subgroupOperations)
             {

@@ -1,5 +1,6 @@
 #include "Rachis/Device.h"
 #include "RhiTestSupport.h"
+#include "ShaderInt64AtomicStorageBuffer.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -9,6 +10,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -19,6 +21,28 @@ namespace
 {
 
     constexpr std::uint64_t atomicSum = (64U * 65U) / 2U;
+
+    constexpr std::uint32_t storageAtomicGroupSize = 64;
+    constexpr std::uint32_t storageAtomicGroupCount = 16;
+
+    [[nodiscard]] constexpr std::uint64_t storageAtomicKey(std::uint32_t lane) noexcept
+    {
+        const std::uint32_t high = ((lane >> 1U) + 1U) * 2654435761U;
+        const std::uint32_t low = lane * 2246822519U;
+        return (std::uint64_t{high} << 32U) | low;
+    }
+
+    [[nodiscard]] constexpr std::array<std::uint64_t, 2> expectedStorageAtomicExtremes() noexcept
+    {
+        std::array<std::uint64_t, 2> extremes{0, std::numeric_limits<std::uint64_t>::max()};
+        for (std::uint32_t lane = 0; lane < storageAtomicGroupSize * storageAtomicGroupCount; ++lane)
+        {
+            const auto key = storageAtomicKey(lane);
+            extremes[0] = key > extremes[0] ? key : extremes[0];
+            extremes[1] = key < extremes[1] ? key : extremes[1];
+        }
+        return extremes;
+    }
 
     void printDiagnostic(const rachis::DiagnosticMessage& message, void*) noexcept
     {
@@ -339,6 +363,142 @@ TEST_CASE("reported typed-resource int64 atomics accumulate every compute lane",
     REQUIRE(device.destroyBindingLayout(*bindingLayout).has_value());
     REQUIRE(device.destroyTextureView(*outputView).has_value());
     REQUIRE(device.destroyTexture(*output).has_value());
+    REQUIRE(device.destroyBuffer(*readback).has_value());
+    verifyDiagnostics(device);
+}
+
+TEST_CASE("reported storage-buffer int64 atomics keep the unsigned maximum and minimum of every compute lane",
+          "[size:medium][rhi][compute][shader64][atomic][storage-buffer][hardware]")
+{
+    auto selected = selectDevice(&rachis::DeviceCapabilities::shaderInt64AtomicStorageBuffer);
+    if (!selected)
+    {
+        SKIP("No D3D12 adapter reports storage-buffer 64-bit integer atomics.");
+    }
+    INFO("Selected adapter: " << selected->adapterName);
+    auto& device = selected->device;
+    REQUIRE(rachis::test::requireCapabilities(device).shaderInt64);
+    REQUIRE(rachis::test::requireCapabilities(device).shaderModel >= rachis::ApiVersion{6, 6});
+
+    const auto bytecode = rachis_shaders::ShaderInt64AtomicStorageBuffer(rachis::Backend::d3d12);
+    REQUIRE_FALSE(bytecode.empty());
+    auto shader = device.createShaderModule({
+        .stage = rachis::ShaderStage::compute,
+        .bytecode = bytecode,
+        .entryPoint = "main",
+        .label = "Storage-buffer int64 atomic shader",
+        .shaderInterface = rachis::test::computeShaderInterface(
+            {storageAtomicGroupSize, 1, 1},
+            std::array{rachis::ShaderBindingRequirement{0, 0, rachis::ShaderResourceType::storageBuffer, 1}}),
+    });
+    REQUIRE(shader.has_value());
+
+    constexpr std::array<std::uint64_t, 2> initial{0, std::numeric_limits<std::uint64_t>::max()};
+    constexpr std::uint64_t extremesBytes = sizeof(initial);
+    auto extremes = device.createBuffer({
+        .size = extremesBytes,
+        .usage = rachis::BufferUsage::storage | rachis::BufferUsage::copySource | rachis::BufferUsage::copyDestination,
+        .memoryType = rachis::MemoryType::deviceLocal,
+        .label = "Storage-buffer int64 atomic extremes",
+    });
+    auto upload = device.createBuffer({
+        .size = extremesBytes,
+        .usage = rachis::BufferUsage::copySource,
+        .memoryType = rachis::MemoryType::upload,
+        .label = "Storage-buffer int64 atomic upload",
+    });
+    auto readback = device.createBuffer({
+        .size = extremesBytes,
+        .usage = rachis::BufferUsage::copyDestination,
+        .memoryType = rachis::MemoryType::readback,
+        .label = "Storage-buffer int64 atomic readback",
+    });
+    REQUIRE(extremes.has_value());
+    REQUIRE(upload.has_value());
+    REQUIRE(readback.has_value());
+    REQUIRE(device.writeBuffer(*upload, 0, std::as_bytes(std::span(initial))).has_value());
+
+    const std::array entries{
+        rachis::BindingLayoutEntry{0, rachis::BindingType::storageBuffer, rachis::ShaderStage::compute},
+    };
+    auto bindingLayout = device.createBindingLayout({.entries = entries, .label = "Storage-buffer atomic layout"});
+    REQUIRE(bindingLayout.has_value());
+    const std::array writes{
+        rachis::BindingWrite{
+            .binding = 0,
+            .resource =
+                rachis::BufferBinding{
+                    .buffer = *extremes,
+                    .size = extremesBytes,
+                    .structureByteStride = sizeof(std::uint64_t),
+                },
+        },
+    };
+    auto bindingSet = rachis::test::createBindingSet(device,
+                                                     {
+                                                         .layout = *bindingLayout,
+                                                         .writes = writes,
+                                                         .label = "Storage-buffer atomic bindings",
+                                                     });
+    REQUIRE(bindingSet.has_value());
+    const std::array layouts{*bindingLayout};
+    auto pipelineLayout =
+        device.createPipelineLayout({.bindingLayouts = layouts, .label = "Storage-buffer atomic pipeline layout"});
+    REQUIRE(pipelineLayout.has_value());
+    auto pipeline = device.createComputePipeline({
+        .layout = *pipelineLayout,
+        .computeShader = *shader,
+        .label = "Storage-buffer atomic pipeline",
+    });
+    REQUIRE(pipeline.has_value());
+
+    auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+    REQUIRE(command.has_value());
+    REQUIRE(device.copyBuffer(*command, {.source = *upload, .destination = *extremes, .size = extremesBytes})
+                .has_value());
+    REQUIRE(device
+                .bufferBarrier(*command,
+                               {
+                                   .buffer = *extremes,
+                                   .stagesBefore = rachis::PipelineStage::copy,
+                                   .stagesAfter = rachis::PipelineStage::computeShader,
+                                   .accessBefore = rachis::Access::copyDestination,
+                                   .accessAfter = rachis::Access::unorderedAccess,
+                               })
+                .has_value());
+    REQUIRE(device.bindComputePipeline(*command, *pipeline).has_value());
+    REQUIRE(device.bindComputeBindingSet(*command, 0, *bindingSet).has_value());
+    REQUIRE(device.dispatch(*command, storageAtomicGroupCount).has_value());
+    REQUIRE(device
+                .bufferBarrier(*command,
+                               {
+                                   .buffer = *extremes,
+                                   .stagesBefore = rachis::PipelineStage::computeShader,
+                                   .stagesAfter = rachis::PipelineStage::copy,
+                                   .accessBefore = rachis::Access::unorderedAccess,
+                                   .accessAfter = rachis::Access::copySource,
+                               })
+                .has_value());
+    REQUIRE(device.copyBuffer(*command, {.source = *extremes, .destination = *readback, .size = extremesBytes})
+                .has_value());
+    auto submitted = device.submit(std::move(*command));
+    REQUIRE(submitted.has_value());
+    REQUIRE(device.wait(*submitted).has_value());
+
+    auto mapped = device.mapBuffer(*readback);
+    REQUIRE(mapped.has_value());
+    std::array<std::uint64_t, 2> result{};
+    std::memcpy(result.data(), mapped->data, extremesBytes);
+    CHECK(result == expectedStorageAtomicExtremes());
+    REQUIRE(device.unmapBuffer(*readback).has_value());
+
+    REQUIRE(device.destroyPipeline(*pipeline).has_value());
+    REQUIRE(device.destroyPipelineLayout(*pipelineLayout).has_value());
+    REQUIRE(device.destroyShaderModule(*shader).has_value());
+    REQUIRE(device.destroyBindingSet(*bindingSet).has_value());
+    REQUIRE(device.destroyBindingLayout(*bindingLayout).has_value());
+    REQUIRE(device.destroyBuffer(*extremes).has_value());
+    REQUIRE(device.destroyBuffer(*upload).has_value());
     REQUIRE(device.destroyBuffer(*readback).has_value());
     verifyDiagnostics(device);
 }

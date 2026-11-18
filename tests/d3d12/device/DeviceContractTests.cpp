@@ -63,6 +63,8 @@ namespace
             CHECK(capabilities.shaderInt64);
             CHECK(capabilities.shaderModel >= rachis::ApiVersion{6, 6});
         }
+        CHECK(capabilities.shaderInt64AtomicStorageBuffer ==
+              (capabilities.shaderInt64 && capabilities.shaderModel >= rachis::ApiVersion{6, 6}));
     }
 
     void verifyFramebufferLayerAndMultiviewLimits(const rachis::DeviceCapabilities& capabilities)

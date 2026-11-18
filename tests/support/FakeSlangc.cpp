@@ -22,6 +22,7 @@ namespace
     {
         Invocation invocation = Invocation::metalSource;
         std::string entryPoint;
+        std::string profile;
         std::optional<std::filesystem::path> output;
         std::optional<std::filesystem::path> reflectionJson;
         std::vector<std::string> defines{};
@@ -49,6 +50,10 @@ namespace
             else if (flag == "-entry" && hasValue)
             {
                 request.entryPoint = asciiText(args[++index]);
+            }
+            else if (flag == "-profile" && hasValue)
+            {
+                request.profile = asciiText(args[++index]);
             }
             else if (flag == "-o" && hasValue)
             {
@@ -158,6 +163,7 @@ namespace
         const Request request = parseRequest(args);
         const std::string_view name = invocationName(request.invocation);
         std::cerr << "fake slangc: " << name << " ran\n";
+        std::cerr << "fake slangc: " << name << " profile " << request.profile << '\n';
         for (const auto& directory : request.includeDirectories)
         {
             std::cerr << "fake slangc: " << name << " includes " << directory << '\n';

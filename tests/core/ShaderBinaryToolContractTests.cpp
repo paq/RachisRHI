@@ -22,6 +22,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #ifdef _WIN32
@@ -787,6 +788,64 @@ TEST_CASE("RachisShaderBinaryTool cook-metallib passes every include directory t
     CHECK(missing.status != 0);
     CHECK(missing.stderrText.contains("Missing value for argument: --include-dir"));
 }
+
+TEST_CASE("RachisShaderBinaryTool cook-metallib compiles every slangc step with the requested shader profile",
+          "[size:small][rhi][shader][tooling]")
+{
+    ScopedTempDirectory const temp;
+    const auto slangc = std::filesystem::path(RACHIS_FAKE_SLANGC_PATH).lexically_normal();
+    REQUIRE(std::filesystem::is_regular_file(slangc));
+    const auto source = temp.path / "shader.slang";
+    writeBinaryFile(source, asBytes(fakeCookSource));
+    const auto cookWithProfile = [&](std::string_view directory, std::string_view profile, std::string_view define) {
+        const auto outputs = cookOutputsIn(temp.path / directory);
+        auto result = runShaderBinaryTool(temp.path,
+                                          {"cook-metallib",
+                                           "--slangc",
+                                           slangc,
+                                           "--source",
+                                           source,
+                                           "--entry",
+                                           "computeMain",
+                                           "--output",
+                                           outputs.metallib,
+                                           "--json",
+                                           outputs.json,
+                                           "--pnms",
+                                           outputs.pnms,
+                                           "--profile",
+                                           profile,
+                                           "--define",
+                                           define});
+        return std::pair{std::move(result), anyCookOutputExists(outputs)};
+    };
+
+    const auto defaultProfile =
+        runCookMetallib(temp.path, slangc, source, cookOutputsIn(temp.path / "default"), "RACHIS_METAL=1");
+    INFO("stderr=" << defaultProfile.stderrText);
+    REQUIRE(defaultProfile.status == 0);
+    CHECK(defaultProfile.stderrText.contains("fake slangc: metallib profile sm_6_0"));
+
+    const auto [raised, raisedOutputs] = cookWithProfile("raised", "sm_6_6", "RACHIS_METAL=1");
+    INFO("stderr=" << raised.stderrText);
+    REQUIRE(raised.status == 0);
+    CHECK(raisedOutputs);
+    CHECK(raised.stderrText.contains("fake slangc: metallib profile sm_6_6"));
+
+    const auto [spirvProbe, spirvProbeOutputs] = cookWithProfile("spirv", "sm_6_6", "FAKE_SLANGC_SPIRV_PROBE=fail");
+    CHECK(spirvProbe.status != 0);
+    CHECK(spirvProbe.stderrText.contains("fake slangc: spirv-probe profile sm_6_6"));
+    const auto [metalProbe, metalProbeOutputs] = cookWithProfile("metal", "sm_6_6", "FAKE_SLANGC_METAL_PROBE=fail");
+    CHECK(metalProbe.status != 0);
+    CHECK(metalProbe.stderrText.contains("fake slangc: metal-probe profile sm_6_6"));
+
+    const auto [unsupported, unsupportedOutputs] = cookWithProfile("unsupported", "sm_6_7", "RACHIS_METAL=1");
+    CHECK(unsupported.status != 0);
+    CHECK(unsupported.stderrText.contains("--profile must be sm_6_0, sm_6_1, sm_6_2, sm_6_3, sm_6_4, sm_6_5, or sm_6_6."));
+    CHECK_FALSE(unsupported.stderrText.contains("fake slangc"));
+    CHECK_FALSE(unsupportedOutputs);
+}
+
 TEST_CASE("RachisShaderBinaryTool cook-metallib reports the command when slangc cannot start",
           "[size:small][rhi][shader][tooling]")
 {

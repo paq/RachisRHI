@@ -5,7 +5,7 @@ This page describes the host platforms RachisRHI targets, optional feature avail
 ## Contents
 
 - [Supported hosts](#supported-hosts)
-- [Optional features by backend](#optional-features-by-backend) ([Acceleration-structure operations](#acceleration-structure-operations))
+- [Optional features by backend](#optional-features-by-backend) ([64-bit atomics](#64-bit-atomics), [Acceleration-structure operations](#acceleration-structure-operations))
 - [Vulkan profile](#vulkan-profile)
 - [Fallback and validation](#fallback-and-validation)
 - [Direct3D 12 validation is process-wide](#direct3d-12-validation-is-process-wide)
@@ -58,8 +58,19 @@ The table below shows which backends *can* report each feature (subject to adapt
 | `multiDispatchIndirect` | Yes | Yes | No |
 | `dispatchIndirectCount` | Yes | Yes, with the `bufferDeviceAddress` and `shaderInt64` features | No |
 | `updateAfterBindBindingArrays` | Yes | Yes | Yes, variable-count arrays only |
+| `shaderInt64AtomicGroupShared`, `shaderInt64AtomicTypedResource`, `shaderInt64AtomicStorageBuffer` | Yes | Yes | No |
 
 On Vulkan, `multiDispatchIndirect` and `dispatchIndirectCount` are emulated; see [Indirect dispatch batches on Vulkan](#indirect-dispatch-batches-on-vulkan).
+
+### 64-bit atomics
+
+Each 64-bit atomic capability needs `shaderInt64`, and a shader built for shader model 6.6 (see [Shader model](using.md#shader-model)). The backends report them from these native features:
+
+| `DeviceCapabilities` field | Direct3D 12 | Vulkan |
+| --- | --- | --- |
+| `shaderInt64AtomicStorageBuffer` | Shader model 6.6 | `shaderBufferInt64Atomics` |
+| `shaderInt64AtomicGroupShared` | Shader model 6.6 and `AtomicInt64OnGroupSharedSupported` | `shaderSharedInt64Atomics` |
+| `shaderInt64AtomicTypedResource` | Shader model 6.6 and `AtomicInt64OnTypedResourceSupported` | `shaderImageInt64Atomics` and storage-image atomics on `R64_UINT` |
 
 ### Acceleration-structure operations
 

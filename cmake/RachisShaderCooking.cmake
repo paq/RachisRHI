@@ -6,9 +6,9 @@ option(RACHIS_METAL_EMIT_DEBUG_SOURCE
 
 set(RACHIS_SHADER_COOKING_KEY_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/WriteShaderArtifactKey.cmake")
 set(RACHIS_SHADER_DEPFILE_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/WriteShaderDepfile.cmake")
+set(RACHIS_SHADER_SLANG_DEFAULT_PROFILE sm_6_0)
 set(RACHIS_SHADER_SLANG_SPIRV_OPTIONS
     -target spirv
-    -profile sm_6_0
     -matrix-layout-column-major
     -restrictive-capability-check
     -warnings-as-errors all
@@ -21,7 +21,6 @@ set(RACHIS_SHADER_SLANG_SPIRV_OPTIONS
 )
 set(RACHIS_SHADER_SLANG_DXIL_OPTIONS
     -target dxil
-    -profile sm_6_0
     -matrix-layout-column-major
     -restrictive-capability-check
     -warnings-as-errors all
@@ -41,7 +40,6 @@ set(RACHIS_SHADER_METAL_ENVIRONMENT macos26-metal4)
 set(RACHIS_SHADER_METAL_MSL macos-metal4)
 set(RACHIS_SHADER_SLANG_METALLIB_OPTIONS
     -target metallib
-    -profile sm_6_0
     -matrix-layout-column-major
     -restrictive-capability-check
     -fvk-use-entrypoint-name
@@ -403,9 +401,13 @@ function(rachis_cook_dxc_dxil)
 endfunction()
 
 function(rachis_cook_slang_spirv)
-    cmake_parse_arguments(COOK "" "SOURCE;ENTRY;STAGE;OUTPUT;COMMENT" "DEFINES;DEPENDS;INCLUDE_DIRECTORIES" ${ARGN})
+    cmake_parse_arguments(COOK "" "SOURCE;ENTRY;STAGE;PROFILE;OUTPUT;COMMENT" "DEFINES;DEPENDS;INCLUDE_DIRECTORIES"
+        ${ARGN})
     if(NOT COOK_SOURCE OR NOT COOK_ENTRY OR NOT COOK_OUTPUT)
         message(FATAL_ERROR "rachis_cook_slang_spirv requires SOURCE, ENTRY, and OUTPUT")
+    endif()
+    if(NOT COOK_PROFILE)
+        set(COOK_PROFILE "${RACHIS_SHADER_SLANG_DEFAULT_PROFILE}")
     endif()
     set(key_path "${COOK_OUTPUT}.key")
     set(define_args)
@@ -417,7 +419,7 @@ function(rachis_cook_slang_spirv)
     if(COOK_STAGE)
         set(stage_args -stage "${COOK_STAGE}")
     endif()
-    set(compile_options ${RACHIS_SHADER_SLANG_SPIRV_OPTIONS} ${stage_args})
+    set(compile_options ${RACHIS_SHADER_SLANG_SPIRV_OPTIONS} -profile "${COOK_PROFILE}" ${stage_args})
     foreach(directory IN LISTS COOK_INCLUDE_DIRECTORIES)
         list(APPEND compile_options -I "${directory}")
     endforeach()
@@ -447,7 +449,7 @@ function(rachis_cook_slang_spirv)
             "-DDEPFILE=${COOK_OUTPUT}.d"
             "-DCOMPILER=${RACHIS_SLANGC_EXECUTABLE}"
             "-DTARGET=spirv"
-            "-DPROFILE=sm_6_0"
+            "-DPROFILE=${COOK_PROFILE}"
             "-DENTRY=${COOK_ENTRY}"
             "-DENVIRONMENT=${RACHIS_SHADER_SPIRV_ENVIRONMENT}"
             "-DOPTIONS=${option_text}"
@@ -466,12 +468,16 @@ endfunction()
 
 # Compiles a Slang entry point to DXIL with slangc, which validates and signs it through dxcompiler.
 function(rachis_cook_slang_dxil)
-    cmake_parse_arguments(COOK "" "SOURCE;ENTRY;STAGE;OUTPUT;COMMENT" "DEFINES;DEPENDS;INCLUDE_DIRECTORIES" ${ARGN})
+    cmake_parse_arguments(COOK "" "SOURCE;ENTRY;STAGE;PROFILE;OUTPUT;COMMENT" "DEFINES;DEPENDS;INCLUDE_DIRECTORIES"
+        ${ARGN})
     if(NOT COOK_SOURCE OR NOT COOK_ENTRY OR NOT COOK_OUTPUT)
         message(FATAL_ERROR "rachis_cook_slang_dxil requires SOURCE, ENTRY, and OUTPUT")
     endif()
     if(NOT RACHIS_SLANGC_EXECUTABLE)
         message(FATAL_ERROR "rachis_cook_slang_dxil requires RACHIS_SLANGC_EXECUTABLE")
+    endif()
+    if(NOT COOK_PROFILE)
+        set(COOK_PROFILE "${RACHIS_SHADER_SLANG_DEFAULT_PROFILE}")
     endif()
     set(key_path "${COOK_OUTPUT}.key")
     set(define_args)
@@ -483,7 +489,7 @@ function(rachis_cook_slang_dxil)
     if(COOK_STAGE)
         set(stage_args -stage "${COOK_STAGE}")
     endif()
-    set(compile_options ${RACHIS_SHADER_SLANG_DXIL_OPTIONS} ${stage_args})
+    set(compile_options ${RACHIS_SHADER_SLANG_DXIL_OPTIONS} -profile "${COOK_PROFILE}" ${stage_args})
     foreach(directory IN LISTS COOK_INCLUDE_DIRECTORIES)
         list(APPEND compile_options -I "${directory}")
     endforeach()
@@ -510,7 +516,7 @@ function(rachis_cook_slang_dxil)
             "-DCOMPILER=${RACHIS_SLANGC_EXECUTABLE}"
             "-DCOMPILER_VERSION=${RACHIS_SLANGC_VERSION}"
             "-DTARGET=dxil"
-            "-DPROFILE=sm_6_0"
+            "-DPROFILE=${COOK_PROFILE}"
             "-DENTRY=${COOK_ENTRY}"
             "-DENVIRONMENT=d3d12"
             "-DOPTIONS=${option_text}"
@@ -599,13 +605,16 @@ endfunction()
 
 function(rachis_cook_slang_metallib)
     rachis_ensure_shader_binary_tool(rachis_shader_binary_tool_cmd rachis_shader_binary_tool_depends)
-    cmake_parse_arguments(COOK "NO_WARNINGS_AS_ERRORS" "SOURCE;ENTRY;STAGE;OUTPUT;COMMENT"
+    cmake_parse_arguments(COOK "NO_WARNINGS_AS_ERRORS" "SOURCE;ENTRY;STAGE;PROFILE;OUTPUT;COMMENT"
         "DEFINES;DEPENDS;INCLUDE_DIRECTORIES" ${ARGN})
     if(NOT COOK_SOURCE OR NOT COOK_ENTRY OR NOT COOK_OUTPUT)
         message(FATAL_ERROR "rachis_cook_slang_metallib requires SOURCE, ENTRY, and OUTPUT")
     endif()
     if(NOT RACHIS_SLANGC_EXECUTABLE)
         message(FATAL_ERROR "rachis_cook_slang_metallib requires RACHIS_SLANGC_EXECUTABLE")
+    endif()
+    if(NOT COOK_PROFILE)
+        set(COOK_PROFILE "${RACHIS_SHADER_SLANG_DEFAULT_PROFILE}")
     endif()
     list(FIND COOK_DEFINES "RACHIS_METAL=1" rachis_metal_define_index)
     if(rachis_metal_define_index EQUAL -1)
@@ -621,13 +630,14 @@ function(rachis_cook_slang_metallib)
     endforeach()
     list(JOIN COOK_DEFINES "," define_text)
     set(warning_args)
-    set(cook_extra_args)
+    set(cook_extra_args --profile "${COOK_PROFILE}")
     if(COOK_NO_WARNINGS_AS_ERRORS)
         list(APPEND cook_extra_args --no-warnings-as-errors)
     else()
         list(APPEND warning_args -warnings-as-errors all)
     endif()
-    set(metallib_options cook-metallib-v4 ${RACHIS_SHADER_SLANG_METALLIB_OPTIONS} ${warning_args})
+    set(metallib_options
+        cook-metallib-v4 ${RACHIS_SHADER_SLANG_METALLIB_OPTIONS} -profile "${COOK_PROFILE}" ${warning_args})
     if(COOK_STAGE)
         list(APPEND cook_extra_args --stage "${COOK_STAGE}")
         list(APPEND metallib_options -stage "${COOK_STAGE}")
@@ -668,7 +678,7 @@ function(rachis_cook_slang_metallib)
             "-DCOMPILER=${RACHIS_SLANGC_EXECUTABLE}"
             "-DCOMPILER_VERSION=${RACHIS_SLANGC_VERSION}"
             "-DTARGET=metallib"
-            "-DPROFILE=sm_6_0"
+            "-DPROFILE=${COOK_PROFILE}"
             "-DENTRY=${COOK_ENTRY}"
             "-DENVIRONMENT=${RACHIS_SHADER_METAL_ENVIRONMENT}"
             "-DSDK=${RACHIS_APPLE_SDK_VERSION}"

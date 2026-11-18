@@ -140,6 +140,7 @@ namespace rachis::vulkan
         bool shaderInt16 = false;
         bool shaderInt64 = false;
         bool shaderSharedInt64Atomics = false;
+        bool shaderBufferInt64Atomics = false;
         bool shaderImageInt64Atomics = false;
         bool subgroupOperations = false;
         std::uint32_t subgroupMinSize = 0;

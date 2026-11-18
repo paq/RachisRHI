@@ -57,8 +57,8 @@ namespace
                "<shader.pnms>\n"
             << "  RachisShaderBinaryTool cook-metallib --slangc <slangc> --source <shader> --entry <entry> --output "
                "<shader.metallib> --json <reflection.json> --pnms <shader.pnms> [--stage <stage>] "
-               "[--metal-source <shader.metal>] [--depfile <shader.d>] [--no-warnings-as-errors] "
-               "[--define <NAME=VALUE> ...] [--include-dir <directory> ...]\n"
+               "[--profile <sm_6_x>] [--metal-source <shader.metal>] [--depfile <shader.d>] "
+               "[--no-warnings-as-errors] [--define <NAME=VALUE> ...] [--include-dir <directory> ...]\n"
             << "  RachisShaderBinaryTool reflect-interface --name <identifier> --stage <stage> --entry <entry> "
                "--output <header> --reflection <backend>=<reflection.json> ... [--layout <backend>=<file> ...] "
                "[--spirv-reflection vulkan=<module.spv>] [--bytecode <d3d12|vulkan|metal>=<file> ...] [--tag <tag>]\n";
@@ -600,6 +600,7 @@ namespace
         std::optional<std::string> jsonPath;
         std::optional<std::string> pnmsPath;
         std::optional<std::string> stage;
+        std::optional<std::string> profile;
         std::optional<std::string> metalSourcePath;
         std::optional<std::string> depfilePath;
         std::vector<std::string> defines{};
@@ -648,6 +649,10 @@ namespace
         if (flag == "--stage")
         {
             return assignOnce(arguments.stage, value);
+        }
+        if (flag == "--profile")
+        {
+            return assignOnce(arguments.profile, value);
         }
         if (flag == "--metal-source")
         {
@@ -704,12 +709,18 @@ namespace
         std::string jsonPath;
         std::string pnmsPath;
         std::optional<std::string> stage;
+        std::string profile;
         std::optional<std::string> metalSourcePath;
         std::optional<std::string> depfilePath;
         std::vector<std::string> defines{};
         std::vector<std::string> includeDirectories{};
         bool noWarningsAsErrors = false;
     };
+
+    [[nodiscard]] bool isSupportedShaderProfile(std::string_view profile) noexcept
+    {
+        return profile.size() == 6 && profile.starts_with("sm_6_") && profile[5] >= '0' && profile[5] <= '6';
+    }
 
     [[nodiscard]] std::expected<CookMetallibOptions, std::string> parseCookMetallibOptions(
         std::span<const std::string_view> args)
@@ -725,6 +736,10 @@ namespace
         {
             return std::unexpected("--slangc, --source, --entry, --output, --json, and --pnms are required.");
         }
+        if (arguments->profile.has_value() && !isSupportedShaderProfile(*arguments->profile))
+        {
+            return std::unexpected("--profile must be sm_6_0, sm_6_1, sm_6_2, sm_6_3, sm_6_4, sm_6_5, or sm_6_6.");
+        }
         return CookMetallibOptions{
             .slangcPath = std::move(*arguments->slangcPath),
             .sourcePath = std::move(*arguments->sourcePath),
@@ -733,6 +748,7 @@ namespace
             .jsonPath = std::move(*arguments->jsonPath),
             .pnmsPath = std::move(*arguments->pnmsPath),
             .stage = std::move(arguments->stage),
+            .profile = arguments->profile.value_or("sm_6_0"),
             .metalSourcePath = std::move(arguments->metalSourcePath),
             .depfilePath = std::move(arguments->depfilePath),
             .defines = std::move(arguments->defines),
@@ -836,7 +852,7 @@ namespace
             "spirv",
             "-no-codegen",
             "-profile",
-            "sm_6_0",
+            options.profile,
             "-matrix-layout-column-major",
             "-fvk-use-entrypoint-name",
             "-Wno-39029",
@@ -860,7 +876,7 @@ namespace
             "-o",
             tempFiles.metalProbeSource,
             "-profile",
-            "sm_6_0",
+            options.profile,
             "-matrix-layout-column-major",
             "-fvk-use-entrypoint-name",
             "-fvk-b-shift",
@@ -998,7 +1014,7 @@ namespace
             "-target",
             std::string(target),
             "-profile",
-            "sm_6_0",
+            options.profile,
             "-matrix-layout-column-major",
             "-restrictive-capability-check",
             "-fvk-use-entrypoint-name",
@@ -1299,7 +1315,7 @@ namespace
         if (args.size() == 1 && args[0] == "--help")
         {
             std::cout << "--slangc <slangc> --source <shader> --entry <entry> --output <shader.metallib> "
-                         "--json <reflection.json> --pnms <shader.pnms> [--stage <stage>] "
+                         "--json <reflection.json> --pnms <shader.pnms> [--stage <stage>] [--profile <sm_6_x>] "
                          "[--metal-source <shader.metal>] [--depfile <shader.d>] [--no-warnings-as-errors] "
                          "[--define <NAME=VALUE> ...] [--include-dir <directory> ...]\n";
             return 0;

@@ -96,6 +96,16 @@ set_tests_properties(RachisShaderLanguageUnknown PROPERTIES
     PASS_REGULAR_EXPRESSION
         "LANGUAGE[ \r\n]+must[ \r\n]+be[ \r\n]+HLSL,[ \r\n]+SLANG,[ \r\n]+or[ \r\n]+GLSL[ \r\n]+\\(got[ \r\n]+'MSL'\\)")
 
+# SHADER_MODEL takes only the shader models the backends can report.
+add_test(NAME RachisShaderModelUnknown
+    COMMAND "${CMAKE_COMMAND}"
+        -S "${PROJECT_SOURCE_DIR}/model"
+        -B "${CMAKE_CURRENT_BINARY_DIR}/model"
+        ${reuse_arguments})
+set_tests_properties(RachisShaderModelUnknown PROPERTIES
+    PASS_REGULAR_EXPRESSION
+        "SHADER_MODEL[ \r\n]+must[ \r\n]+be[ \r\n]+6_0,[ \r\n]+6_1,[ \r\n]+6_2,[ \r\n]+6_3,[ \r\n]+6_4,[ \r\n]+6_5,[ \r\n]+or[ \r\n]+6_6[ \r\n]+\\(got[ \r\n]+'6_7'\\)")
+
 # REFLECT needs slangc on every backend: with slangc hidden, configuring a REFLECT shader fails and says so.
 list(FILTER reuse_arguments EXCLUDE REGEX "^-DRACHIS_SLANGC_EXECUTABLE=")
 add_test(NAME RachisShaderReflectWithoutSlangc

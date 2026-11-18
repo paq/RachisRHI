@@ -1,5 +1,6 @@
 #include "Rachis/Device.h"
 #include "RhiTestSupport.h"
+#include "ShaderInt64AtomicStorageBuffer.h"
 
 #ifdef _WINDOWS_
 #error Public Rachis headers must not include Windows.h.
@@ -433,6 +434,45 @@ namespace
             spirvInstruction(spirvOpFunctionEnd, {}),
         });
     };
+
+    [[nodiscard]] std::vector<std::byte> int64AtomicsModuleWith32BitGroupSharedAtomic()
+    {
+        constexpr std::uint32_t mainId = 1;
+        constexpr std::uint32_t voidTypeId = 2;
+        constexpr std::uint32_t functionTypeId = 3;
+        constexpr std::uint32_t labelId = 4;
+        constexpr std::uint32_t uintTypeId = 5;
+        constexpr std::uint32_t workgroupPointerTypeId = 6;
+        constexpr std::uint32_t counterId = 7;
+        constexpr std::uint32_t scopeId = 8;
+        constexpr std::uint32_t semanticsId = 9;
+        constexpr std::uint32_t oneId = 10;
+        constexpr std::uint32_t atomicResultId = 11;
+        constexpr std::uint32_t idBound = 12;
+        const std::vector<std::uint32_t> header{spirvMagicNumber, spirvVersion1_0, 0U, idBound, 0U};
+        return joinSpirvBytes({
+            header,
+            spirvInstruction(spirvOpCapability, {spirvCapabilityShader}),
+            spirvInstruction(spirvOpCapability, {spirvCapabilityInt64}),
+            spirvInstruction(spirvOpCapability, {spirvCapabilityInt64Atomics}),
+            spirvInstruction(spirvOpMemoryModel, {spirvAddressingLogical, spirvMemoryModelGlsl450}),
+            spirvInstructionWithString(spirvOpEntryPoint, {spirvExecutionModelGlCompute, mainId}, "main"),
+            spirvInstruction(spirvOpExecutionMode, {mainId, spirvExecutionModeLocalSize, 1U, 1U, 1U}),
+            spirvInstruction(spirvOpTypeVoid, {voidTypeId}),
+            spirvInstruction(spirvOpTypeFunction, {functionTypeId, voidTypeId}),
+            spirvInstruction(spirvOpTypeInt, {uintTypeId, 32U, 0U}),
+            spirvInstruction(spirvOpTypePointer, {workgroupPointerTypeId, spirvStorageClassWorkgroup, uintTypeId}),
+            spirvInstruction(spirvOpVariable, {workgroupPointerTypeId, counterId, spirvStorageClassWorkgroup}),
+            spirvInstruction(spirvOpConstant, {uintTypeId, scopeId, spirvScopeWorkgroup}),
+            spirvInstruction(spirvOpConstant, {uintTypeId, semanticsId, spirvMemorySemanticsRelaxed}),
+            spirvInstruction(spirvOpConstant, {uintTypeId, oneId, 1U}),
+            spirvInstruction(spirvOpFunction, {voidTypeId, mainId, spirvFunctionControlNone, functionTypeId}),
+            spirvInstruction(spirvOpLabel, {labelId}),
+            spirvInstruction(spirvOpAtomicIAdd, {uintTypeId, atomicResultId, counterId, scopeId, semanticsId, oneId}),
+            spirvInstruction(spirvOpReturn, {}),
+            spirvInstruction(spirvOpFunctionEnd, {}),
+        });
+    }
 
     struct VertexInputModule final
     {
@@ -1285,6 +1325,55 @@ TEST_CASE("Vulkan shader modules classify a group-shared 64-bit atomic after OpL
             CHECK(rejected.error().message == "Group-shared 64-bit integer atomics are not available on this device.");
         }
     }
+}
+
+TEST_CASE("Vulkan shader modules gate storage-buffer 64-bit atomics on shaderInt64AtomicStorageBuffer alone",
+          "[size:small][rhi][vulkan][shader][module]")
+{
+    const auto bytecode = rachis_shaders::ShaderInt64AtomicStorageBuffer(rachis::Backend::vulkan);
+    REQUIRE_FALSE(bytecode.empty());
+    const std::array bindings{rachis::ShaderBindingRequirement{0, 0, rachis::ShaderResourceType::storageBuffer, 1}};
+    const rachis::ShaderInterfaceDesc shaderInterface{
+        .bindings = bindings,
+        .workgroupSize = rachis::ShaderWorkgroupSize{64, 1, 1},
+    };
+    rachis::DeviceCapabilities capabilities{};
+    capabilities.limits.maxComputeWorkgroupSize = {1024, 1024, 64};
+    capabilities.limits.maxComputeWorkgroupInvocations = 1024;
+    capabilities.shaderInt64 = true;
+
+    capabilities.shaderInt64AtomicGroupShared = true;
+    capabilities.shaderInt64AtomicTypedResource = true;
+    capabilities.shaderInt64AtomicStorageBuffer = false;
+    auto rejected = createWithoutDevice(bytecode, capabilities, rachis::ShaderStage::compute, shaderInterface);
+    REQUIRE_FALSE(rejected);
+    CHECK(rejected.error().code == rachis::ErrorCode::unsupported);
+    CHECK(rejected.error().message == "Storage-buffer 64-bit integer atomics are not available on this device.");
+
+    capabilities.shaderInt64AtomicGroupShared = false;
+    capabilities.shaderInt64AtomicTypedResource = false;
+    capabilities.shaderInt64AtomicStorageBuffer = true;
+    auto accepted = createWithoutDevice(bytecode, capabilities, rachis::ShaderStage::compute, shaderInterface);
+    if (!accepted)
+    {
+        UNSCOPED_INFO(accepted.error().message);
+    }
+    CHECK(accepted.has_value());
+}
+
+TEST_CASE("Vulkan shader modules need no 64-bit atomic capability for a 32-bit atomic beside Int64Atomics",
+          "[size:small][rhi][vulkan][shader][module]")
+{
+    rachis::DeviceCapabilities capabilities{};
+    capabilities.limits.maxComputeWorkgroupSize = {1024, 1024, 64};
+    capabilities.limits.maxComputeWorkgroupInvocations = 1024;
+    capabilities.shaderInt64 = true;
+    auto accepted = createWithoutDevice(int64AtomicsModuleWith32BitGroupSharedAtomic(), capabilities);
+    if (!accepted)
+    {
+        UNSCOPED_INFO(accepted.error().message);
+    }
+    CHECK(accepted.has_value());
 }
 
 TEST_CASE("Vulkan shader modules and libraries read SPIR-V bytecode at any byte alignment",

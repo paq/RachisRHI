@@ -3627,7 +3627,8 @@ namespace rachis::vulkan
             const auto pointerType = typeIt != operandTypes.typeByResultId.end() ? typeIt->second : pointerId;
             const auto storageIt = operandTypes.storageClassByPointerType.find(pointerType);
             const auto storage = storageIt != operandTypes.storageClassByPointerType.end() ? storageIt->second : 0;
-            if (pointeeIntegerBitWidth(operandTypes, pointerType) != 64 && !operandTypes.declaresInt64Atomics)
+            const auto bitWidth = pointeeIntegerBitWidth(operandTypes, pointerType);
+            if (bitWidth != 64 && (bitWidth != 0 || !operandTypes.declaresInt64Atomics))
             {
                 return;
             }
@@ -3781,8 +3782,8 @@ namespace rachis::vulkan
                                     "Group-shared 64-bit integer atomics are not available on this device."},
                 FeatureSupportCheck{requirements.typedInt64Atomics && !capabilities.shaderInt64AtomicTypedResource,
                                     "Typed-resource 64-bit integer atomics are not available on this device."},
-                FeatureSupportCheck{requirements.storageInt64Atomics,
-                                    "Storage-buffer 64-bit integer atomics are not a portable RHI capability."},
+                FeatureSupportCheck{requirements.storageInt64Atomics && !capabilities.shaderInt64AtomicStorageBuffer,
+                                    "Storage-buffer 64-bit integer atomics are not available on this device."},
                 FeatureSupportCheck{requirements.geometry && !capabilities.geometryShaders &&
                                         !capabilities.fragmentPrimitiveId,
                                     "Geometry-shader or fragment PrimitiveId support is not available on this device."},

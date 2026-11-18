@@ -146,6 +146,7 @@ RachisRHI consumes precompiled shader bytecode—DXIL for Direct3D 12, SPIR-V fo
 - **SPIR-V structural checks:** Submitted SPIR-V must be valid (`spirv-val`). Before accepting a module or library, Vulkan inspects function boundaries, entry points, declared shader interfaces, and defined targets of entry points, execution modes, calls, names, and decorations—rejecting truncated modules or missing referenced definitions without re-implementing a full validator.
 - **Vertex attribute locations:** `vertexInputLocations` must list every input location consumed by a vertex shader (`float4x4 world : TEXCOORD1` spans locations `1..4`; `float4 weights[2] : TEXCOORD1` spans `1..2`), and every location must be `< rachis::maxVertexAttributes` (`16`). Vulkan assigns vertex attribute locations strictly according to SPIR-V rules and rejects inputs exceeding the limit or struct-typed vertex inputs.
 - **Specialization constants:** Only 32-bit scalar `SpecializationConstant` entries (`boolean`, `signedInt32`, `unsignedInt32`, `float32`) are supported. Vulkan rejects 8-bit, 16-bit, or 64-bit specialization entries with `ErrorCode::invalidArgument`; omit an entry to keep its shader default.
+- **64-bit atomics:** HLSL 64-bit integer atomics (`InterlockedMax` on a `uint64_t`, for example) need shader model 6.6, so build such shaders with `SHADER_MODEL 6_6` (see [Shader model](#shader-model)). Each kind of memory has its own capability: `DeviceCapabilities::shaderInt64AtomicGroupShared` for `groupshared` variables, `shaderInt64AtomicTypedResource` for typed storage textures, and `shaderInt64AtomicStorageBuffer` for storage buffers (`RWStructuredBuffer`, `RWByteAddressBuffer`). On Vulkan, `createShaderModule` fails with `ErrorCode::unsupported` when the shader uses a 64-bit atomic on memory whose capability the device does not report. Direct3D 12 does not check this in `createShaderModule`, so check the capability before you create the module.
 - **Packed Metal libraries:** `.pnms` blobs combine `.metallib` bytecode with Metal reflection metadata and are produced exclusively by `RachisShaderBinaryTool`.
 
 ### Cooking and reflecting shaders with CMake
@@ -201,6 +202,22 @@ Reflected C++ structs are also emitted for every constant buffer, push-constant 
 - Limitations: buffer arrays require an explicit element count, arrays of matrices are unsupported, reflected buffer matrices must use `column_major` order, and Vulkan does not accept reflected column-major matrices directly inside buffer blocks.
 - Multiple targets in one executable can safely define shaders with the same `NAME`: `rachis_add_shader` scopes definitions into project/target-unique inline namespaces inside `rachis_shaders` and `rachis_shaders::reflection::<NAME>`, while duplicate `NAME`s within the same target fail CMake configure.
 
+### Shader model
+
+`SHADER_MODEL` picks the HLSL shader model that an HLSL or Slang shader is compiled for on every backend. It defaults to `6_0` and takes `6_0` to `6_6`; GLSL shaders ignore it. `SHADER_MODEL 6_6` on a compute shader passes the profile `cs_6_6` to `dxc` and `-profile sm_6_6` to `slangc`:
+
+```cmake
+rachis_add_shader(app
+    NAME VisibilityResolve
+    SOURCE shaders/VisibilityResolve.hlsl
+    ENTRY resolveMain
+    STAGE compute
+    SHADER_MODEL 6_6
+)
+```
+
+Raise it only for shaders that use a later feature, such as 64-bit atomics (6.6). On Direct3D 12, a shader runs only on a device whose `DeviceCapabilities::shaderModel` is at least the shader model it was built for.
+
 ### Shader languages
 
 `LANGUAGE HLSL`, `LANGUAGE SLANG`, or `LANGUAGE GLSL` picks the compilers. Without it, the extension of `SOURCE` decides: `.hlsl` is HLSL, `.slang` is Slang, and `.glsl`, `.vert`, `.frag`, and `.comp` are GLSL. Any other extension fails CMake configure until `LANGUAGE` names the language.
@@ -221,7 +238,7 @@ For HLSL:
 
 | Backend | Compiler / tool | Output format | Preprocessor define |
 | --- | --- | --- | --- |
-| Direct3D 12 | `dxc` (Shader Model 6.0) | DXIL | `RACHIS_D3D12=1` |
+| Direct3D 12 | `dxc` (Shader Model 6.0 unless `SHADER_MODEL` raises it) | DXIL | `RACHIS_D3D12=1` |
 | Vulkan | Vulkan SDK `dxc` + `spirv-val` (Vulkan 1.3) | SPIR-V | `RACHIS_VULKAN=1` |
 | Metal | `slangc` + `RachisShaderBinaryTool` | `.pnms` packed metallib | `RACHIS_METAL=1` |
 
@@ -248,6 +265,7 @@ C ABI callers and custom build pipelines can cook shaders outside `rachis_add_sh
 
 - **Vulkan (`dxc`):** Pass `-spirv -fspv-target-env=vulkan1.3 -fvk-support-nonzero-base-vertex -fvk-support-nonzero-base-instance` and validate with `spirv-val`.
 - **Slang (`slangc`):** Pass `-profile sm_6_0 -matrix-layout-column-major` with `-target dxil`, or with `-target spirv -fvk-use-entrypoint-name -fvk-b-shift 0 all -fvk-t-shift 0 all -fvk-s-shift 0 all -fvk-u-shift 0 all`, and validate SPIR-V with `spirv-val`.
+- **Shader model:** Shaders that need a later shader model use it in every profile: `cs_6_6` instead of `cs_6_0` for `dxc`, `-profile sm_6_6` for `slangc`, and `--profile sm_6_6` for `RachisShaderBinaryTool cook-metallib`.
 - **GLSL (`glslangValidator`):** Pass `-V --target-env vulkan1.3 -S <vert|frag|comp>` and validate with `spirv-val`. `RachisShaderBinaryTool reflect-interface --spirv-reflection vulkan=<shader.spv>` generates the interface header from the module.
 - **Reflection:** `reflect-interface --bytecode d3d12=<shader.dxil> --bytecode vulkan=<shader.spv> --bytecode metal=<shader.pnms>` reads whether the entry point reads the draw index from the compiled bytecode. `slangc` reflection lists every constant buffer a source declares, so without `--bytecode` every vertex entry point in a file that includes `Rachis/DrawIndex.hlsli` is reported as reading it on Direct3D 12 and Metal.
 - **Metal (`RachisShaderBinaryTool cook-metallib`):**
@@ -261,6 +279,7 @@ RachisShaderBinaryTool cook-metallib \
     --output <shader.metallib> \
     --pnms <shader.pnms> \
     --json <shader.metal.reflection.json> \
+    [--profile <sm_6_0 ... sm_6_6>] \
     [--define KEY=VALUE ...] \
     [--include-dir <prefix/include> ...] \
     [--no-warnings-as-errors] \

@@ -1,8 +1,12 @@
-RWStructuredBuffer<uint64_t> outputBuffer : register(u0, space0);
+RWStructuredBuffer<uint64_t> extremes : register(u0, space0);
 
-[numthreads(1, 1, 1)]
-void main()
+[numthreads(64, 1, 1)]
+void main(uint3 threadId : SV_DispatchThreadID)
 {
-    uint64_t original;
-    InterlockedAdd(outputBuffer[0], uint64_t(1), original);
+    const uint lane = threadId.x;
+    const uint high = ((lane >> 1) + 1) * 2654435761u;
+    const uint low = lane * 2246822519u;
+    const uint64_t key = (uint64_t(high) << 32) | uint64_t(low);
+    InterlockedMax(extremes[0], key);
+    InterlockedMin(extremes[1], key);
 }

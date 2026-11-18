@@ -535,13 +535,6 @@ if(RACHIS_ENABLE_VULKAN AND rachis_build_tests)
         COMMENT "Cooking Vulkan SPIR-V ShaderInt64AtomicTypedResource"
     )
     rachis_cook_dxc_spirv(
-        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/ShaderInt64AtomicStorageBuffer.hlsl"
-        ENTRY main
-        PROFILE cs_6_6
-        OUTPUT "${rachis_rhi_spirv_dir}/ShaderInt64AtomicStorageBuffer.spv"
-        COMMENT "Cooking Vulkan SPIR-V ShaderInt64AtomicStorageBuffer"
-    )
-    rachis_cook_dxc_spirv(
         SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/SubgroupOperations.hlsl"
         ENTRY main
         PROFILE cs_6_0
@@ -1130,7 +1123,6 @@ if(RACHIS_ENABLE_VULKAN AND rachis_build_tests)
             "${rachis_rhi_spirv_dir}/ShaderInt64.spv"
             "${rachis_rhi_spirv_dir}/ShaderInt64AtomicGroupShared.spv"
             "${rachis_rhi_spirv_dir}/ShaderInt64AtomicTypedResource.spv"
-            "${rachis_rhi_spirv_dir}/ShaderInt64AtomicStorageBuffer.spv"
             "${rachis_rhi_spirv_dir}/SubgroupOperations.spv"
             "${rachis_rhi_spirv_dir}/VulkanComputeWrite.spv"
             "${rachis_rhi_spirv_dir}/VulkanComputeWrite.scale.spv"
@@ -3120,6 +3112,16 @@ if(rachis_build_tests)
             LANGUAGE SLANG
             ENTRY drawIdPixel
             STAGE pixel)
+        # 64-bit atomics need shader model 6.6 on every backend. Metal reports no storage-buffer 64-bit atomics
+        # yet, so Metal builds do not cook this shader.
+        if(NOT RACHIS_ENABLE_METAL)
+            rachis_add_shader(RachisRHITests
+                NAME ShaderInt64AtomicStorageBuffer
+                SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/ShaderInt64AtomicStorageBuffer.hlsl"
+                ENTRY main
+                STAGE compute
+                SHADER_MODEL 6_6)
+        endif()
         if(TARGET RachisCAbiShaders)
             add_dependencies(RachisRHITests RachisCAbiShaders)
             target_compile_definitions(RachisRHITests PRIVATE
