@@ -1042,6 +1042,21 @@ if(RACHIS_ENABLE_VULKAN AND rachis_build_tests)
         COMMENT "Cooking RHI test Vulkan SPIR-V RayQueryWorkload"
     )
     rachis_cook_dxc_spirv(
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/InstanceRecordWriter.hlsl"
+        ENTRY main
+        PROFILE cs_6_0
+        OUTPUT "${rachis_rhi_spirv_dir}/InstanceRecordWriter.spv"
+        COMMENT "Cooking RHI test Vulkan SPIR-V InstanceRecordWriter"
+    )
+    rachis_cook_dxc_spirv(
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/InstanceBufferRayQuery.hlsl"
+        ENTRY main
+        PROFILE cs_6_5
+        OUTPUT "${rachis_rhi_spirv_dir}/InstanceBufferRayQuery.spv"
+        OPTIONS -fspv-extension=SPV_KHR_ray_query
+        COMMENT "Cooking RHI test Vulkan SPIR-V InstanceBufferRayQuery"
+    )
+    rachis_cook_dxc_spirv(
         SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/RayTracingPipeline.hlsl"
         ENTRY rayGenerationWithoutRecord
         PROFILE lib_6_3
@@ -1187,6 +1202,8 @@ if(RACHIS_ENABLE_VULKAN AND rachis_build_tests)
             "${rachis_rhi_spirv_dir}/DrawIndex.ms.spv"
             "${rachis_rhi_spirv_dir}/DrawIndex.ps.spv"
             "${rachis_rhi_spirv_dir}/RayQueryWorkload.spv"
+            "${rachis_rhi_spirv_dir}/InstanceRecordWriter.spv"
+            "${rachis_rhi_spirv_dir}/InstanceBufferRayQuery.spv"
             "${rachis_rhi_spirv_dir}/RayTracingPipeline.raygen.spv"
             "${rachis_rhi_spirv_dir}/RayTracingPipeline.miss.spv"
             "${rachis_rhi_spirv_dir}/RayTracingPushConstants.raygen.spv"
@@ -2292,6 +2309,7 @@ if(rachis_build_tests)
         tests/d3d12/queries/QueueClockCalibrationContractTests.cpp
         tests/d3d12/queries/TimestampQueryContractTests.cpp
         tests/d3d12/raytracing/RayQueryContractTests.cpp
+        tests/d3d12/raytracing/TopLevelInstanceBufferContractTests.cpp
         tests/d3d12/raytracing/RayTracingPipelineContractTests.cpp
         tests/d3d12/rendering/AttachmentClearContractTests.cpp
         tests/d3d12/rendering/DepthBoundsContractTests.cpp
@@ -2397,6 +2415,7 @@ if(rachis_build_tests)
         tests/vulkan/queries/VulkanQueryContractTests.cpp
         tests/vulkan/raytracing/VulkanRayQueryContractTests.cpp
         tests/vulkan/raytracing/VulkanRayTracingPipelineContractTests.cpp
+        tests/vulkan/raytracing/VulkanTopLevelInstanceBufferContractTests.cpp
         tests/vulkan/rendering/VulkanGraphicsContractTests.cpp
         tests/vulkan/rendering/VulkanDrawIndexContractTests.cpp
         tests/vulkan/rendering/VulkanHeadlessParityContractTests.cpp
@@ -2431,6 +2450,8 @@ if(rachis_build_tests)
             RACHIS_TEST_COMPUTE_SHADER_PATH="${rachis_rhi_dxil_dir}/ComputeWrite.dxil"
             RACHIS_TEST_INDIRECT_DISPATCH_BATCH_SHADER_PATH="${rachis_rhi_dxil_dir}/IndirectDispatchBatch.dxil"
             RACHIS_TEST_RAY_QUERY_SHADER_PATH="${rachis_rhi_dxil_dir}/RayQuery.dxil"
+            RACHIS_TEST_INSTANCE_RECORD_WRITER_SHADER_PATH="${rachis_rhi_dxil_dir}/InstanceRecordWriter.dxil"
+            RACHIS_TEST_INSTANCE_BUFFER_RAY_QUERY_SHADER_PATH="${rachis_rhi_dxil_dir}/InstanceBufferRayQuery.dxil"
             RACHIS_TEST_RAY_TRACING_PIPELINE_SHADER_PATH="${rachis_rhi_dxil_dir}/RayTracingPipeline.dxil"
             RACHIS_TEST_CONDITIONAL_EXECUTION_SHADER_PATH="${rachis_rhi_dxil_dir}/ConditionalExecution.dxil"
             RACHIS_TEST_SPECIALIZATION_VARIANT_7_PATH="${rachis_rhi_dxil_dir}/SpecializationVariant7.dxil"
@@ -2548,6 +2569,8 @@ if(rachis_build_tests)
     rachis_rhi_test_dxil(BlockCompressedTexture.dxil "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/BlockCompressedTexture.hlsl" cs_6_0 ENTRY main)
     rachis_rhi_test_dxil(SamplerReduction.dxil "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/SamplerReduction.hlsl" cs_6_0 ENTRY main)
     rachis_rhi_test_dxil(RayQuery.dxil "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/RayQuery.hlsl" cs_6_5 ENTRY main)
+    rachis_rhi_test_dxil(InstanceRecordWriter.dxil "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/InstanceRecordWriter.hlsl" cs_6_0 ENTRY main)
+    rachis_rhi_test_dxil(InstanceBufferRayQuery.dxil "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/InstanceBufferRayQuery.hlsl" cs_6_5 ENTRY main)
     rachis_rhi_test_dxil(RayTracingPipeline.dxil "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/RayTracingPipeline.hlsl" lib_6_3)
     rachis_rhi_test_dxil(ConditionalExecution.dxil "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/ConditionalExecution.hlsl" cs_6_0 ENTRY main)
     rachis_rhi_test_dxil(SpecializationVariant7.dxil "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/SpecializationVariant.hlsl" cs_6_0 ENTRY main OPTIONS -D RACHIS_SPECIALIZED_VALUE=7)
@@ -2698,6 +2721,7 @@ if(rachis_build_tests)
             tests/vulkan/queries/VulkanQueryContractTests.cpp
             tests/vulkan/raytracing/VulkanRayQueryContractTests.cpp
             tests/vulkan/raytracing/VulkanRayTracingPipelineContractTests.cpp
+            tests/vulkan/raytracing/VulkanTopLevelInstanceBufferContractTests.cpp
             tests/vulkan/rendering/VulkanGraphicsContractTests.cpp
             tests/vulkan/rendering/VulkanDrawIndexContractTests.cpp
             tests/vulkan/rendering/VulkanHeadlessParityContractTests.cpp

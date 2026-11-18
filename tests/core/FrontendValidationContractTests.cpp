@@ -844,6 +844,47 @@ namespace
         {
             return SwapchainFrameTiming{};
         }
+
+        bool instanceRecords = false;
+        mutable std::size_t referenceQueries = 0;
+
+        [[nodiscard]] Result<rachis::AccelerationStructureInstanceLayout> queryAccelerationStructureInstanceLayout()
+            const override
+        {
+            if (!instanceRecords)
+            {
+                return std::unexpected(unsupportedOperation("queryAccelerationStructureInstanceLayout"));
+            }
+            return rachis::AccelerationStructureInstanceLayout{
+                .format = rachis::AccelerationStructureInstanceFormat::packed64,
+                .size = 64,
+                .alignment = 16,
+            };
+        }
+        [[nodiscard]] Result<std::uint64_t> queryAccelerationStructureReference(
+            rachis::AccelerationStructureHandle) const override
+        {
+            ++referenceQueries;
+            return 0x1000;
+        }
+        [[nodiscard]] Status buildTopLevelAccelerationStructureFromBuffer(
+            BackendCommandBuffer&, const rachis::TopLevelAccelerationStructureBufferBuildDesc&) override
+        {
+            ++backendInvocations;
+            return {};
+        }
+        [[nodiscard]] Status updateTopLevelAccelerationStructureFromBuffer(
+            BackendCommandBuffer&, const rachis::TopLevelAccelerationStructureBufferUpdateDesc&) override
+        {
+            ++backendInvocations;
+            return {};
+        }
+        [[nodiscard]] Status updateTopLevelAccelerationStructureInPlaceFromBuffer(
+            BackendCommandBuffer&, const rachis::TopLevelAccelerationStructureBufferInPlaceUpdateDesc&) override
+        {
+            ++backendInvocations;
+            return {};
+        }
     };
 
     [[nodiscard]] CommandBuffer makeCommandBuffer(std::uint64_t token, QueueType queueType = QueueType::graphics)
@@ -1157,6 +1198,111 @@ TEST_CASE("DeviceOperationalState::lost takes precedence over frontend invalidAr
     expectLost(device.createResourceHeap(ResourceHeapDesc{}).error());
 
     CHECK(raw->backendInvocations == 0);
+}
+
+TEST_CASE("Device frontend validates TLAS instance-buffer ranges and references before backend calls",
+          "[size:small][rhi][core]")
+{
+    auto backend = std::make_unique<TrackingBackendDevice>();
+    auto* raw = backend.get();
+    auto device = rachis::detail::DeviceAccess::make(std::move(backend));
+    auto cb = makeCommandBuffer(raw->token, QueueType::compute);
+    const BufferHandle records{.identity = 1};
+    const rachis::AccelerationStructureHandle source{.identity = 2};
+    const rachis::AccelerationStructureHandle destination{.identity = 3};
+    const rachis::TopLevelAccelerationStructureBufferBuildDesc build{
+        .destination = destination,
+        .instanceBuffer = records,
+        .instanceCount = 2,
+    };
+
+    const auto unsupportedBuild = device.buildTopLevelAccelerationStructureFromBuffer(cb, build);
+    REQUIRE_FALSE(unsupportedBuild.has_value());
+    CHECK(unsupportedBuild.error().code == ErrorCode::unsupported);
+    const auto unsupportedLayout = device.queryAccelerationStructureInstanceLayout();
+    REQUIRE_FALSE(unsupportedLayout.has_value());
+    CHECK(unsupportedLayout.error().code == ErrorCode::unsupported);
+    CHECK(raw->backendInvocations == 0);
+
+    raw->instanceRecords = true;
+    const auto expectRejected = [&](const Status& status) {
+        REQUIRE_FALSE(status.has_value());
+        CHECK(status.error().code == ErrorCode::invalidArgument);
+        CHECK(raw->backendInvocations == 0);
+    };
+    auto withoutBuffer = build;
+    withoutBuffer.instanceBuffer = {};
+    expectRejected(device.buildTopLevelAccelerationStructureFromBuffer(cb, withoutBuffer));
+    auto withoutInstances = build;
+    withoutInstances.instanceCount = 0;
+    expectRejected(device.buildTopLevelAccelerationStructureFromBuffer(cb, withoutInstances));
+    auto misaligned = build;
+    misaligned.instanceOffset = 8;
+    expectRejected(device.buildTopLevelAccelerationStructureFromBuffer(cb, misaligned));
+    auto overflowing = build;
+    overflowing.instanceOffset = std::numeric_limits<std::uint64_t>::max() - 63U;
+    expectRejected(device.buildTopLevelAccelerationStructureFromBuffer(cb, overflowing));
+    expectRejected(device.updateTopLevelAccelerationStructureFromBuffer(cb,
+                                                                        {
+                                                                            .source = source,
+                                                                            .destination = source,
+                                                                            .instanceBuffer = records,
+                                                                            .instanceCount = 2,
+                                                                        }));
+    expectRejected(device.updateTopLevelAccelerationStructureFromBuffer(cb,
+                                                                        {
+                                                                            .source = source,
+                                                                            .destination = destination,
+                                                                            .instanceBuffer = records,
+                                                                            .instanceOffset = 24,
+                                                                            .instanceCount = 2,
+                                                                        }));
+    expectRejected(device.updateTopLevelAccelerationStructureInPlaceFromBuffer(cb,
+                                                                               {
+                                                                                   .target = source,
+                                                                                   .instanceBuffer = records,
+                                                                                   .instanceCount = 0,
+                                                                               }));
+
+    auto foreignCb = makeCommandBuffer(raw->token + 1, QueueType::compute);
+    expectRejected(device.buildTopLevelAccelerationStructureFromBuffer(foreignCb, build));
+
+    const auto nullReference = device.queryAccelerationStructureReference({});
+    REQUIRE_FALSE(nullReference.has_value());
+    CHECK(nullReference.error().code == ErrorCode::invalidArgument);
+    CHECK(raw->referenceQueries == 0);
+    const auto reference = device.queryAccelerationStructureReference(source);
+    REQUIRE(reference.has_value());
+    CHECK(*reference == 0x1000);
+    CHECK(raw->referenceQueries == 1);
+
+    auto aligned = build;
+    aligned.instanceOffset = 48;
+    REQUIRE(device.buildTopLevelAccelerationStructureFromBuffer(cb, aligned).has_value());
+    REQUIRE(device
+                .updateTopLevelAccelerationStructureFromBuffer(cb,
+                                                               {
+                                                                   .source = source,
+                                                                   .destination = destination,
+                                                                   .instanceBuffer = records,
+                                                                   .instanceCount = 2,
+                                                               })
+                .has_value());
+    REQUIRE(device
+                .updateTopLevelAccelerationStructureInPlaceFromBuffer(cb,
+                                                                      {
+                                                                          .target = source,
+                                                                          .instanceBuffer = records,
+                                                                          .instanceCount = 2,
+                                                                      })
+                .has_value());
+    CHECK(raw->backendInvocations == 3);
+
+    raw->state = DeviceOperationalState::lost;
+    const auto lostBuild = device.buildTopLevelAccelerationStructureFromBuffer(cb, misaligned);
+    REQUIRE_FALSE(lostBuild.has_value());
+    CHECK(lostBuild.error().code == ErrorCode::deviceLost);
+    CHECK(raw->backendInvocations == 3);
 }
 
 TEST_CASE("Device frontend validates debug markers, debug group stack, thread affinity, and D3D12 disabled markers",

@@ -2003,6 +2003,39 @@ namespace rachis::d3d12
             return resources_.updateTopLevelAccelerationStructureInPlace(queues_, commandBuffer, desc);
         }
 
+        [[nodiscard]] Result<AccelerationStructureInstanceLayout> queryAccelerationStructureInstanceLayout()
+            const override
+        {
+            return resources_.queryAccelerationStructureInstanceLayout();
+        }
+
+        [[nodiscard]] Result<std::uint64_t> queryAccelerationStructureReference(
+            AccelerationStructureHandle bottomLevel) const override
+        {
+            return resources_.queryAccelerationStructureReference(bottomLevel);
+        }
+
+        [[nodiscard]] Status buildTopLevelAccelerationStructureFromBuffer(
+            detail::BackendCommandBuffer& commandBuffer,
+            const TopLevelAccelerationStructureBufferBuildDesc& desc) override
+        {
+            return resources_.buildTopLevelAccelerationStructureFromBuffer(queues_, commandBuffer, desc);
+        }
+
+        [[nodiscard]] Status updateTopLevelAccelerationStructureFromBuffer(
+            detail::BackendCommandBuffer& commandBuffer,
+            const TopLevelAccelerationStructureBufferUpdateDesc& desc) override
+        {
+            return resources_.updateTopLevelAccelerationStructureFromBuffer(queues_, commandBuffer, desc);
+        }
+
+        [[nodiscard]] Status updateTopLevelAccelerationStructureInPlaceFromBuffer(
+            detail::BackendCommandBuffer& commandBuffer,
+            const TopLevelAccelerationStructureBufferInPlaceUpdateDesc& desc) override
+        {
+            return resources_.updateTopLevelAccelerationStructureInPlaceFromBuffer(queues_, commandBuffer, desc);
+        }
+
         [[nodiscard]] Status compactAccelerationStructure(detail::BackendCommandBuffer& commandBuffer,
                                                           const AccelerationStructureCompactionDesc& desc) override
         {

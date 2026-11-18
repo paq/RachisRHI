@@ -4,6 +4,7 @@
 #include "Internal/VulkanDiagnostics.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstring>
 #include <iterator>
 #include <limits>
@@ -706,6 +707,46 @@ namespace rachis::vulkan
                 .flags = {},
             };
         }
+
+        constexpr std::uint32_t instanceRecordAlignment = 16;
+
+        static_assert(sizeof(VkAccelerationStructureInstanceKHR) == sizeof(AccelerationStructureInstanceRecord));
+        static_assert(offsetof(VkAccelerationStructureInstanceKHR, accelerationStructureReference) ==
+                      offsetof(AccelerationStructureInstanceRecord, bottomLevel));
+        static_assert(instanceRecordAlignment == alignof(AccelerationStructureInstanceRecord));
+        static_assert(static_cast<std::uint32_t>(AccelerationStructureInstanceFlag::triangleCullDisable) ==
+                      static_cast<std::uint32_t>(VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR));
+        static_assert(static_cast<std::uint32_t>(AccelerationStructureInstanceFlag::triangleFrontCounterClockwise) ==
+                      static_cast<std::uint32_t>(VK_GEOMETRY_INSTANCE_TRIANGLE_FRONT_COUNTERCLOCKWISE_BIT_KHR));
+        static_assert(static_cast<std::uint32_t>(AccelerationStructureInstanceFlag::forceOpaque) ==
+                      static_cast<std::uint32_t>(VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR));
+        static_assert(static_cast<std::uint32_t>(AccelerationStructureInstanceFlag::forceNonOpaque) ==
+                      static_cast<std::uint32_t>(VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR));
+
+        [[nodiscard]] Result<VulkanResourceAllocator::ResolvedBindingBuffer> validatedInstanceBuffer(
+            const VulkanResourceAllocator& resources, BufferHandle handle, std::uint64_t offset, std::uint32_t count)
+        {
+            auto buffer = resources.resolveBindingBuffer(handle);
+            if (!buffer)
+            {
+                return std::unexpected(std::move(buffer.error()));
+            }
+            const std::uint64_t recordBytes =
+                static_cast<std::uint64_t>(count) * sizeof(VkAccelerationStructureInstanceKHR);
+            if (!liveBuildInputBuffer(buffer) || buffer->desc.memoryType == MemoryType::readback ||
+                offset % instanceRecordAlignment != 0 ||
+                (buffer->deviceAddress + offset) % instanceRecordAlignment != 0 ||
+                !validRange(buffer->desc.size, offset, recordBytes))
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidArgument,
+                    0,
+                    "TLAS instance records require a live, non-readback build-input buffer that holds every record "
+                    "from an aligned offset.",
+                });
+            }
+            return buffer;
+        }
     } // namespace
 
     VulkanAccelerationManager::AccelerationStructureKeepAlive::~AccelerationStructureKeepAlive()
@@ -1206,8 +1247,13 @@ namespace rachis::vulkan
         return recordBuildBarrier(commandBuffer.native(), commandBuffer.queueType());
     }
 
-    Status VulkanAccelerationManager::buildTopLevel(VulkanCommandBuffer& commandBuffer,
-                                                    const TopLevelAccelerationStructureBuildDesc& desc)
+    Result<VulkanAccelerationManager::TopLevelBuildTarget> VulkanAccelerationManager::resolveTopLevelBuildTarget(
+        const VulkanCommandBuffer& commandBuffer,
+        AccelerationStructureHandle destination,
+        std::size_t instanceCount,
+        AccelerationStructureBuildFlag flags,
+        BufferHandle scratch,
+        std::uint64_t scratchOffset) const
     {
         if (!supported())
         {
@@ -1222,32 +1268,32 @@ namespace rachis::vulkan
                 "A TLAS build requires a graphics or compute command buffer outside a rendering scope.",
             });
         }
-        if (desc.instances.size() > std::numeric_limits<std::uint32_t>::max())
+        if (instanceCount > std::numeric_limits<std::uint32_t>::max())
         {
             return std::unexpected(Error{ErrorCode::invalidArgument, 0, "The TLAS instance count is not portable."});
         }
         const TopLevelAccelerationStructureBuildInput input{
-            .instanceCount = static_cast<std::uint32_t>(desc.instances.size()),
-            .flags = desc.flags,
+            .instanceCount = static_cast<std::uint32_t>(instanceCount),
+            .flags = flags,
         };
         auto sizes = queryTopLevelBuildSizes(input);
         if (!sizes)
         {
             return std::unexpected(std::move(sizes.error()));
         }
-        auto destination = resolve(desc.destination);
-        auto scratch = resources_->resolveBindingBuffer(desc.scratch);
-        if (!destination)
+        auto resolvedDestination = resolve(destination);
+        auto resolvedScratch = resources_->resolveBindingBuffer(scratch);
+        if (!resolvedDestination)
         {
-            return std::unexpected(std::move(destination.error()));
+            return std::unexpected(std::move(resolvedDestination.error()));
         }
-        if (!scratch)
+        if (!resolvedScratch)
         {
-            return std::unexpected(std::move(scratch.error()));
+            return std::unexpected(std::move(resolvedScratch.error()));
         }
-        if (destination->type != AccelerationStructureType::topLevel ||
-            destination->size < sizes->accelerationStructureSize ||
-            !validBuildScratchRange(*scratch, desc.scratchOffset, scratchAlignment_, sizes->buildScratchSize))
+        if (resolvedDestination->type != AccelerationStructureType::topLevel ||
+            resolvedDestination->size < sizes->accelerationStructureSize ||
+            !validBuildScratchRange(*resolvedScratch, scratchOffset, scratchAlignment_, sizes->buildScratchSize))
         {
             return std::unexpected(Error{
                 ErrorCode::invalidArgument,
@@ -1255,9 +1301,50 @@ namespace rachis::vulkan
                 "A TLAS build requires a sufficiently large TLAS destination and aligned dedicated scratch range.",
             });
         }
-        if (destination->version != nullptr)
+        if (resolvedDestination->version != nullptr)
         {
             return std::unexpected(Error{ErrorCode::invalidState, 0, std::string(immutableDestinationMessage)});
+        }
+        return TopLevelBuildTarget{
+            .handle = destination,
+            .destination = std::move(*resolvedDestination),
+            .scratch = std::move(*resolvedScratch),
+            .scratchOffset = scratchOffset,
+            .flags = flags,
+        };
+    }
+
+    Status VulkanAccelerationManager::recordTopLevelBuild(VulkanCommandBuffer& commandBuffer,
+                                                          const TopLevelBuildTarget& target,
+                                                          const TopLevelInstanceData& instances,
+                                                          std::vector<std::shared_ptr<void>> buildOwners)
+    {
+        buildOwners.push_back(target.scratch.keepAlive);
+        if (auto begun = beginFirstBuild(commandBuffer, target.handle, target.flags, std::move(buildOwners)); !begun)
+        {
+            return begun;
+        }
+
+        const auto geometry = nativeInstancesGeometry(instances.deviceAddress);
+        const auto info = nativeBuildGeometryInfo(VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
+                                                  target.flags,
+                                                  std::span(&geometry, 1),
+                                                  target.destination.accelerationStructure,
+                                                  target.scratch.deviceAddress + target.scratchOffset);
+        const auto range = nativeBuildRange(instances.count);
+        const VkAccelerationStructureBuildRangeInfoKHR* rangePointer = &range;
+        table_->vkCmdBuildAccelerationStructuresKHR(commandBuffer.native(), 1, &info, &rangePointer);
+        return recordBuildBarrier(commandBuffer.native(), commandBuffer.queueType());
+    }
+
+    Status VulkanAccelerationManager::buildTopLevel(VulkanCommandBuffer& commandBuffer,
+                                                    const TopLevelAccelerationStructureBuildDesc& desc)
+    {
+        auto target = resolveTopLevelBuildTarget(
+            commandBuffer, desc.destination, desc.instances.size(), desc.flags, desc.scratch, desc.scratchOffset);
+        if (!target)
+        {
+            return std::unexpected(std::move(target.error()));
         }
 
         std::vector<std::shared_ptr<void>> buildOwners;
@@ -1273,22 +1360,103 @@ namespace rachis::vulkan
             return std::unexpected(std::move(uploadedInstances.error()));
         }
         buildOwners.push_back(uploadedInstances->keepAlive);
-        buildOwners.push_back(scratch->keepAlive);
-        if (auto begun = beginFirstBuild(commandBuffer, desc.destination, desc.flags, std::move(buildOwners)); !begun)
-        {
-            return begun;
-        }
+        return recordTopLevelBuild(commandBuffer,
+                                   *target,
+                                   {
+                                       .deviceAddress = uploadedInstances->deviceAddress,
+                                       .count = static_cast<std::uint32_t>(instances->size()),
+                                   },
+                                   std::move(buildOwners));
+    }
 
-        const auto geometry = nativeInstancesGeometry(uploadedInstances->deviceAddress);
-        const auto info = nativeBuildGeometryInfo(VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
-                                                  desc.flags,
-                                                  std::span(&geometry, 1),
-                                                  destination->accelerationStructure,
-                                                  scratch->deviceAddress + desc.scratchOffset);
-        const auto range = nativeBuildRange(static_cast<std::uint32_t>(instances->size()));
-        const VkAccelerationStructureBuildRangeInfoKHR* rangePointer = &range;
-        table_->vkCmdBuildAccelerationStructuresKHR(commandBuffer.native(), 1, &info, &rangePointer);
-        return recordBuildBarrier(commandBuffer.native(), commandBuffer.queueType());
+    Status VulkanAccelerationManager::buildTopLevelFromBuffer(VulkanCommandBuffer& commandBuffer,
+                                                              const TopLevelAccelerationStructureBufferBuildDesc& desc)
+    {
+        auto target = resolveTopLevelBuildTarget(
+            commandBuffer, desc.destination, desc.instanceCount, desc.flags, desc.scratch, desc.scratchOffset);
+        if (!target)
+        {
+            return std::unexpected(std::move(target.error()));
+        }
+        auto instances =
+            validatedInstanceBuffer(*resources_, desc.instanceBuffer, desc.instanceOffset, desc.instanceCount);
+        if (!instances)
+        {
+            return std::unexpected(std::move(instances.error()));
+        }
+        std::vector<std::shared_ptr<void>> buildOwners;
+        buildOwners.push_back(instances->keepAlive);
+        return recordTopLevelBuild(commandBuffer,
+                                   *target,
+                                   {
+                                       .deviceAddress = instances->deviceAddress + desc.instanceOffset,
+                                       .count = desc.instanceCount,
+                                   },
+                                   std::move(buildOwners));
+    }
+
+    Status VulkanAccelerationManager::updateTopLevelFromBuffer(VulkanCommandBuffer&,
+                                                               const TopLevelAccelerationStructureBufferUpdateDesc&)
+    {
+        return std::unexpected(
+            Error{ErrorCode::unsupported, 0, "Vulkan out-of-place TLAS updates are not implemented."});
+    }
+
+    Status VulkanAccelerationManager::updateTopLevelInPlaceFromBuffer(
+        VulkanCommandBuffer&, const TopLevelAccelerationStructureBufferInPlaceUpdateDesc&)
+    {
+        return std::unexpected(Error{ErrorCode::unsupported, 0, "Vulkan in-place TLAS updates are not implemented."});
+    }
+
+    Result<AccelerationStructureInstanceLayout> VulkanAccelerationManager::instanceLayout() const
+    {
+        if (!supported())
+        {
+            return std::unexpected(Error{
+                ErrorCode::unsupported,
+                0,
+                "Acceleration-structure instance records require acceleration-structure support.",
+            });
+        }
+        return AccelerationStructureInstanceLayout{
+            .format = AccelerationStructureInstanceFormat::packed64,
+            .size = sizeof(VkAccelerationStructureInstanceKHR),
+            .alignment = instanceRecordAlignment,
+        };
+    }
+
+    Result<std::uint64_t> VulkanAccelerationManager::reference(AccelerationStructureHandle bottomLevel) const
+    {
+        if (!supported())
+        {
+            return std::unexpected(Error{
+                ErrorCode::unsupported,
+                0,
+                "Acceleration-structure references require acceleration-structure support.",
+            });
+        }
+        auto resolved = resolve(bottomLevel);
+        if (!resolved)
+        {
+            return std::unexpected(std::move(resolved.error()));
+        }
+        if (resolved->type != AccelerationStructureType::bottomLevel)
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidArgument,
+                0,
+                "Only a bottom-level acceleration structure has a reference that instance records can name.",
+            });
+        }
+        if (resolved->deviceAddress == 0)
+        {
+            return std::unexpected(Error{
+                ErrorCode::nativeFailure,
+                0,
+                "Vulkan returned no device address for the bottom-level acceleration structure.",
+            });
+        }
+        return resolved->deviceAddress;
     }
 
     Status VulkanAccelerationManager::updateBottomLevel(VulkanCommandBuffer&,

@@ -64,6 +64,14 @@ namespace rachis::vulkan
                                                       const BottomLevelAccelerationStructureInPlaceUpdateDesc& desc);
         [[nodiscard]] Status updateTopLevelInPlace(VulkanCommandBuffer& commandBuffer,
                                                    const TopLevelAccelerationStructureInPlaceUpdateDesc& desc);
+        [[nodiscard]] Result<AccelerationStructureInstanceLayout> instanceLayout() const;
+        [[nodiscard]] Result<std::uint64_t> reference(AccelerationStructureHandle bottomLevel) const;
+        [[nodiscard]] Status buildTopLevelFromBuffer(VulkanCommandBuffer& commandBuffer,
+                                                     const TopLevelAccelerationStructureBufferBuildDesc& desc);
+        [[nodiscard]] Status updateTopLevelFromBuffer(VulkanCommandBuffer& commandBuffer,
+                                                      const TopLevelAccelerationStructureBufferUpdateDesc& desc);
+        [[nodiscard]] Status updateTopLevelInPlaceFromBuffer(
+            VulkanCommandBuffer& commandBuffer, const TopLevelAccelerationStructureBufferInPlaceUpdateDesc& desc);
         [[nodiscard]] Status compact(VulkanCommandBuffer& commandBuffer,
                                      const AccelerationStructureCompactionDesc& desc);
         [[nodiscard]] Result<ResolvedAccelerationStructure> resolve(
@@ -138,6 +146,32 @@ namespace rachis::vulkan
                                              AccelerationStructureHandle destination,
                                              AccelerationStructureBuildFlag flags,
                                              std::vector<std::shared_ptr<void>> buildOwners);
+
+        struct TopLevelBuildTarget final
+        {
+            AccelerationStructureHandle handle{};
+            ResolvedAccelerationStructure destination;
+            VulkanResourceAllocator::ResolvedBindingBuffer scratch;
+            std::uint64_t scratchOffset = 0;
+            AccelerationStructureBuildFlag flags = AccelerationStructureBuildFlag::none;
+        };
+
+        struct TopLevelInstanceData final
+        {
+            VkDeviceAddress deviceAddress = 0;
+            std::uint32_t count = 0;
+        };
+
+        [[nodiscard]] Result<TopLevelBuildTarget> resolveTopLevelBuildTarget(const VulkanCommandBuffer& commandBuffer,
+                                                                             AccelerationStructureHandle destination,
+                                                                             std::size_t instanceCount,
+                                                                             AccelerationStructureBuildFlag flags,
+                                                                             BufferHandle scratch,
+                                                                             std::uint64_t scratchOffset) const;
+        [[nodiscard]] Status recordTopLevelBuild(VulkanCommandBuffer& commandBuffer,
+                                                 const TopLevelBuildTarget& target,
+                                                 const TopLevelInstanceData& instances,
+                                                 std::vector<std::shared_ptr<void>> buildOwners);
 
         VkDevice device_ = VK_NULL_HANDLE;
         const VolkDeviceTable* table_ = nullptr;

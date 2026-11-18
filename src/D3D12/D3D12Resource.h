@@ -24,6 +24,7 @@ namespace rachis::d3d12
     class BindingManager;
     class PipelineManager;
     struct NativeTextureView;
+    struct TopLevelBuildRequest;
 
     inline constexpr std::size_t memorySegmentGroupCount = 2;
 
@@ -240,6 +241,21 @@ namespace rachis::d3d12
             QueueManager& queues,
             detail::BackendCommandBuffer& commandBuffer,
             const TopLevelAccelerationStructureInPlaceUpdateDesc& desc);
+        [[nodiscard]] Result<AccelerationStructureInstanceLayout> queryAccelerationStructureInstanceLayout() const;
+        [[nodiscard]] Result<std::uint64_t> queryAccelerationStructureReference(
+            AccelerationStructureHandle bottomLevel) const;
+        [[nodiscard]] Status buildTopLevelAccelerationStructureFromBuffer(
+            QueueManager& queues,
+            detail::BackendCommandBuffer& commandBuffer,
+            const TopLevelAccelerationStructureBufferBuildDesc& desc);
+        [[nodiscard]] Status updateTopLevelAccelerationStructureFromBuffer(
+            QueueManager& queues,
+            detail::BackendCommandBuffer& commandBuffer,
+            const TopLevelAccelerationStructureBufferUpdateDesc& desc);
+        [[nodiscard]] Status updateTopLevelAccelerationStructureInPlaceFromBuffer(
+            QueueManager& queues,
+            detail::BackendCommandBuffer& commandBuffer,
+            const TopLevelAccelerationStructureBufferInPlaceUpdateDesc& desc);
         [[nodiscard]] Status compactAccelerationStructure(QueueManager& queues,
                                                           detail::BackendCommandBuffer& commandBuffer,
                                                           const AccelerationStructureCompactionDesc& desc);
@@ -374,10 +390,13 @@ namespace rachis::d3d12
             detail::BackendCommandBuffer& commandBuffer,
             const BottomLevelAccelerationStructureUpdateDesc& desc,
             bool inPlace);
-        [[nodiscard]] Status updateTopLevelAccelerationStructure(QueueManager& queues,
-                                                                 detail::BackendCommandBuffer& commandBuffer,
-                                                                 const TopLevelAccelerationStructureUpdateDesc& desc,
-                                                                 bool inPlace);
+        [[nodiscard]] Status recordTopLevelBuild(QueueManager& queues,
+                                                 detail::BackendCommandBuffer& commandBuffer,
+                                                 const TopLevelBuildRequest& request);
+        [[nodiscard]] Status recordTopLevelUpdate(QueueManager& queues,
+                                                  detail::BackendCommandBuffer& commandBuffer,
+                                                  const TopLevelBuildRequest& request,
+                                                  bool inPlace);
         [[nodiscard]] Result<BufferHandle> createBuffer(const BufferDesc& desc, bool shared);
         [[nodiscard]] Result<BufferHandle> importBuffer(ID3D12Resource& resource, const BufferDesc& desc, bool shared);
         [[nodiscard]] Result<TextureHandle> createTexture(const TextureDesc& desc, bool shared);

@@ -218,6 +218,31 @@ namespace rachis::detail
         {
             return std::unexpected(unsupportedOperation("updateTopLevelAccelerationStructureInPlace"));
         }
+        [[nodiscard]] virtual Result<AccelerationStructureInstanceLayout> queryAccelerationStructureInstanceLayout()
+            const
+        {
+            return std::unexpected(unsupportedOperation("queryAccelerationStructureInstanceLayout"));
+        }
+        [[nodiscard]] virtual Result<std::uint64_t> queryAccelerationStructureReference(
+            AccelerationStructureHandle) const
+        {
+            return std::unexpected(unsupportedOperation("queryAccelerationStructureReference"));
+        }
+        [[nodiscard]] virtual Status buildTopLevelAccelerationStructureFromBuffer(
+            BackendCommandBuffer&, const TopLevelAccelerationStructureBufferBuildDesc&)
+        {
+            return std::unexpected(unsupportedOperation("buildTopLevelAccelerationStructureFromBuffer"));
+        }
+        [[nodiscard]] virtual Status updateTopLevelAccelerationStructureFromBuffer(
+            BackendCommandBuffer&, const TopLevelAccelerationStructureBufferUpdateDesc&)
+        {
+            return std::unexpected(unsupportedOperation("updateTopLevelAccelerationStructureFromBuffer"));
+        }
+        [[nodiscard]] virtual Status updateTopLevelAccelerationStructureInPlaceFromBuffer(
+            BackendCommandBuffer&, const TopLevelAccelerationStructureBufferInPlaceUpdateDesc&)
+        {
+            return std::unexpected(unsupportedOperation("updateTopLevelAccelerationStructureInPlaceFromBuffer"));
+        }
         [[nodiscard]] virtual Status compactAccelerationStructure(BackendCommandBuffer&,
                                                                   const AccelerationStructureCompactionDesc&)
         {

@@ -1023,11 +1023,53 @@ namespace rachis::d3d12
         return {};
     }
 
+    struct TopLevelInstanceBufferRange final
+    {
+        BufferHandle buffer = {};
+        std::uint64_t offset = 0;
+        std::uint32_t count = 0;
+    };
+
+    using TopLevelInstanceSource =
+        std::variant<std::span<const AccelerationStructureInstance>, TopLevelInstanceBufferRange>;
+
+    struct TopLevelBuildRequest final
+    {
+        AccelerationStructureHandle source = {};
+        AccelerationStructureHandle destination = {};
+        TopLevelInstanceSource instances = {};
+        AccelerationStructureBuildFlag flags = AccelerationStructureBuildFlag::none;
+        BufferHandle scratch = {};
+        std::uint64_t scratchOffset = 0;
+    };
+
     namespace
     {
 
+        static_assert(sizeof(D3D12_RAYTRACING_INSTANCE_DESC) == sizeof(AccelerationStructureInstanceRecord));
+        static_assert(offsetof(D3D12_RAYTRACING_INSTANCE_DESC, AccelerationStructure) ==
+                      offsetof(AccelerationStructureInstanceRecord, bottomLevel));
+        static_assert(D3D12_RAYTRACING_INSTANCE_DESCS_BYTE_ALIGNMENT == alignof(AccelerationStructureInstanceRecord));
+        static_assert(static_cast<std::uint32_t>(AccelerationStructureInstanceFlag::triangleCullDisable) ==
+                      static_cast<std::uint32_t>(D3D12_RAYTRACING_INSTANCE_FLAG_TRIANGLE_CULL_DISABLE));
+        static_assert(static_cast<std::uint32_t>(AccelerationStructureInstanceFlag::triangleFrontCounterClockwise) ==
+                      static_cast<std::uint32_t>(D3D12_RAYTRACING_INSTANCE_FLAG_TRIANGLE_FRONT_COUNTERCLOCKWISE));
+        static_assert(static_cast<std::uint32_t>(AccelerationStructureInstanceFlag::forceOpaque) ==
+                      static_cast<std::uint32_t>(D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_OPAQUE));
+        static_assert(static_cast<std::uint32_t>(AccelerationStructureInstanceFlag::forceNonOpaque) ==
+                      static_cast<std::uint32_t>(D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_NON_OPAQUE));
+
+        [[nodiscard]] std::size_t requestedInstanceCount(const TopLevelInstanceSource& instances) noexcept
+        {
+            if (const auto* span = std::get_if<std::span<const AccelerationStructureInstance>>(&instances))
+            {
+                return span->size();
+            }
+            return std::get<TopLevelInstanceBufferRange>(instances).count;
+        }
+
         [[nodiscard]] Status validateTopLevelBuildRequest(const detail::BackendCommandBuffer& commandBuffer,
-                                                          const TopLevelAccelerationStructureBuildDesc& desc)
+                                                          const TopLevelBuildRequest& request)
         {
             if (!isGraphicsOrComputeOutsideRendering(commandBuffer))
             {
@@ -1037,7 +1079,7 @@ namespace rachis::d3d12
                     "A TLAS build requires a graphics or compute command buffer outside a rendering scope.",
                 });
             }
-            if (desc.instances.size() > std::numeric_limits<std::uint32_t>::max())
+            if (requestedInstanceCount(request.instances) > std::numeric_limits<std::uint32_t>::max())
             {
                 return std::unexpected(
                     Error{ErrorCode::invalidArgument, 0, "The TLAS instance count is not portable."});
@@ -1146,21 +1188,123 @@ namespace rachis::d3d12
             }
         }
 
+        struct PreparedTopLevelInstances final
+        {
+            D3D12_GPU_VIRTUAL_ADDRESS address = 0;
+            std::uint32_t count = 0;
+            std::shared_ptr<void> upload;
+            std::shared_ptr<BufferRecord> buffer;
+            std::vector<std::shared_ptr<AccelerationStructureVersion>> bottomLevels;
+            std::vector<std::shared_ptr<AccelerationStructureExecutionTracker>> bottomLevelTrackers;
+        };
+
+        using UploadSliceAllocator = std::function<Result<UploadSlice>(std::uint64_t, std::uint64_t)>;
+
+        [[nodiscard]] Result<PreparedTopLevelInstances> prepareUploadedInstances(
+            std::span<const AccelerationStructureInstance> instances,
+            const AccelerationStructureLookup& findAccelerationStructure,
+            const UploadSliceAllocator& allocateUpload,
+            const TopLevelInstanceErrors& errors)
+        {
+            auto resolved = resolveTopLevelInstances(instances, findAccelerationStructure, errors);
+            if (!resolved)
+            {
+                return std::unexpected(std::move(resolved.error()));
+            }
+            const std::uint64_t uploadBytes = resolved->native.size() * sizeof(D3D12_RAYTRACING_INSTANCE_DESC);
+            auto upload = allocateUpload(uploadBytes, D3D12_RAYTRACING_INSTANCE_DESCS_BYTE_ALIGNMENT);
+            if (!upload)
+            {
+                return std::unexpected(std::move(upload.error()));
+            }
+            std::memcpy(upload->mappedData, resolved->native.data(), uploadBytes);
+            return PreparedTopLevelInstances{
+                .address = upload->gpuVirtualAddress,
+                .count = static_cast<std::uint32_t>(resolved->native.size()),
+                .upload = std::move(upload->owner),
+                .buffer = nullptr,
+                .bottomLevels = std::move(resolved->bottomLevels),
+                .bottomLevelTrackers = std::move(resolved->bottomLevelTrackers),
+            };
+        }
+
+        [[nodiscard]] Result<PreparedTopLevelInstances> prepareBufferInstances(const TopLevelInstanceBufferRange& range,
+                                                                               const BufferLookup& findBuffer)
+        {
+            auto buffer = findBuffer(range.buffer);
+            if (!buffer)
+            {
+                return std::unexpected(std::move(buffer.error()));
+            }
+            const std::uint64_t recordBytes =
+                static_cast<std::uint64_t>(range.count) * sizeof(D3D12_RAYTRACING_INSTANCE_DESC);
+            if (!hasAny((*buffer)->desc.usage, BufferUsage::accelerationStructureBuildInput) ||
+                (*buffer)->desc.memoryType == MemoryType::readback ||
+                range.offset % D3D12_RAYTRACING_INSTANCE_DESCS_BYTE_ALIGNMENT != 0 ||
+                !validRange((*buffer)->desc.size, range.offset, recordBytes))
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidArgument,
+                    0,
+                    "TLAS instance records require a live, non-readback build-input buffer that holds every record "
+                    "from an aligned offset.",
+                });
+            }
+            return PreparedTopLevelInstances{
+                .address = (*buffer)->resource->GetGPUVirtualAddress() + range.offset,
+                .count = range.count,
+                .upload = nullptr,
+                .buffer = std::move(*buffer),
+                .bottomLevels = {},
+                .bottomLevelTrackers = {},
+            };
+        }
+
+        [[nodiscard]] Result<PreparedTopLevelInstances> prepareTopLevelInstances(
+            const TopLevelInstanceSource& instances,
+            const AccelerationStructureLookup& findAccelerationStructure,
+            const BufferLookup& findBuffer,
+            const UploadSliceAllocator& allocateUpload,
+            const TopLevelInstanceErrors& errors)
+        {
+            if (const auto* range = std::get_if<TopLevelInstanceBufferRange>(&instances))
+            {
+                return prepareBufferInstances(*range, findBuffer);
+            }
+            return prepareUploadedInstances(std::get<std::span<const AccelerationStructureInstance>>(instances),
+                                            findAccelerationStructure,
+                                            allocateUpload,
+                                            errors);
+        }
+
+        void appendInstanceRetention(AccelerationStructureBuildRetention& retention,
+                                     const PreparedTopLevelInstances& instances)
+        {
+            if (instances.upload != nullptr)
+            {
+                retention.owners.push_back(instances.upload);
+            }
+            if (instances.buffer != nullptr)
+            {
+                retention.owners.push_back(instances.buffer);
+                retention.residencies.push_back(instances.buffer->residency);
+            }
+            retention.owners.insert(
+                retention.owners.end(), instances.bottomLevels.begin(), instances.bottomLevels.end());
+            appendBottomLevelResidencies(retention.residencies, instances.bottomLevels);
+        }
+
         [[nodiscard]] std::shared_ptr<AccelerationStructureBuildRetention> makeTopLevelBuildRetention(
-            const BuildTarget& target,
-            const std::shared_ptr<void>& instanceUpload,
-            std::span<const std::shared_ptr<AccelerationStructureVersion>> bottomLevels)
+            const BuildTarget& target, const PreparedTopLevelInstances& instances)
         {
             auto retention = std::make_shared<AccelerationStructureBuildRetention>();
-            retention->owners.reserve(bottomLevels.size() + 3U);
+            retention->owners.reserve(instances.bottomLevels.size() + 3U);
             retention->owners.push_back(target.destination);
             retention->owners.push_back(target.scratch);
-            retention->owners.push_back(instanceUpload);
-            retention->owners.insert(retention->owners.end(), bottomLevels.begin(), bottomLevels.end());
-            retention->residencies.reserve(bottomLevels.size() + 2U);
+            retention->residencies.reserve(instances.bottomLevels.size() + 3U);
             retention->residencies.push_back(target.destination->storage->residency);
             retention->residencies.push_back(target.scratch->residency);
-            appendBottomLevelResidencies(retention->residencies, bottomLevels);
+            appendInstanceRetention(*retention, instances);
             deduplicateSharedPointers(retention->residencies);
             return retention;
         }
@@ -1168,7 +1312,7 @@ namespace rachis::d3d12
         [[nodiscard]] std::shared_ptr<AccelerationStructureVersion> makeTopLevelVersion(
             const AccelerationStructureRecord& destination,
             D3D12_GPU_VIRTUAL_ADDRESS address,
-            const TopLevelInstances& instances,
+            const PreparedTopLevelInstances& instances,
             AccelerationStructureBuildFlag buildFlags,
             std::uint64_t resultSize)
         {
@@ -1176,11 +1320,32 @@ namespace rachis::d3d12
             version->dependencies.assign(instances.bottomLevels.begin(), instances.bottomLevels.end());
             version->dependencyTrackers = instances.bottomLevelTrackers;
             version->buildFlags = buildFlags;
-            version->instanceCount = static_cast<std::uint32_t>(instances.native.size());
+            version->instanceCount = instances.count;
             version->resultSize = resultSize;
             appendBottomLevelResidencies(version->residencies, instances.bottomLevels);
             deduplicateSharedPointers(version->residencies);
             return version;
+        }
+
+        [[nodiscard]] Status retainTopLevelDependencies(
+            QueueManager& queues,
+            detail::BackendCommandBuffer& commandBuffer,
+            const std::shared_ptr<AccelerationStructureBuildRetention>& retention,
+            const PreparedTopLevelInstances& instances,
+            AccelerationStructureExecutionLease executionLease,
+            AccelerationStructurePublication publication)
+        {
+            if (instances.upload != nullptr)
+            {
+                return retainBuildDependencies(queues,
+                                               commandBuffer,
+                                               retention,
+                                               instances.upload,
+                                               std::move(executionLease),
+                                               std::move(publication));
+            }
+            return retainBuildDependencies(
+                queues, commandBuffer, retention, std::move(executionLease), std::move(publication));
         }
 
     } // namespace
@@ -1189,23 +1354,59 @@ namespace rachis::d3d12
                                                                detail::BackendCommandBuffer& commandBuffer,
                                                                const TopLevelAccelerationStructureBuildDesc& desc)
     {
-        auto validRequest = validateTopLevelBuildRequest(commandBuffer, desc);
+        return recordTopLevelBuild(queues,
+                                   commandBuffer,
+                                   {
+                                       .destination = desc.destination,
+                                       .instances = desc.instances,
+                                       .flags = desc.flags,
+                                       .scratch = desc.scratch,
+                                       .scratchOffset = desc.scratchOffset,
+                                   });
+    }
+
+    Status ResourceManager::buildTopLevelAccelerationStructureFromBuffer(
+        QueueManager& queues,
+        detail::BackendCommandBuffer& commandBuffer,
+        const TopLevelAccelerationStructureBufferBuildDesc& desc)
+    {
+        return recordTopLevelBuild(queues,
+                                   commandBuffer,
+                                   {
+                                       .destination = desc.destination,
+                                       .instances =
+                                           TopLevelInstanceBufferRange{
+                                               .buffer = desc.instanceBuffer,
+                                               .offset = desc.instanceOffset,
+                                               .count = desc.instanceCount,
+                                           },
+                                       .flags = desc.flags,
+                                       .scratch = desc.scratch,
+                                       .scratchOffset = desc.scratchOffset,
+                                   });
+    }
+
+    Status ResourceManager::recordTopLevelBuild(QueueManager& queues,
+                                                detail::BackendCommandBuffer& commandBuffer,
+                                                const TopLevelBuildRequest& request)
+    {
+        auto validRequest = validateTopLevelBuildRequest(commandBuffer, request);
         if (!validRequest)
         {
             return validRequest;
         }
         const TopLevelAccelerationStructureBuildInput input{
-            .instanceCount = static_cast<std::uint32_t>(desc.instances.size()),
-            .flags = desc.flags,
+            .instanceCount = static_cast<std::uint32_t>(requestedInstanceCount(request.instances)),
+            .flags = request.flags,
         };
         auto sizes = queryTopLevelAccelerationStructureBuildSizes(input);
         if (!sizes)
         {
             return std::unexpected(std::move(sizes.error()));
         }
-        const auto destination = impl_->accelerationStructure(desc.destination);
-        const auto scratch = impl_->buffer(desc.scratch);
-        auto target = resolveBuildTarget(destination, scratch, desc.scratchOffset, *sizes, topLevelBuildRequirement);
+        const auto destination = impl_->accelerationStructure(request.destination);
+        const auto scratch = impl_->buffer(request.scratch);
+        auto target = resolveBuildTarget(destination, scratch, request.scratchOffset, *sizes, topLevelBuildRequirement);
         if (!target)
         {
             return std::unexpected(std::move(target.error()));
@@ -1220,22 +1421,18 @@ namespace rachis::d3d12
             });
         }
 
-        auto instances = resolveTopLevelInstances(
-            desc.instances,
+        auto instances = prepareTopLevelInstances(
+            request.instances,
             [this](AccelerationStructureHandle handle) { return impl_->accelerationStructure(handle); },
+            [this](BufferHandle handle) { return impl_->buffer(handle); },
+            [this](std::uint64_t size, std::uint64_t alignment) {
+                return impl_->allocateUploadSlice(size, alignment, "TLAS instances");
+            },
             topLevelBuildInstanceErrors);
         if (!instances)
         {
             return std::unexpected(std::move(instances.error()));
         }
-        const std::uint64_t instanceUploadBytes = instances->native.size() * sizeof(D3D12_RAYTRACING_INSTANCE_DESC);
-        auto instanceUpload = impl_->allocateUploadSlice(
-            instanceUploadBytes, D3D12_RAYTRACING_INSTANCE_DESCS_BYTE_ALIGNMENT, "TLAS instances");
-        if (!instanceUpload)
-        {
-            return std::unexpected(std::move(instanceUpload.error()));
-        }
-        std::memcpy(instanceUpload->mappedData, instances->native.data(), instanceUploadBytes);
 
         auto commandLists = prepareAccelerationStructureCommandLists(queues, commandBuffer, impl_->enhancedBarriers);
         if (!commandLists)
@@ -1252,24 +1449,23 @@ namespace rachis::d3d12
         {
             return std::unexpected(std::move(executionLease.error()));
         }
-        const auto retention = makeTopLevelBuildRetention(*target, instanceUpload->owner, instances->bottomLevels);
+        const auto retention = makeTopLevelBuildRetention(*target, *instances);
         const auto destinationAddress = storageAddress(*target->destination);
         const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC native{
             .DestAccelerationStructureData = destinationAddress,
-            .Inputs = nativeTopLevelInputs(static_cast<UINT>(instances->native.size()),
-                                           nativeBuildFlags(desc.flags),
-                                           instanceUpload->gpuVirtualAddress),
+            .Inputs = nativeTopLevelInputs(instances->count, nativeBuildFlags(request.flags), instances->address),
             .SourceAccelerationStructureData = 0,
-            .ScratchAccelerationStructureData = target->scratch->resource->GetGPUVirtualAddress() + desc.scratchOffset,
+            .ScratchAccelerationStructureData =
+                target->scratch->resource->GetGPUVirtualAddress() + request.scratchOffset,
         };
         auto version = makeTopLevelVersion(
-            *target->destination, destinationAddress, *instances, desc.flags, sizes->accelerationStructureSize);
-        auto retained = retainBuildDependencies(queues,
-                                                commandBuffer,
-                                                retention,
-                                                instanceUpload->owner,
-                                                std::move(*executionLease),
-                                                publicationOf(target->destination, version));
+            *target->destination, destinationAddress, *instances, request.flags, sizes->accelerationStructureSize);
+        auto retained = retainTopLevelDependencies(queues,
+                                                   commandBuffer,
+                                                   retention,
+                                                   *instances,
+                                                   std::move(*executionLease),
+                                                   publicationOf(target->destination, version));
         if (!retained)
         {
             return retained;
@@ -1590,7 +1786,17 @@ namespace rachis::d3d12
                                                                 detail::BackendCommandBuffer& commandBuffer,
                                                                 const TopLevelAccelerationStructureUpdateDesc& desc)
     {
-        return updateTopLevelAccelerationStructure(queues, commandBuffer, desc, false);
+        return recordTopLevelUpdate(queues,
+                                    commandBuffer,
+                                    {
+                                        .source = desc.source,
+                                        .destination = desc.destination,
+                                        .instances = desc.instances,
+                                        .flags = desc.flags,
+                                        .scratch = desc.scratch,
+                                        .scratchOffset = desc.scratchOffset,
+                                    },
+                                    false);
     }
 
     Status ResourceManager::updateTopLevelAccelerationStructureInPlace(
@@ -1598,24 +1804,70 @@ namespace rachis::d3d12
         detail::BackendCommandBuffer& commandBuffer,
         const TopLevelAccelerationStructureInPlaceUpdateDesc& desc)
     {
-        return updateTopLevelAccelerationStructure(queues,
-                                                   commandBuffer,
-                                                   {
-                                                       .source = desc.target,
-                                                       .destination = desc.target,
-                                                       .instances = desc.instances,
-                                                       .flags = desc.flags,
-                                                       .scratch = desc.scratch,
-                                                       .scratchOffset = desc.scratchOffset,
-                                                   },
-                                                   true);
+        return recordTopLevelUpdate(queues,
+                                    commandBuffer,
+                                    {
+                                        .source = desc.target,
+                                        .destination = desc.target,
+                                        .instances = desc.instances,
+                                        .flags = desc.flags,
+                                        .scratch = desc.scratch,
+                                        .scratchOffset = desc.scratchOffset,
+                                    },
+                                    true);
+    }
+
+    Status ResourceManager::updateTopLevelAccelerationStructureFromBuffer(
+        QueueManager& queues,
+        detail::BackendCommandBuffer& commandBuffer,
+        const TopLevelAccelerationStructureBufferUpdateDesc& desc)
+    {
+        return recordTopLevelUpdate(queues,
+                                    commandBuffer,
+                                    {
+                                        .source = desc.source,
+                                        .destination = desc.destination,
+                                        .instances =
+                                            TopLevelInstanceBufferRange{
+                                                .buffer = desc.instanceBuffer,
+                                                .offset = desc.instanceOffset,
+                                                .count = desc.instanceCount,
+                                            },
+                                        .flags = desc.flags,
+                                        .scratch = desc.scratch,
+                                        .scratchOffset = desc.scratchOffset,
+                                    },
+                                    false);
+    }
+
+    Status ResourceManager::updateTopLevelAccelerationStructureInPlaceFromBuffer(
+        QueueManager& queues,
+        detail::BackendCommandBuffer& commandBuffer,
+        const TopLevelAccelerationStructureBufferInPlaceUpdateDesc& desc)
+    {
+        return recordTopLevelUpdate(queues,
+                                    commandBuffer,
+                                    {
+                                        .source = desc.target,
+                                        .destination = desc.target,
+                                        .instances =
+                                            TopLevelInstanceBufferRange{
+                                                .buffer = desc.instanceBuffer,
+                                                .offset = desc.instanceOffset,
+                                                .count = desc.instanceCount,
+                                            },
+                                        .flags = desc.flags,
+                                        .scratch = desc.scratch,
+                                        .scratchOffset = desc.scratchOffset,
+                                    },
+                                    true);
     }
 
     namespace
     {
 
         [[nodiscard]] Status validateTopLevelUpdateRequest(const detail::BackendCommandBuffer& commandBuffer,
-                                                           const TopLevelAccelerationStructureUpdateDesc& desc,
+                                                           const TopLevelBuildRequest& desc,
                                                            bool inPlace)
         {
             if (!isGraphicsOrComputeOutsideRendering(commandBuffer))
@@ -1627,7 +1879,7 @@ namespace rachis::d3d12
                 });
             }
             if (inPlace != (desc.source == desc.destination) ||
-                desc.instances.size() > std::numeric_limits<std::uint32_t>::max())
+                requestedInstanceCount(desc.instances) > std::numeric_limits<std::uint32_t>::max())
             {
                 return std::unexpected(Error{
                     ErrorCode::invalidArgument,
@@ -1656,10 +1908,10 @@ namespace rachis::d3d12
         };
 
         [[nodiscard]] Status validateTopLevelUpdateCompatibility(const AccelerationStructureVersion& source,
-                                                                 const TopLevelAccelerationStructureUpdateDesc& desc)
+                                                                 const TopLevelBuildRequest& desc)
         {
             if (!hasAny(source.buildFlags, AccelerationStructureBuildFlag::allowUpdate) ||
-                desc.flags != source.buildFlags || desc.instances.size() != source.instanceCount)
+                desc.flags != source.buildFlags || requestedInstanceCount(desc.instances) != source.instanceCount)
             {
                 return std::unexpected(Error{
                     ErrorCode::invalidArgument,
@@ -1699,32 +1951,29 @@ namespace rachis::d3d12
         [[nodiscard]] std::shared_ptr<AccelerationStructureBuildRetention> makeTopLevelUpdateRetention(
             const UpdateTarget& target,
             const std::shared_ptr<AccelerationStructureVersion>& sourceVersion,
-            const std::shared_ptr<void>& instanceUpload,
-            std::span<const std::shared_ptr<AccelerationStructureVersion>> bottomLevels)
+            const PreparedTopLevelInstances& instances)
         {
             auto retention = std::make_shared<AccelerationStructureBuildRetention>();
-            retention->owners.reserve(bottomLevels.size() + 4U);
+            retention->owners.reserve(instances.bottomLevels.size() + 4U);
             retention->owners.push_back(target.destination);
             retention->owners.push_back(target.scratch);
             retention->owners.push_back(sourceVersion);
-            retention->owners.push_back(instanceUpload);
-            retention->owners.insert(retention->owners.end(), bottomLevels.begin(), bottomLevels.end());
-            retention->residencies.reserve(bottomLevels.size() + sourceVersion->residencies.size() + 2U);
+            retention->residencies.reserve(instances.bottomLevels.size() + sourceVersion->residencies.size() + 3U);
             retention->residencies.push_back(target.destination->storage->residency);
             retention->residencies.push_back(target.scratch->residency);
             retention->residencies.insert(
                 retention->residencies.end(), sourceVersion->residencies.begin(), sourceVersion->residencies.end());
-            appendBottomLevelResidencies(retention->residencies, bottomLevels);
+            appendInstanceRetention(*retention, instances);
             deduplicateSharedPointers(retention->residencies);
             return retention;
         }
 
     } // namespace
 
-    Status ResourceManager::updateTopLevelAccelerationStructure(QueueManager& queues,
-                                                                detail::BackendCommandBuffer& commandBuffer,
-                                                                const TopLevelAccelerationStructureUpdateDesc& desc,
-                                                                bool inPlace)
+    Status ResourceManager::recordTopLevelUpdate(QueueManager& queues,
+                                                 detail::BackendCommandBuffer& commandBuffer,
+                                                 const TopLevelBuildRequest& desc,
+                                                 bool inPlace)
     {
         auto validRequest = validateTopLevelUpdateRequest(commandBuffer, desc, inPlace);
         if (!validRequest)
@@ -1732,7 +1981,7 @@ namespace rachis::d3d12
             return validRequest;
         }
         const TopLevelAccelerationStructureBuildInput input{
-            .instanceCount = static_cast<std::uint32_t>(desc.instances.size()),
+            .instanceCount = static_cast<std::uint32_t>(requestedInstanceCount(desc.instances)),
             .flags = desc.flags,
         };
         auto sizes = queryTopLevelAccelerationStructureBuildSizes(input);
@@ -1762,22 +2011,18 @@ namespace rachis::d3d12
             return compatible;
         }
 
-        auto instances = resolveTopLevelInstances(
+        auto instances = prepareTopLevelInstances(
             desc.instances,
             [this](AccelerationStructureHandle handle) { return impl_->accelerationStructure(handle); },
+            [this](BufferHandle handle) { return impl_->buffer(handle); },
+            [this](std::uint64_t size, std::uint64_t alignment) {
+                return impl_->allocateUploadSlice(size, alignment, "TLAS update instances");
+            },
             topLevelUpdateInstanceErrors);
         if (!instances)
         {
             return std::unexpected(std::move(instances.error()));
         }
-        const std::uint64_t instanceUploadBytes = instances->native.size() * sizeof(D3D12_RAYTRACING_INSTANCE_DESC);
-        auto instanceUpload = impl_->allocateUploadSlice(
-            instanceUploadBytes, D3D12_RAYTRACING_INSTANCE_DESCS_BYTE_ALIGNMENT, "TLAS update instances");
-        if (!instanceUpload)
-        {
-            return std::unexpected(std::move(instanceUpload.error()));
-        }
-        std::memcpy(instanceUpload->mappedData, instances->native.data(), instanceUploadBytes);
 
         auto commandLists = prepareAccelerationStructureCommandLists(queues, commandBuffer, impl_->enhancedBarriers);
         if (!commandLists)
@@ -1790,26 +2035,25 @@ namespace rachis::d3d12
         {
             return std::unexpected(std::move(executionLease.error()));
         }
-        const auto retention = makeTopLevelUpdateRetention(
-            *target, lockedTarget->sourceVersion, instanceUpload->owner, instances->bottomLevels);
+        const auto retention = makeTopLevelUpdateRetention(*target, lockedTarget->sourceVersion, *instances);
         const auto destinationAddress = storageAddress(*target->destination);
         const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC native{
             .DestAccelerationStructureData = destinationAddress,
-            .Inputs = nativeTopLevelInputs(static_cast<UINT>(instances->native.size()),
+            .Inputs = nativeTopLevelInputs(instances->count,
                                            nativeBuildFlags(desc.flags) |
                                                D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE,
-                                           instanceUpload->gpuVirtualAddress),
+                                           instances->address),
             .SourceAccelerationStructureData = lockedTarget->sourceVersion->address,
             .ScratchAccelerationStructureData = target->scratch->resource->GetGPUVirtualAddress() + desc.scratchOffset,
         };
         auto version = makeTopLevelVersion(
             *target->destination, destinationAddress, *instances, desc.flags, lockedTarget->sourceVersion->resultSize);
-        auto retained = retainBuildDependencies(queues,
-                                                commandBuffer,
-                                                retention,
-                                                instanceUpload->owner,
-                                                std::move(*executionLease),
-                                                publicationOf(target->destination, version));
+        auto retained = retainTopLevelDependencies(queues,
+                                                   commandBuffer,
+                                                   retention,
+                                                   *instances,
+                                                   std::move(*executionLease),
+                                                   publicationOf(target->destination, version));
         if (!retained)
         {
             return retained;
@@ -2831,6 +3075,50 @@ namespace rachis::d3d12
             .address = version->address,
             .lease = std::move(*lease),
         };
+    }
+
+    Result<AccelerationStructureInstanceLayout> ResourceManager::queryAccelerationStructureInstanceLayout() const
+    {
+        if (!impl_->rayTracing)
+        {
+            return std::unexpected(Error{
+                ErrorCode::unsupported,
+                0,
+                "Acceleration-structure instance records require ray-tracing support.",
+            });
+        }
+        return AccelerationStructureInstanceLayout{
+            .format = AccelerationStructureInstanceFormat::packed64,
+            .size = sizeof(D3D12_RAYTRACING_INSTANCE_DESC),
+            .alignment = D3D12_RAYTRACING_INSTANCE_DESCS_BYTE_ALIGNMENT,
+        };
+    }
+
+    Result<std::uint64_t> ResourceManager::queryAccelerationStructureReference(
+        AccelerationStructureHandle bottomLevel) const
+    {
+        if (!impl_->rayTracing)
+        {
+            return std::unexpected(Error{
+                ErrorCode::unsupported,
+                0,
+                "Acceleration-structure references require ray-tracing support.",
+            });
+        }
+        auto found = impl_->accelerationStructure(bottomLevel);
+        if (!found)
+        {
+            return std::unexpected(std::move(found.error()));
+        }
+        if ((*found)->type != AccelerationStructureType::bottomLevel)
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidArgument,
+                0,
+                "Only a bottom-level acceleration structure has a reference that instance records can name.",
+            });
+        }
+        return storageAddress(**found);
     }
 
 } // namespace rachis::d3d12

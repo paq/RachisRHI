@@ -104,6 +104,19 @@ namespace rachis::vulkan
         [[nodiscard]] Status updateTopLevelAccelerationStructureInPlace(
             detail::BackendCommandBuffer& commandBuffer,
             const TopLevelAccelerationStructureInPlaceUpdateDesc& desc) override;
+        [[nodiscard]] Result<AccelerationStructureInstanceLayout> queryAccelerationStructureInstanceLayout()
+            const override;
+        [[nodiscard]] Result<std::uint64_t> queryAccelerationStructureReference(
+            AccelerationStructureHandle bottomLevel) const override;
+        [[nodiscard]] Status buildTopLevelAccelerationStructureFromBuffer(
+            detail::BackendCommandBuffer& commandBuffer,
+            const TopLevelAccelerationStructureBufferBuildDesc& desc) override;
+        [[nodiscard]] Status updateTopLevelAccelerationStructureFromBuffer(
+            detail::BackendCommandBuffer& commandBuffer,
+            const TopLevelAccelerationStructureBufferUpdateDesc& desc) override;
+        [[nodiscard]] Status updateTopLevelAccelerationStructureInPlaceFromBuffer(
+            detail::BackendCommandBuffer& commandBuffer,
+            const TopLevelAccelerationStructureBufferInPlaceUpdateDesc& desc) override;
         [[nodiscard]] Status compactAccelerationStructure(detail::BackendCommandBuffer& commandBuffer,
                                                           const AccelerationStructureCompactionDesc& desc) override;
         [[nodiscard]] Result<BufferHandle> createSharedBuffer(const BufferDesc& desc) override;

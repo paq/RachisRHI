@@ -543,6 +543,33 @@ namespace rachis::detail
                type == BindingType::readOnlyStorageBuffer || type == BindingType::storageBuffer;
     }
 
+    [[nodiscard]] inline Status validateTopLevelInstanceBuffer(BufferHandle instanceBuffer,
+                                                               std::uint64_t instanceOffset,
+                                                               std::uint32_t instanceCount,
+                                                               const AccelerationStructureInstanceLayout& layout)
+    {
+        if (!instanceBuffer.isValid() || instanceCount == 0)
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidArgument,
+                0,
+                "A top-level build from a buffer requires an instance buffer and a non-zero instance count.",
+            });
+        }
+        const std::uint64_t recordBytes = static_cast<std::uint64_t>(instanceCount) * layout.size;
+        if ((layout.alignment != 0 && instanceOffset % layout.alignment != 0) ||
+            instanceOffset > std::numeric_limits<std::uint64_t>::max() - recordBytes)
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidArgument,
+                0,
+                "The instance offset must be a multiple of the instance record alignment, and the records must not "
+                "overflow 64-bit offsets.",
+            });
+        }
+        return {};
+    }
+
     [[nodiscard]] inline Status validateBindingLayoutDesc(const BindingLayoutDesc& desc)
     {
         constexpr auto allowedVisibility = static_cast<std::uint16_t>(ShaderStage::all);

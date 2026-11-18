@@ -79,6 +79,25 @@ namespace rachis
             return {};
         }
 
+        [[nodiscard]] Status validateTopLevelInstanceBufferRange(const detail::BackendDevice& backend,
+                                                                 BufferHandle instanceBuffer,
+                                                                 std::uint64_t instanceOffset,
+                                                                 std::uint32_t instanceCount)
+        {
+            auto layout = backend.queryAccelerationStructureInstanceLayout();
+            if (!layout)
+            {
+                return std::unexpected(detail::preferDeviceLossError(backend, std::move(layout.error())));
+            }
+            if (auto valid =
+                    detail::validateTopLevelInstanceBuffer(instanceBuffer, instanceOffset, instanceCount, *layout);
+                !valid)
+            {
+                return std::unexpected(detail::preferDeviceLossError(backend, std::move(valid.error())));
+            }
+            return {};
+        }
+
         template<typename Validator, typename... Args>
         [[nodiscard]] Status validateRecordingState(const detail::BackendCommandBuffer& commandBuffer,
                                                     Validator&& validator,
@@ -1304,6 +1323,123 @@ namespace rachis
                 return unconditional;
             }
             return backend_->updateTopLevelAccelerationStructureInPlace(*commandBuffer.backend_, desc);
+        });
+    }
+
+    Result<AccelerationStructureInstanceLayout> Device::queryAccelerationStructureInstanceLayout() const
+    {
+        return guardBadAlloc([&]() -> Result<AccelerationStructureInstanceLayout> {
+            if (backend_ == nullptr)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidState,
+                    0,
+                    "Cannot query the acceleration-structure instance layout on an invalid device.",
+                });
+            }
+            return backend_->queryAccelerationStructureInstanceLayout();
+        });
+    }
+
+    Result<std::uint64_t> Device::queryAccelerationStructureReference(AccelerationStructureHandle bottomLevel) const
+    {
+        return guardBadAlloc([&]() -> Result<std::uint64_t> {
+            if (backend_ == nullptr)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidState,
+                    0,
+                    "Cannot query an acceleration-structure reference on an invalid device.",
+                });
+            }
+            if (!bottomLevel.isValid())
+            {
+                return std::unexpected(detail::preferDeviceLossError(
+                    *backend_,
+                    Error{
+                        ErrorCode::invalidArgument,
+                        0,
+                        "An acceleration-structure reference requires a valid bottom-level handle.",
+                    }));
+            }
+            return backend_->queryAccelerationStructureReference(bottomLevel);
+        });
+    }
+
+    Status Device::buildTopLevelAccelerationStructureFromBuffer(
+        CommandBuffer& commandBuffer, const TopLevelAccelerationStructureBufferBuildDesc& desc)
+    {
+        return guardBadAlloc([&]() -> Status {
+            if (auto valid = validateOwnedCommandBuffer(
+                    backend_.get(),
+                    commandBuffer.backend_.get(),
+                    "Top-level acceleration-structure builds require a valid device and command buffer.");
+                !valid)
+            {
+                return valid;
+            }
+            if (auto valid = validateTopLevelInstanceBufferRange(
+                    *backend_, desc.instanceBuffer, desc.instanceOffset, desc.instanceCount);
+                !valid)
+            {
+                return valid;
+            }
+            return backend_->buildTopLevelAccelerationStructureFromBuffer(*commandBuffer.backend_, desc);
+        });
+    }
+
+    Status Device::updateTopLevelAccelerationStructureFromBuffer(
+        CommandBuffer& commandBuffer, const TopLevelAccelerationStructureBufferUpdateDesc& desc)
+    {
+        return guardBadAlloc([&]() -> Status {
+            if (auto valid = validateOwnedCommandBuffer(
+                    backend_.get(),
+                    commandBuffer.backend_.get(),
+                    "Top-level acceleration-structure updates require a valid device and command buffer.");
+                !valid)
+            {
+                return valid;
+            }
+            if (auto valid = validateTopLevelInstanceBufferRange(
+                    *backend_, desc.instanceBuffer, desc.instanceOffset, desc.instanceCount);
+                !valid)
+            {
+                return valid;
+            }
+            if (desc.source == desc.destination)
+            {
+                return std::unexpected(detail::preferDeviceLossError(
+                    *backend_,
+                    Error{
+                        ErrorCode::invalidArgument,
+                        0,
+                        "A TLAS update requires distinct source and destination handles; use an in-place update to "
+                        "write the source.",
+                    }));
+            }
+            return backend_->updateTopLevelAccelerationStructureFromBuffer(*commandBuffer.backend_, desc);
+        });
+    }
+
+    Status Device::updateTopLevelAccelerationStructureInPlaceFromBuffer(
+        CommandBuffer& commandBuffer, const TopLevelAccelerationStructureBufferInPlaceUpdateDesc& desc)
+    {
+        return guardBadAlloc([&]() -> Status {
+            if (auto valid = validateOwnedCommandBuffer(
+                    backend_.get(),
+                    commandBuffer.backend_.get(),
+                    "In-place top-level acceleration-structure updates require a valid device and command buffer.");
+                !valid)
+            {
+                return valid;
+            }
+            if (auto valid = validateTopLevelInstanceBufferRange(
+                    *backend_, desc.instanceBuffer, desc.instanceOffset, desc.instanceCount);
+                !valid)
+            {
+                return valid;
+            }
+            return backend_->updateTopLevelAccelerationStructureInPlaceFromBuffer(*commandBuffer.backend_, desc);
         });
     }
 

@@ -194,6 +194,31 @@ namespace rachis
         AccelerationStructureInstanceFlag flags = AccelerationStructureInstanceFlag::none;
     };
 
+    enum class AccelerationStructureInstanceFormat : std::uint8_t
+    {
+        packed64,
+    };
+
+    struct AccelerationStructureInstanceLayout final
+    {
+        AccelerationStructureInstanceFormat format = AccelerationStructureInstanceFormat::packed64;
+        std::uint32_t size = 0;
+        std::uint32_t alignment = 0;
+    };
+
+    struct alignas(16) AccelerationStructureInstanceRecord final
+    {
+        std::array<float, 12> transform{1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F};
+        std::uint32_t instanceIdAndMask = 0xFF00'0000U;
+        std::uint32_t hitGroupOffsetAndFlags = 0;
+        std::uint64_t bottomLevel = 0;
+    };
+
+    static_assert(sizeof(AccelerationStructureInstanceRecord) == 64);
+    static_assert(offsetof(AccelerationStructureInstanceRecord, instanceIdAndMask) == 48);
+    static_assert(offsetof(AccelerationStructureInstanceRecord, hitGroupOffsetAndFlags) == 52);
+    static_assert(offsetof(AccelerationStructureInstanceRecord, bottomLevel) == 56);
+
     struct BottomLevelAccelerationStructureBuildDesc final
     {
         AccelerationStructureHandle destination = {};
@@ -242,6 +267,40 @@ namespace rachis
     {
         AccelerationStructureHandle target = {};
         std::span<const AccelerationStructureInstance> instances = {};
+        AccelerationStructureBuildFlag flags = AccelerationStructureBuildFlag::none;
+        BufferHandle scratch = {};
+        std::uint64_t scratchOffset = 0;
+    };
+
+    struct TopLevelAccelerationStructureBufferBuildDesc final
+    {
+        AccelerationStructureHandle destination = {};
+        BufferHandle instanceBuffer = {};
+        std::uint64_t instanceOffset = 0;
+        std::uint32_t instanceCount = 0;
+        AccelerationStructureBuildFlag flags = AccelerationStructureBuildFlag::none;
+        BufferHandle scratch = {};
+        std::uint64_t scratchOffset = 0;
+    };
+
+    struct TopLevelAccelerationStructureBufferUpdateDesc final
+    {
+        AccelerationStructureHandle source = {};
+        AccelerationStructureHandle destination = {};
+        BufferHandle instanceBuffer = {};
+        std::uint64_t instanceOffset = 0;
+        std::uint32_t instanceCount = 0;
+        AccelerationStructureBuildFlag flags = AccelerationStructureBuildFlag::none;
+        BufferHandle scratch = {};
+        std::uint64_t scratchOffset = 0;
+    };
+
+    struct TopLevelAccelerationStructureBufferInPlaceUpdateDesc final
+    {
+        AccelerationStructureHandle target = {};
+        BufferHandle instanceBuffer = {};
+        std::uint64_t instanceOffset = 0;
+        std::uint32_t instanceCount = 0;
         AccelerationStructureBuildFlag flags = AccelerationStructureBuildFlag::none;
         BufferHandle scratch = {};
         std::uint64_t scratchOffset = 0;

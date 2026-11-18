@@ -996,6 +996,79 @@ namespace rachis::vulkan
         return observe(acceleration_.updateTopLevelInPlace(*native, desc));
     }
 
+    Result<AccelerationStructureInstanceLayout> VulkanDevice::queryAccelerationStructureInstanceLayout() const
+    {
+        if (auto blocked = requireActive(); !blocked)
+        {
+            return std::unexpected(std::move(blocked.error()));
+        }
+        return acceleration_.instanceLayout();
+    }
+
+    Result<std::uint64_t> VulkanDevice::queryAccelerationStructureReference(
+        AccelerationStructureHandle bottomLevel) const
+    {
+        if (auto blocked = requireActive(); !blocked)
+        {
+            return std::unexpected(std::move(blocked.error()));
+        }
+        return acceleration_.reference(bottomLevel);
+    }
+
+    Status VulkanDevice::buildTopLevelAccelerationStructureFromBuffer(
+        detail::BackendCommandBuffer& commandBuffer, const TopLevelAccelerationStructureBufferBuildDesc& desc)
+    {
+        if (auto blocked = requireActive(); !blocked)
+        {
+            return blocked;
+        }
+        auto* native = asOwnedVulkanCommand(commandBuffer, deviceToken_);
+        if (native == nullptr)
+        {
+            return std::unexpected(
+                Error{ErrorCode::invalidArgument, 0, "The command buffer belongs to another device or backend."});
+        }
+        std::shared_ptr<VulkanCommandPoolState> owner{};
+        const auto poolLock = lockCommandPoolIfPresent(*native, owner);
+        return observe(acceleration_.buildTopLevelFromBuffer(*native, desc));
+    }
+
+    Status VulkanDevice::updateTopLevelAccelerationStructureFromBuffer(
+        detail::BackendCommandBuffer& commandBuffer, const TopLevelAccelerationStructureBufferUpdateDesc& desc)
+    {
+        if (auto blocked = requireActive(); !blocked)
+        {
+            return blocked;
+        }
+        auto* native = asOwnedVulkanCommand(commandBuffer, deviceToken_);
+        if (native == nullptr)
+        {
+            return std::unexpected(
+                Error{ErrorCode::invalidArgument, 0, "The command buffer belongs to another device or backend."});
+        }
+        std::shared_ptr<VulkanCommandPoolState> owner{};
+        const auto poolLock = lockCommandPoolIfPresent(*native, owner);
+        return observe(acceleration_.updateTopLevelFromBuffer(*native, desc));
+    }
+
+    Status VulkanDevice::updateTopLevelAccelerationStructureInPlaceFromBuffer(
+        detail::BackendCommandBuffer& commandBuffer, const TopLevelAccelerationStructureBufferInPlaceUpdateDesc& desc)
+    {
+        if (auto blocked = requireActive(); !blocked)
+        {
+            return blocked;
+        }
+        auto* native = asOwnedVulkanCommand(commandBuffer, deviceToken_);
+        if (native == nullptr)
+        {
+            return std::unexpected(
+                Error{ErrorCode::invalidArgument, 0, "The command buffer belongs to another device or backend."});
+        }
+        std::shared_ptr<VulkanCommandPoolState> owner{};
+        const auto poolLock = lockCommandPoolIfPresent(*native, owner);
+        return observe(acceleration_.updateTopLevelInPlaceFromBuffer(*native, desc));
+    }
+
     Status VulkanDevice::compactAccelerationStructure(detail::BackendCommandBuffer& commandBuffer,
                                                       const AccelerationStructureCompactionDesc& desc)
     {

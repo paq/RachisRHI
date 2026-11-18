@@ -535,6 +535,15 @@ namespace rachis
             CommandBuffer& commandBuffer, const BottomLevelAccelerationStructureInPlaceUpdateDesc& desc);
         [[nodiscard]] Status updateTopLevelAccelerationStructureInPlace(
             CommandBuffer& commandBuffer, const TopLevelAccelerationStructureInPlaceUpdateDesc& desc);
+        [[nodiscard]] Result<AccelerationStructureInstanceLayout> queryAccelerationStructureInstanceLayout() const;
+        [[nodiscard]] Result<std::uint64_t> queryAccelerationStructureReference(
+            AccelerationStructureHandle bottomLevel) const;
+        [[nodiscard]] Status buildTopLevelAccelerationStructureFromBuffer(
+            CommandBuffer& commandBuffer, const TopLevelAccelerationStructureBufferBuildDesc& desc);
+        [[nodiscard]] Status updateTopLevelAccelerationStructureFromBuffer(
+            CommandBuffer& commandBuffer, const TopLevelAccelerationStructureBufferUpdateDesc& desc);
+        [[nodiscard]] Status updateTopLevelAccelerationStructureInPlaceFromBuffer(
+            CommandBuffer& commandBuffer, const TopLevelAccelerationStructureBufferInPlaceUpdateDesc& desc);
         [[nodiscard]] Status compactAccelerationStructure(CommandBuffer& commandBuffer,
                                                           const AccelerationStructureCompactionDesc& desc);
         [[nodiscard]] Status serializeAccelerationStructure(CommandBuffer& commandBuffer,
