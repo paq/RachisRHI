@@ -618,13 +618,14 @@ TEST_CASE("Vulkan indirect dispatch executes GPU-written group counts",
     REQUIRE(device.bindComputeBindingSet(*command, 0, *storageSet).has_value());
     const std::array constants{3U, 7U};
     REQUIRE(device.setComputePushConstants(*command, 0, std::as_bytes(std::span(constants))).has_value());
-    auto counted = device.dispatchIndirect(*command,
-                                           {
-                                               .argumentBuffer = *arguments,
-                                               .countBuffer = *count,
-                                           });
-    CHECK_FALSE(counted.has_value());
-    CHECK(counted.error().code == rachis::ErrorCode::unsupported);
+    auto countOutOfBounds = device.dispatchIndirect(*command,
+                                                    {
+                                                        .argumentBuffer = *arguments,
+                                                        .countBuffer = *count,
+                                                        .countOffset = 4,
+                                                    });
+    CHECK_FALSE(countOutOfBounds.has_value());
+    CHECK(countOutOfBounds.error().code == rachis::ErrorCode::invalidArgument);
     CHECK_FALSE(device.dispatchIndirect(*command, {.argumentBuffer = *arguments, .maxDispatchCount = 2}).has_value());
     REQUIRE(device.dispatchIndirect(*command, {.argumentBuffer = *arguments, .maxDispatchCount = 0}).has_value());
     REQUIRE(device.dispatchIndirect(*command, *arguments, 0).has_value());

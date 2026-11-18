@@ -239,6 +239,8 @@ namespace rachis::vulkan
                                         std::uint32_t accelerationStructureScratchAlignment = 0,
                                         ShaderStage enabledShaderStages = coreShaderStages);
         void waitOnAllCommandsBeforeBarriers(bool enabled) noexcept;
+        [[nodiscard]] bool waitsOnAllCommandsBeforeBarriers() const noexcept;
+        void enableConditionalRendering(bool enabled) noexcept;
         void shutdown() noexcept;
 
         [[nodiscard]] Result<std::vector<MemoryBudget>> queryMemoryBudgets() const;
@@ -767,6 +769,7 @@ namespace rachis::vulkan
         bool rayTracingPipeline_ = false;
         PipelineStage barrierStages_ = corePipelineStages;
         bool allCommandsBarrierSources_ = false;
+        bool conditionalRendering_ = false;
         std::mutex residencyPoolsMutex_;
         std::array<std::array<std::array<VmaPool, explicitResidencyPriorityCount>, VK_MAX_MEMORY_TYPES>,
                    residencyPoolClassCount>

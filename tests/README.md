@@ -43,7 +43,7 @@ The RachisRHI test suite is organized by test scope (`core`, `portable`, backend
 | `shaders/` | Shader modules, libraries, interfaces, specialization, and shader arithmetic |
 | `pipelines/` | Pipeline creation, asynchronous compilation, and caches |
 | `rendering/` | Render passes, raster/depth-stencil/blend states, optional stages, and headless parity |
-| `compute/` | Compute dispatch |
+| `compute/` | Compute dispatch, including multi-record and GPU-counted indirect dispatch batches |
 | `queries/` | Timestamp, occlusion, and pipeline-statistics queries; conditional execution |
 | `raytracing/` | Acceleration structures, ray queries, and ray-tracing pipelines |
 | `presentation/` | Surfaces, swapchains, presentation, and resizing |

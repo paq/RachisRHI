@@ -503,6 +503,8 @@ namespace rachis::vulkan
             VkBuffer countBuffer = VK_NULL_HANDLE;
             std::shared_ptr<void> keepAlive = {};
             std::shared_ptr<void> countKeepAlive = {};
+            VkDeviceAddress argumentAddress = 0;
+            VkDeviceAddress countAddress = 0;
             std::uint32_t stride = 0;
             bool recordWork = false;
             bool counted = false;
@@ -671,6 +673,8 @@ namespace rachis::vulkan
                     .countBuffer = count->buffer,
                     .keepAlive = std::move(arguments->keepAlive),
                     .countKeepAlive = std::move(count->keepAlive),
+                    .argumentAddress = arguments->deviceAddress,
+                    .countAddress = count->deviceAddress,
                     .stride = resolvedStride,
                     .recordWork = maxCount != 0,
                     .counted = true,
@@ -684,6 +688,7 @@ namespace rachis::vulkan
             return ValidatedIndirectArguments{
                 .buffer = arguments->buffer,
                 .keepAlive = std::move(arguments->keepAlive),
+                .argumentAddress = arguments->deviceAddress,
                 .stride = resolvedStride,
                 .recordWork = maxCount != 0,
             };
@@ -2210,6 +2215,162 @@ namespace rachis::vulkan
                                        subrange.size,
                                        data.data() + (subrange.offset - offset));
         }
+        std::ranges::copy(data, commandBuffer.computePushConstants().begin() + offset);
+        return {};
+    }
+
+    void VulkanGraphicsEncoder::restoreComputeBindings(VulkanCommandBuffer& commandBuffer) const noexcept
+    {
+        auto* const pipeline =
+            static_cast<const VulkanNativePipeline*>(commandBuffer.computeState().pipelineOwner.get());
+        if (pipeline == nullptr)
+        {
+            return;
+        }
+        table_->vkCmdBindPipeline(commandBuffer.native(), VK_PIPELINE_BIND_POINT_COMPUTE, pipeline->pipeline);
+        const auto words = validation_detail::computeWordStageUnion(pipeline->nativePushConstantRanges);
+        const auto& shadow = commandBuffer.computePushConstants();
+        for (std::size_t first = 0; first < words.size();)
+        {
+            const auto stages = words[first];
+            auto end = first + 1;
+            while (end < words.size() && words[end] == stages)
+            {
+                ++end;
+            }
+            if (hasAny(stages, ShaderStage::compute))
+            {
+                const auto offset = static_cast<std::uint32_t>(first * validation_detail::pushConstantWordBytes);
+                table_->vkCmdPushConstants(
+                    commandBuffer.native(),
+                    pipeline->layout,
+                    nativePushConstantStages(capabilities_, stages),
+                    offset,
+                    static_cast<std::uint32_t>((end - first) * validation_detail::pushConstantWordBytes),
+                    shadow.data() + offset);
+            }
+            first = end;
+        }
+    }
+
+    void VulkanGraphicsEncoder::suspendConditionalRendering(VulkanCommandBuffer& commandBuffer) const noexcept
+    {
+        if (commandBuffer.conditionalRendering().has_value() && table_->vkCmdEndConditionalRenderingEXT != nullptr)
+        {
+            table_->vkCmdEndConditionalRenderingEXT(commandBuffer.native());
+        }
+    }
+
+    void VulkanGraphicsEncoder::resumeConditionalRendering(VulkanCommandBuffer& commandBuffer) const noexcept
+    {
+        const auto& active = commandBuffer.conditionalRendering();
+        if (!active.has_value() || table_->vkCmdBeginConditionalRenderingEXT == nullptr)
+        {
+            return;
+        }
+        const VkConditionalRenderingBeginInfoEXT info{
+            .sType = VK_STRUCTURE_TYPE_CONDITIONAL_RENDERING_BEGIN_INFO_EXT,
+            .pNext = {},
+            .buffer = active->buffer,
+            .offset = active->offset,
+            .flags = active->inverted
+                         ? static_cast<VkConditionalRenderingFlagsEXT>(VK_CONDITIONAL_RENDERING_INVERTED_BIT_EXT)
+                         : static_cast<VkConditionalRenderingFlagsEXT>(0),
+        };
+        table_->vkCmdBeginConditionalRenderingEXT(commandBuffer.native(), &info);
+    }
+
+    void VulkanGraphicsEncoder::setCountedDispatchPass(VulkanCountedDispatchPass* pass) noexcept
+    {
+        countedDispatch_ = pass;
+    }
+
+    Status VulkanGraphicsEncoder::beginConditionalExecution(VulkanCommandBuffer& commandBuffer,
+                                                            const ConditionalExecutionDesc& desc)
+    {
+        if (capabilities_ == nullptr || !capabilities_->conditionalExecution || table_ == nullptr ||
+            table_->vkCmdBeginConditionalRenderingEXT == nullptr || table_->vkCmdEndConditionalRenderingEXT == nullptr)
+        {
+            return std::unexpected(Error{
+                ErrorCode::unsupported,
+                0,
+                "Conditional execution requires VK_EXT_conditional_rendering.",
+            });
+        }
+        const bool validOperation =
+            desc.operation == PredicateOperation::equalZero || desc.operation == PredicateOperation::notEqualZero;
+        if (commandBuffer.queueType() == QueueType::copy || !validOperation)
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidArgument,
+                0,
+                "Conditional execution requires a graphics or compute command buffer and a valid predicate operation.",
+            });
+        }
+        auto& active = commandBuffer.queryState().activeConditionalExecution;
+        if (active.has_value())
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidState,
+                0,
+                "Conditional execution scopes cannot be nested.",
+            });
+        }
+        auto source = resources_->resolveBindingBuffer(desc.buffer);
+        if (!source)
+        {
+            return std::unexpected(std::move(source.error()));
+        }
+        if (!hasAny(source->desc.usage, BufferUsage::predicate) || desc.offset % predicateValueAlignment != 0 ||
+            desc.offset > source->desc.size || predicateValueSize > source->desc.size - desc.offset)
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidArgument,
+                0,
+                "Conditional execution requires an aligned in-bounds uint64 value in a predicate buffer.",
+            });
+        }
+        auto* retained = retainSink(commandBuffer);
+        if (retained != nullptr)
+        {
+            try
+            {
+                detail::reserveAdditional(*retained, 1U);
+            }
+            catch (const std::bad_alloc&)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::outOfMemory,
+                    0,
+                    "The conditional-execution predicate could not be retained.",
+                });
+            }
+            retained->push_back(source->keepAlive);
+        }
+        commandBuffer.conditionalRendering() = VulkanConditionalRendering{
+            .buffer = source->buffer,
+            .offset = desc.offset,
+            .inverted = desc.operation == PredicateOperation::equalZero,
+        };
+        resumeConditionalRendering(commandBuffer);
+        active = detail::ActiveConditionalExecution{.owner = std::move(source->keepAlive)};
+        return {};
+    }
+
+    Status VulkanGraphicsEncoder::endConditionalExecution(VulkanCommandBuffer& commandBuffer)
+    {
+        auto& active = commandBuffer.queryState().activeConditionalExecution;
+        if (commandBuffer.queueType() == QueueType::copy || !active.has_value())
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidState,
+                0,
+                "Ending conditional execution requires an active scope on a graphics or compute command buffer.",
+            });
+        }
+        suspendConditionalRendering(commandBuffer);
+        commandBuffer.conditionalRendering().reset();
+        active.reset();
         return {};
     }
 
@@ -2275,7 +2436,10 @@ namespace rachis::vulkan
                                                    desc.stride,
                                                    desc.countBuffer,
                                                    desc.countOffset,
-                                                   sizeof(DispatchIndirectArguments));
+                                                   sizeof(DispatchIndirectArguments),
+                                                   capabilities_ != nullptr && capabilities_->dispatchIndirectCount &&
+                                                       countedDispatch_ != nullptr,
+                                                   capabilities_ != nullptr && capabilities_->multiDispatchIndirect);
         if (!arguments)
         {
             return std::unexpected(std::move(arguments.error()));
@@ -2284,10 +2448,74 @@ namespace rachis::vulkan
         {
             return {};
         }
-        table_->vkCmdDispatchIndirect(commandBuffer.native(), arguments->buffer, desc.argumentOffset);
-        if (auto* retained = retainSink(commandBuffer); retained != nullptr)
+        if (!arguments->counted)
+        {
+            for (std::uint32_t index = 0; index < desc.maxDispatchCount; ++index)
+            {
+                table_->vkCmdDispatchIndirect(commandBuffer.native(),
+                                              arguments->buffer,
+                                              desc.argumentOffset +
+                                                  static_cast<VkDeviceSize>(index) * arguments->stride);
+            }
+            if (auto* retained = retainSink(commandBuffer); retained != nullptr)
+            {
+                retained->push_back(std::move(arguments->keepAlive));
+            }
+            return {};
+        }
+
+        if (arguments->argumentAddress == 0 || arguments->countAddress == 0)
+        {
+            return std::unexpected(Error{
+                ErrorCode::unsupported,
+                0,
+                "GPU-counted indirect dispatch requires device-addressable argument and count buffers.",
+            });
+        }
+        if (auto prepared = countedDispatch_->prepare(); !prepared)
+        {
+            return prepared;
+        }
+        auto records = countedDispatch_->allocateRecords(desc.maxDispatchCount);
+        if (!records)
+        {
+            return std::unexpected(std::move(records.error()));
+        }
+        auto* retained = retainSink(commandBuffer);
+        try
+        {
+            detail::reserveAdditional(commandBuffer.retained(), retained != nullptr ? 3U : 1U);
+        }
+        catch (const std::bad_alloc&)
+        {
+            return std::unexpected(Error{
+                ErrorCode::outOfMemory,
+                0,
+                "GPU-counted indirect dispatch dependencies could not be retained.",
+            });
+        }
+
+        suspendConditionalRendering(commandBuffer);
+        countedDispatch_->record(commandBuffer.native(),
+                                 VulkanCountedDispatchSource{
+                                     .arguments = arguments->argumentAddress + desc.argumentOffset,
+                                     .count = arguments->countAddress + desc.countOffset,
+                                     .stride = arguments->stride,
+                                     .maxCount = desc.maxDispatchCount,
+                                 },
+                                 *records);
+        restoreComputeBindings(commandBuffer);
+        resumeConditionalRendering(commandBuffer);
+        for (std::uint32_t index = 0; index < desc.maxDispatchCount; ++index)
+        {
+            table_->vkCmdDispatchIndirect(
+                commandBuffer.native(), records->buffer, static_cast<VkDeviceSize>(index) * countedDispatchRecordSize);
+        }
+        commandBuffer.retained().push_back(std::move(records->keepAlive));
+        if (retained != nullptr)
         {
             retained->push_back(std::move(arguments->keepAlive));
+            retained->push_back(std::move(arguments->countKeepAlive));
         }
         return {};
     }

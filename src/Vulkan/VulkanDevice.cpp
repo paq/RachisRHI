@@ -263,6 +263,7 @@ namespace rachis::vulkan
         if (initialized)
         {
             resources_.waitOnAllCommandsBeforeBarriers(waitsOnAllCommandsBeforeBarriers(record_));
+            resources_.enableConditionalRendering(capabilities_.conditionalExecution);
             const auto& nativeLimits = record_.properties.limits;
             const VulkanBufferBindingLimits bufferLimits{
                 .minUniformBufferOffsetAlignment = nativeLimits.minUniformBufferOffsetAlignment != 0
@@ -328,6 +329,8 @@ namespace rachis::vulkan
                                  bufferLimits,
                                  maxDrawIndirectCount,
                                  clipsScissorsToRenderArea(record_));
+            countedDispatch_.initialize(device_, &table_, &resources_, nativeLimits.maxComputeWorkGroupCount[0]);
+            graphics_.setCountedDispatchPass(&countedDispatch_);
             acceleration_.initialize(device_,
                                      &table_,
                                      &resources_,
@@ -434,6 +437,7 @@ namespace rachis::vulkan
         commands_.shutdown();
         swapchains_.shutdown();
         images_.shutdown();
+        countedDispatch_.shutdown();
         queries_.shutdown();
         pipelines_.shutdown();
         bindings_.shutdown();
@@ -2368,6 +2372,35 @@ namespace rachis::vulkan
             return std::unexpected(std::move(native.error()));
         }
         return observe(graphics_.dispatchIndirect(**native, desc));
+    }
+
+    Status VulkanDevice::beginConditionalExecution(detail::BackendCommandBuffer& commandBuffer,
+                                                   const ConditionalExecutionDesc& desc)
+    {
+        if (auto blocked = requireActive(); !blocked)
+        {
+            return blocked;
+        }
+        auto native = requireVulkanCommand(*this, commandBuffer, deviceToken_);
+        if (!native)
+        {
+            return std::unexpected(std::move(native.error()));
+        }
+        return observe(graphics_.beginConditionalExecution(**native, desc));
+    }
+
+    Status VulkanDevice::endConditionalExecution(detail::BackendCommandBuffer& commandBuffer)
+    {
+        if (auto blocked = requireActive(); !blocked)
+        {
+            return blocked;
+        }
+        auto native = requireVulkanCommand(*this, commandBuffer, deviceToken_);
+        if (!native)
+        {
+            return std::unexpected(std::move(native.error()));
+        }
+        return observe(graphics_.endConditionalExecution(**native));
     }
 
     Result<SurfaceHandle> VulkanDevice::createSurface(const SurfaceDesc& desc)

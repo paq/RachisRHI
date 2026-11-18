@@ -385,6 +385,8 @@ namespace rachis::vulkan
         commandUses_.reset();
         retained_.clear();
         queryPoolUses_.clear();
+        computePushConstants_ = {};
+        conditionalRendering_.reset();
     }
 
     Result<VulkanCommandUses*> VulkanCommandBuffer::reserveCommandUses(std::size_t additional)

@@ -2,9 +2,11 @@
 
 #include "Internal/VulkanBindings.h"
 #include "Internal/VulkanCommands.h"
+#include "Internal/VulkanIndirectDispatch.h"
 #include "Internal/VulkanPipelines.h"
 #include "Internal/VulkanResources.h"
 #include "Rachis/Device.h"
+#include "Rachis/Query.h"
 #include "Rachis/Rendering.h"
 
 #include <cstdint>
@@ -124,6 +126,10 @@ namespace rachis::vulkan
                                       std::uint32_t groupCountY,
                                       std::uint32_t groupCountZ);
         [[nodiscard]] Status dispatchIndirect(VulkanCommandBuffer& commandBuffer, const IndirectDispatchDesc& desc);
+        [[nodiscard]] Status beginConditionalExecution(VulkanCommandBuffer& commandBuffer,
+                                                       const ConditionalExecutionDesc& desc);
+        [[nodiscard]] Status endConditionalExecution(VulkanCommandBuffer& commandBuffer);
+        void setCountedDispatchPass(VulkanCountedDispatchPass* pass) noexcept;
         [[nodiscard]] Status bindRayTracingPipeline(VulkanCommandBuffer& commandBuffer, PipelineHandle pipeline);
         [[nodiscard]] Status bindRayTracingBindingSets(VulkanCommandBuffer& commandBuffer,
                                                        std::uint32_t firstSet,
@@ -146,6 +152,9 @@ namespace rachis::vulkan
         [[nodiscard]] Status applyShadingRateImage(VulkanCommandBuffer& commandBuffer,
                                                    VulkanRenderingScope& scope,
                                                    TextureHandle image);
+        void suspendConditionalRendering(VulkanCommandBuffer& commandBuffer) const noexcept;
+        void resumeConditionalRendering(VulkanCommandBuffer& commandBuffer) const noexcept;
+        void restoreComputeBindings(VulkanCommandBuffer& commandBuffer) const noexcept;
 
         VkDevice device_ = VK_NULL_HANDLE;
         const VolkDeviceTable* table_ = nullptr;
@@ -153,6 +162,7 @@ namespace rachis::vulkan
         VulkanResourceAllocator* resources_ = nullptr;
         VulkanPipelineManager* pipelines_ = nullptr;
         VulkanBindingManager* bindings_ = nullptr;
+        VulkanCountedDispatchPass* countedDispatch_ = nullptr;
         bool depthBiasClampSupported_ = true;
         VulkanBufferBindingLimits bufferLimits_{};
         std::uint32_t maxDrawIndirectCount_ = std::numeric_limits<std::uint32_t>::max();

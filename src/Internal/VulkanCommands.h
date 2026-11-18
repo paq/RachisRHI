@@ -3,13 +3,16 @@
 #include "Common/HandleTable.h"
 #include "Internal/BackendCommandBuffer.h"
 #include "Internal/VulkanRuntime.h"
+#include "Rachis/Pipeline.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -170,6 +173,13 @@ namespace rachis::vulkan
     inline constexpr std::uint8_t kVulkanQuerySlotNeedsExternalReset = 1U << 1U;
     inline constexpr std::uint8_t kVulkanQuerySlotDirtyAtEnd = 1U << 2U;
 
+    struct VulkanConditionalRendering final
+    {
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VkDeviceSize offset = 0;
+        bool inverted = false;
+    };
+
     struct VulkanCommandQueryPoolUse final
     {
         std::shared_ptr<VulkanSubmittedQueryPoolState> poolState;
@@ -245,6 +255,14 @@ namespace rachis::vulkan
                                                  std::uint32_t queryIndex) noexcept;
         void recordQuerySlotWriteWithoutLocalReset(const std::shared_ptr<VulkanSubmittedQueryPoolState>& poolState,
                                                    std::uint32_t queryIndex) noexcept;
+        [[nodiscard]] std::array<std::byte, maxPushConstantBytes>& computePushConstants() noexcept
+        {
+            return computePushConstants_;
+        }
+        [[nodiscard]] std::optional<VulkanConditionalRendering>& conditionalRendering() noexcept
+        {
+            return conditionalRendering_;
+        }
 #ifdef RACHIS_TESTING
         void setInFlightForTesting(bool inFlight) noexcept;
 #endif
@@ -259,6 +277,8 @@ namespace rachis::vulkan
         std::vector<VulkanAccelerationStructurePublication> accelerationStructurePublications_;
         std::weak_ptr<VulkanCommandUses> commandUses_;
         std::vector<VulkanCommandQueryPoolUse> queryPoolUses_;
+        std::array<std::byte, maxPushConstantBytes> computePushConstants_{};
+        std::optional<VulkanConditionalRendering> conditionalRendering_;
     };
 
     class VulkanCommandAllocator final

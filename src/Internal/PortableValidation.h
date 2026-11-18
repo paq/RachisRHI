@@ -418,6 +418,20 @@ namespace rachis::detail
         return {};
     }
 
+    [[nodiscard]] inline Status requireOutsideConditionalExecution(const BackendCommandBuffer& commandBuffer,
+                                                                   std::string_view message)
+    {
+        if (commandBuffer.queryState().activeConditionalExecution.has_value())
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidState,
+                0,
+                std::string(message),
+            });
+        }
+        return {};
+    }
+
     [[nodiscard]] inline Status validateRenderingEnd(const BackendCommandBuffer& commandBuffer)
     {
         if (commandBuffer.graphicsState().renderingOwner == nullptr)

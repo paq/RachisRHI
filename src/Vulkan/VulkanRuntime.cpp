@@ -1358,6 +1358,17 @@ namespace rachis::vulkan
                 record.memoryPriority = priority.memoryPriority == VK_TRUE;
             }
 #endif
+            record.conditionalRendering = false;
+#ifdef VK_EXT_conditional_rendering
+            if (hasExtension(device.extensions, VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME))
+            {
+                const auto conditional = queryExtensionFeatures<VkPhysicalDeviceConditionalRenderingFeaturesEXT>(
+                    device.instanceTable,
+                    device.physical,
+                    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CONDITIONAL_RENDERING_FEATURES_EXT);
+                record.conditionalRendering = conditional.conditionalRendering == VK_TRUE;
+            }
+#endif
             record.fragmentShaderPixelInterlock = false;
 #ifdef VK_EXT_fragment_shader_interlock
             if (record.fragmentStoresAndAtomics &&
@@ -2301,6 +2312,9 @@ namespace rachis::vulkan
 #ifdef VK_EXT_mesh_shader
             appendIf(names, record.meshShaders, VK_EXT_MESH_SHADER_EXTENSION_NAME);
 #endif
+#ifdef VK_EXT_conditional_rendering
+            appendIf(names, record.conditionalRendering, VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME);
+#endif
 #ifdef VK_KHR_fragment_shading_rate
             appendIf(names, record.variableRateShading, VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME);
 #endif
@@ -2362,6 +2376,9 @@ namespace rachis::vulkan
 #endif
 #ifdef VK_EXT_mesh_shader
             VkPhysicalDeviceMeshShaderFeaturesEXT meshShader{};
+#endif
+#ifdef VK_EXT_conditional_rendering
+            VkPhysicalDeviceConditionalRenderingFeaturesEXT conditionalRendering{};
 #endif
 #ifdef VK_KHR_fragment_shading_rate
             VkPhysicalDeviceFragmentShadingRateFeaturesKHR shadingRate{};
@@ -2458,6 +2475,15 @@ namespace rachis::vulkan
                 chain.meshShader.meshShaderQueries = record.meshShaderQueries ? VK_TRUE : VK_FALSE;
                 prependToChain(
                     chain.features2, chain.meshShader, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT);
+            }
+#endif
+#ifdef VK_EXT_conditional_rendering
+            if (record.conditionalRendering)
+            {
+                chain.conditionalRendering.conditionalRendering = VK_TRUE;
+                prependToChain(chain.features2,
+                               chain.conditionalRendering,
+                               VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CONDITIONAL_RENDERING_FEATURES_EXT);
             }
 #endif
 #ifdef VK_KHR_fragment_shading_rate
@@ -3096,10 +3122,13 @@ namespace rachis::vulkan
         capabilities.pipelineCaches = true;
         capabilities.mipmapGeneration = true;
         capabilities.indirectDispatch = true;
+        capabilities.multiDispatchIndirect = true;
+        capabilities.dispatchIndirectCount = record.bufferDeviceAddress && record.shaderInt64;
         capabilities.indirectDraws = true;
         capabilities.multiDrawIndirect = record.multiDrawIndirect;
         capabilities.drawIndirectCount = record.drawIndirectCount;
         capabilities.shaderDrawIndex = record.shaderDrawParameters;
+        capabilities.conditionalExecution = record.conditionalRendering;
         publishBindingArrayCapabilities(capabilities, record);
         publishShaderCapabilities(capabilities, record);
 

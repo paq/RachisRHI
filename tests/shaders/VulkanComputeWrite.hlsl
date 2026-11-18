@@ -19,3 +19,9 @@ void scale(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
     outputBuffer[dispatchThreadId.x] *= pushConstants.multiplier;
 }
+
+[numthreads(64, 1, 1)]
+void countDispatch(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    InterlockedAdd(outputBuffer[dispatchThreadId.x], pushConstants.addend);
+}

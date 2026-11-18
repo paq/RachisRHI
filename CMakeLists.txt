@@ -332,11 +332,21 @@ if(RACHIS_ENABLE_VULKAN)
         OPTIONS ${rachis_mipmaps_spirv_options}
         COMMENT "Cooking Vulkan SPIR-V GenerateMipmaps3D"
     )
+    rachis_cook_dxc_spirv(
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/Vulkan/Shaders/CountedDispatchArguments.hlsl"
+        ENTRY main
+        PROFILE cs_6_0
+        OUTPUT "${rachis_rhi_spirv_dir}/CountedDispatchArguments.spv"
+        HEADER "${rachis_rhi_spirv_dir}/RachisCountedDispatchArguments.spirv.h"
+        SYMBOL g_rachisCountedDispatchArgumentsSpirv
+        COMMENT "Cooking Vulkan SPIR-V CountedDispatchArguments"
+    )
     add_custom_target(RachisRHISpirvShaders ALL
         DEPENDS
             "${rachis_rhi_spirv_dir}/GenerateMipmaps1D.spv"
             "${rachis_rhi_spirv_dir}/GenerateMipmaps2D.spv"
             "${rachis_rhi_spirv_dir}/GenerateMipmaps3D.spv"
+            "${rachis_rhi_spirv_dir}/CountedDispatchArguments.spv"
     )
 endif()
 
@@ -544,6 +554,20 @@ if(RACHIS_ENABLE_VULKAN AND rachis_build_tests)
         PROFILE cs_6_0
         OUTPUT "${rachis_rhi_spirv_dir}/VulkanComputeWrite.scale.spv"
         COMMENT "Cooking Vulkan SPIR-V VulkanComputeWrite.scale"
+    )
+    rachis_cook_dxc_spirv(
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/VulkanComputeWrite.hlsl"
+        ENTRY countDispatch
+        PROFILE cs_6_0
+        OUTPUT "${rachis_rhi_spirv_dir}/VulkanComputeWrite.countDispatch.spv"
+        COMMENT "Cooking Vulkan SPIR-V VulkanComputeWrite.countDispatch"
+    )
+    rachis_cook_dxc_spirv(
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/ConditionalExecution.hlsl"
+        ENTRY main
+        PROFILE cs_6_0
+        OUTPUT "${rachis_rhi_spirv_dir}/ConditionalExecution.spv"
+        COMMENT "Cooking Vulkan SPIR-V ConditionalExecution"
     )
     rachis_cook_dxc_spirv(
         SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/DynamicBindingCounter.hlsl"
@@ -1087,6 +1111,8 @@ if(RACHIS_ENABLE_VULKAN AND rachis_build_tests)
             "${rachis_rhi_spirv_dir}/SubgroupOperations.spv"
             "${rachis_rhi_spirv_dir}/VulkanComputeWrite.spv"
             "${rachis_rhi_spirv_dir}/VulkanComputeWrite.scale.spv"
+            "${rachis_rhi_spirv_dir}/VulkanComputeWrite.countDispatch.spv"
+            "${rachis_rhi_spirv_dir}/ConditionalExecution.spv"
             "${rachis_rhi_spirv_dir}/DynamicBindingCounter.spv"
             "${rachis_rhi_spirv_dir}/UniformBufferRange.spv"
             "${rachis_rhi_spirv_dir}/DynamicUniformBufferArray.spv"
@@ -1490,6 +1516,7 @@ if(RACHIS_ENABLE_VULKAN)
         src/Vulkan/VulkanGraphics.cpp
         src/Vulkan/VulkanHeaps.cpp
         src/Vulkan/VulkanImageUtilities.cpp
+        src/Vulkan/VulkanIndirectDispatch.cpp
         src/Vulkan/VulkanQueues.cpp
         src/Vulkan/VulkanResources.cpp
         src/Vulkan/VulkanRuntime.cpp
@@ -2331,6 +2358,7 @@ if(rachis_build_tests)
         tests/vulkan/commands/VulkanCommandPoolContractTests.cpp
         tests/vulkan/commands/VulkanQueueContractTests.cpp
         tests/vulkan/compute/VulkanComputeContractTests.cpp
+        tests/vulkan/compute/VulkanIndirectDispatchBatchContractTests.cpp
         tests/vulkan/device/VulkanBackendDispatchContractTests.cpp
         tests/vulkan/device/VulkanDeviceLossContractTests.cpp
         tests/vulkan/device/VulkanHandleProvenanceContractTests.cpp
@@ -2355,6 +2383,7 @@ if(rachis_build_tests)
         tests/vulkan/presentation/VulkanResizeLifecycleContractTests.cpp
         tests/vulkan/presentation/VulkanSurfaceColorContractTests.cpp
         tests/vulkan/presentation/VulkanSurfaceContractTests.cpp
+        tests/vulkan/queries/VulkanConditionalExecutionContractTests.cpp
         tests/vulkan/queries/VulkanQueryContractTests.cpp
         tests/vulkan/raytracing/VulkanRayQueryContractTests.cpp
         tests/vulkan/raytracing/VulkanRayTracingPipelineContractTests.cpp
@@ -2631,6 +2660,7 @@ if(rachis_build_tests)
             tests/vulkan/commands/VulkanCommandPoolContractTests.cpp
             tests/vulkan/commands/VulkanQueueContractTests.cpp
             tests/vulkan/compute/VulkanComputeContractTests.cpp
+            tests/vulkan/compute/VulkanIndirectDispatchBatchContractTests.cpp
             tests/vulkan/device/VulkanBackendDispatchContractTests.cpp
             tests/vulkan/device/VulkanDeviceLossContractTests.cpp
             tests/vulkan/device/VulkanHandleProvenanceContractTests.cpp
@@ -2651,6 +2681,7 @@ if(rachis_build_tests)
             tests/vulkan/pipelines/VulkanStageLinkageContractTests.cpp
             tests/vulkan/presentation/VulkanAcquireTeardownContractTests.cpp
             tests/vulkan/presentation/VulkanLinuxSurfaceContractTests.cpp
+            tests/vulkan/queries/VulkanConditionalExecutionContractTests.cpp
             tests/vulkan/queries/VulkanQueryContractTests.cpp
             tests/vulkan/raytracing/VulkanRayQueryContractTests.cpp
             tests/vulkan/raytracing/VulkanRayTracingPipelineContractTests.cpp

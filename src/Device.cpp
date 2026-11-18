@@ -88,6 +88,19 @@ namespace rachis
             return std::forward<Validator>(validator)(commandBuffer, std::forward<Args>(args)...);
         }
 
+        [[nodiscard]] Status rejectInsideConditionalExecution(const detail::BackendDevice& backend,
+                                                              const detail::BackendCommandBuffer& commandBuffer,
+                                                              std::string_view message)
+        {
+            if (auto outside =
+                    validateRecordingState(commandBuffer, detail::requireOutsideConditionalExecution, message);
+                !outside)
+            {
+                return std::unexpected(detail::preferDeviceLossError(backend, std::move(outside.error())));
+            }
+            return {};
+        }
+
 #ifdef RACHIS_TESTING
         std::atomic<detail::MonotonicIdentitySource*> gDeviceTokenSourceOverride{nullptr};
 #endif
@@ -989,6 +1002,14 @@ namespace rachis
             {
                 return std::unexpected(detail::preferDeviceLossError(*backend_, std::move(outside.error())));
             }
+            if (auto unconditional =
+                    rejectInsideConditionalExecution(*backend_,
+                                                     *commandBuffer.backend_,
+                                                     "Buffer copies cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
+            }
             if (auto valid = detail::validateBufferCopyRegions(regions); !valid)
             {
                 return std::unexpected(detail::preferDeviceLossError(*backend_, std::move(valid.error())));
@@ -1154,6 +1175,14 @@ namespace rachis
             {
                 return valid;
             }
+            if (auto unconditional = rejectInsideConditionalExecution(
+                    *backend_,
+                    *commandBuffer.backend_,
+                    "Acceleration-structure builds cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
+            }
             return backend_->buildBottomLevelAccelerationStructure(*commandBuffer.backend_, desc);
         });
     }
@@ -1169,6 +1198,14 @@ namespace rachis
                 !valid)
             {
                 return valid;
+            }
+            if (auto unconditional = rejectInsideConditionalExecution(
+                    *backend_,
+                    *commandBuffer.backend_,
+                    "Acceleration-structure builds cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
             }
             return backend_->buildTopLevelAccelerationStructure(*commandBuffer.backend_, desc);
         });
@@ -1186,6 +1223,14 @@ namespace rachis
             {
                 return valid;
             }
+            if (auto unconditional = rejectInsideConditionalExecution(
+                    *backend_,
+                    *commandBuffer.backend_,
+                    "Acceleration-structure updates cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
+            }
             return backend_->updateBottomLevelAccelerationStructure(*commandBuffer.backend_, desc);
         });
     }
@@ -1201,6 +1246,14 @@ namespace rachis
                 !valid)
             {
                 return valid;
+            }
+            if (auto unconditional = rejectInsideConditionalExecution(
+                    *backend_,
+                    *commandBuffer.backend_,
+                    "Acceleration-structure updates cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
             }
             return backend_->updateTopLevelAccelerationStructure(*commandBuffer.backend_, desc);
         });
@@ -1218,6 +1271,14 @@ namespace rachis
             {
                 return valid;
             }
+            if (auto unconditional = rejectInsideConditionalExecution(
+                    *backend_,
+                    *commandBuffer.backend_,
+                    "Acceleration-structure updates cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
+            }
             return backend_->updateBottomLevelAccelerationStructureInPlace(*commandBuffer.backend_, desc);
         });
     }
@@ -1233,6 +1294,14 @@ namespace rachis
                 !valid)
             {
                 return valid;
+            }
+            if (auto unconditional = rejectInsideConditionalExecution(
+                    *backend_,
+                    *commandBuffer.backend_,
+                    "Acceleration-structure updates cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
             }
             return backend_->updateTopLevelAccelerationStructureInPlace(*commandBuffer.backend_, desc);
         });
@@ -1250,6 +1319,14 @@ namespace rachis
             {
                 return valid;
             }
+            if (auto unconditional = rejectInsideConditionalExecution(
+                    *backend_,
+                    *commandBuffer.backend_,
+                    "Acceleration-structure compaction cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
+            }
             return backend_->compactAccelerationStructure(*commandBuffer.backend_, desc);
         });
     }
@@ -1265,6 +1342,14 @@ namespace rachis
                 !valid)
             {
                 return valid;
+            }
+            if (auto unconditional = rejectInsideConditionalExecution(
+                    *backend_,
+                    *commandBuffer.backend_,
+                    "Acceleration-structure serialization cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
             }
             return backend_->serializeAccelerationStructure(*commandBuffer.backend_, desc);
         });
@@ -1297,6 +1382,14 @@ namespace rachis
                 !valid)
             {
                 return valid;
+            }
+            if (auto unconditional = rejectInsideConditionalExecution(
+                    *backend_,
+                    *commandBuffer.backend_,
+                    "Acceleration-structure deserialization cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
             }
             return backend_->deserializeAccelerationStructure(*commandBuffer.backend_, desc);
         });
@@ -1479,6 +1572,14 @@ namespace rachis
             {
                 return valid;
             }
+            if (auto unconditional = rejectInsideConditionalExecution(
+                    *backend_,
+                    *commandBuffer.backend_,
+                    "Sampler-feedback operations cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
+            }
             return backend_->resetSamplerFeedbackMap(*commandBuffer.backend_, feedbackMap);
         });
     }
@@ -1491,6 +1592,14 @@ namespace rachis
                 !valid)
             {
                 return valid;
+            }
+            if (auto unconditional = rejectInsideConditionalExecution(
+                    *backend_,
+                    *commandBuffer.backend_,
+                    "Sampler-feedback operations cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
             }
             return backend_->decodeMinMipFeedback(*commandBuffer.backend_, decode);
         });
@@ -1505,6 +1614,14 @@ namespace rachis
             {
                 return valid;
             }
+            if (auto unconditional = rejectInsideConditionalExecution(
+                    *backend_,
+                    *commandBuffer.backend_,
+                    "Sampler-feedback operations cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
+            }
             return backend_->decodeMipRegionUsedFeedback(*commandBuffer.backend_, decode);
         });
     }
@@ -1518,6 +1635,14 @@ namespace rachis
             {
                 return valid;
             }
+            if (auto unconditional = rejectInsideConditionalExecution(
+                    *backend_,
+                    *commandBuffer.backend_,
+                    "Sampler-feedback operations cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
+            }
             return backend_->encodeMinMipFeedback(*commandBuffer.backend_, encode);
         });
     }
@@ -1530,6 +1655,14 @@ namespace rachis
                 !valid)
             {
                 return valid;
+            }
+            if (auto unconditional = rejectInsideConditionalExecution(
+                    *backend_,
+                    *commandBuffer.backend_,
+                    "Sampler-feedback operations cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
             }
             return backend_->encodeMipRegionUsedFeedback(*commandBuffer.backend_, encode);
         });
@@ -1702,6 +1835,14 @@ namespace rachis
             {
                 return std::unexpected(detail::preferDeviceLossError(*backend_, std::move(valid.error())));
             }
+            if (auto unconditional =
+                    rejectInsideConditionalExecution(*backend_,
+                                                     *commandBuffer.backend_,
+                                                     "Texture copies cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
+            }
             return backend_->copyBufferToTextureRegions(*commandBuffer.backend_, source, destination, regions);
         });
     }
@@ -1750,6 +1891,14 @@ namespace rachis
             {
                 return std::unexpected(detail::preferDeviceLossError(*backend_, std::move(valid.error())));
             }
+            if (auto unconditional =
+                    rejectInsideConditionalExecution(*backend_,
+                                                     *commandBuffer.backend_,
+                                                     "Texture copies cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
+            }
             return backend_->copyTextureToBufferRegions(*commandBuffer.backend_, source, destination, regions);
         });
     }
@@ -1794,6 +1943,14 @@ namespace rachis
             {
                 return std::unexpected(detail::preferDeviceLossError(*backend_, std::move(valid.error())));
             }
+            if (auto unconditional =
+                    rejectInsideConditionalExecution(*backend_,
+                                                     *commandBuffer.backend_,
+                                                     "Texture copies cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
+            }
             return backend_->copyTextureRegions(*commandBuffer.backend_, source, destination, regions);
         });
     }
@@ -1837,6 +1994,14 @@ namespace rachis
             {
                 return valid;
             }
+            if (auto unconditional = rejectInsideConditionalExecution(
+                    *backend_,
+                    *commandBuffer.backend_,
+                    "Texture resolves cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
+            }
             return backend_->resolveTexture(*commandBuffer.backend_, resolve);
         });
     }
@@ -1851,6 +2016,14 @@ namespace rachis
                 !valid)
             {
                 return valid;
+            }
+            if (auto unconditional = rejectInsideConditionalExecution(
+                    *backend_,
+                    *commandBuffer.backend_,
+                    "Mipmap generation cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
             }
             return backend_->generateMipmaps(*commandBuffer.backend_, generation);
         });
@@ -2645,6 +2818,14 @@ namespace rachis
             {
                 return valid;
             }
+            if (auto unconditional =
+                    rejectInsideConditionalExecution(*backend_,
+                                                     *commandBuffer.backend_,
+                                                     "Ray dispatches cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
+            }
             return backend_->dispatchRays(*commandBuffer.backend_, desc);
         });
     }
@@ -2660,6 +2841,14 @@ namespace rachis
             {
                 return valid;
             }
+            if (auto unconditional =
+                    rejectInsideConditionalExecution(*backend_,
+                                                     *commandBuffer.backend_,
+                                                     "Ray dispatches cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
+            }
             return backend_->dispatchRaysIndirect(*commandBuffer.backend_, desc);
         });
     }
@@ -2674,6 +2863,12 @@ namespace rachis
                 !valid)
             {
                 return valid;
+            }
+            if (auto unconditional = rejectInsideConditionalExecution(
+                    *backend_, *commandBuffer.backend_, "A rendering scope cannot begin inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
             }
             return backend_->beginRendering(*commandBuffer.backend_, desc);
         });
@@ -2693,6 +2888,14 @@ namespace rachis
             {
                 return std::unexpected(detail::preferDeviceLossError(*backend_, std::move(active.error())));
             }
+            if (auto unconditional = rejectInsideConditionalExecution(
+                    *backend_,
+                    *commandBuffer.backend_,
+                    "A rendering scope cannot end while conditional execution is active.");
+                !unconditional)
+            {
+                return unconditional;
+            }
             return backend_->endRendering(*commandBuffer.backend_);
         });
     }
@@ -2710,6 +2913,14 @@ namespace rachis
                 !valid)
             {
                 return valid;
+            }
+            if (auto unconditional = rejectInsideConditionalExecution(
+                    *backend_,
+                    *commandBuffer.backend_,
+                    "Attachment clears cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
             }
             return backend_->clearColorAttachment(*commandBuffer.backend_, attachmentIndex, clearValue, rectangles);
         });
@@ -2729,6 +2940,14 @@ namespace rachis
                 !valid)
             {
                 return valid;
+            }
+            if (auto unconditional = rejectInsideConditionalExecution(
+                    *backend_,
+                    *commandBuffer.backend_,
+                    "Attachment clears cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
             }
             return backend_->clearDepthStencilAttachment(*commandBuffer.backend_, aspects, depth, stencil, rectangles);
         });
@@ -3316,6 +3535,14 @@ namespace rachis
             {
                 return valid;
             }
+            if (auto unconditional =
+                    rejectInsideConditionalExecution(*backend_,
+                                                     *commandBuffer.backend_,
+                                                     "Query resolves cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
+            }
             return backend_->resolveTimestamps(*commandBuffer.backend_, desc);
         });
     }
@@ -3377,6 +3604,14 @@ namespace rachis
                 !valid)
             {
                 return valid;
+            }
+            if (auto unconditional =
+                    rejectInsideConditionalExecution(*backend_,
+                                                     *commandBuffer.backend_,
+                                                     "Query resolves cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
             }
             return backend_->resolveOcclusionQueries(*commandBuffer.backend_, desc);
         });
@@ -3440,6 +3675,14 @@ namespace rachis
                 !valid)
             {
                 return valid;
+            }
+            if (auto unconditional =
+                    rejectInsideConditionalExecution(*backend_,
+                                                     *commandBuffer.backend_,
+                                                     "Query resolves cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
             }
             return backend_->resolvePipelineStatisticsQueries(*commandBuffer.backend_, desc);
         });
@@ -3505,6 +3748,14 @@ namespace rachis
             {
                 return valid;
             }
+            if (auto unconditional =
+                    rejectInsideConditionalExecution(*backend_,
+                                                     *commandBuffer.backend_,
+                                                     "Query resolves cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
+            }
             return backend_->resolveStreamOutputStatisticsQueries(*commandBuffer.backend_, desc);
         });
     }
@@ -3539,6 +3790,14 @@ namespace rachis
             {
                 return valid;
             }
+            if (auto unconditional = rejectInsideConditionalExecution(
+                    *backend_,
+                    *commandBuffer.backend_,
+                    "Acceleration-structure property writes cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
+            }
             return backend_->writeAccelerationStructureCompactedSize(
                 *commandBuffer.backend_, queryPool, queryIndex, source);
         });
@@ -3555,6 +3814,14 @@ namespace rachis
                 !valid)
             {
                 return valid;
+            }
+            if (auto unconditional =
+                    rejectInsideConditionalExecution(*backend_,
+                                                     *commandBuffer.backend_,
+                                                     "Query resolves cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
             }
             return backend_->resolveAccelerationStructureCompactedSizes(*commandBuffer.backend_, desc);
         });
@@ -3590,6 +3857,14 @@ namespace rachis
             {
                 return valid;
             }
+            if (auto unconditional = rejectInsideConditionalExecution(
+                    *backend_,
+                    *commandBuffer.backend_,
+                    "Acceleration-structure property writes cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
+            }
             return backend_->writeAccelerationStructureSerializationInfo(
                 *commandBuffer.backend_, queryPool, queryIndex, source);
         });
@@ -3606,6 +3881,14 @@ namespace rachis
                 !valid)
             {
                 return valid;
+            }
+            if (auto unconditional =
+                    rejectInsideConditionalExecution(*backend_,
+                                                     *commandBuffer.backend_,
+                                                     "Query resolves cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
             }
             return backend_->resolveAccelerationStructureSerializationInfo(*commandBuffer.backend_, desc);
         });

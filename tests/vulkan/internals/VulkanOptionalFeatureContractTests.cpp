@@ -875,6 +875,7 @@ namespace
         bool drawIndirectCount = false;
         bool maintenance4 = false;
         bool maintenance5 = false;
+        bool conditionalRendering = false;
         bool shaderDrawParameters = false;
         bool presentIdFeature = false;
         bool presentWaitFeature = false;
@@ -981,6 +982,12 @@ namespace
             {
                 const auto* m5 = reinterpret_cast<const VkPhysicalDeviceMaintenance5FeaturesKHR*>(cursor);
                 gCapturedDeviceCreate->maintenance5 = m5->maintenance5 == VK_TRUE;
+            }
+            else if (cursor->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CONDITIONAL_RENDERING_FEATURES_EXT)
+            {
+                const auto* conditional =
+                    reinterpret_cast<const VkPhysicalDeviceConditionalRenderingFeaturesEXT*>(cursor);
+                gCapturedDeviceCreate->conditionalRendering = conditional->conditionalRendering == VK_TRUE;
             }
             cursor = cursor->pNext;
         }
@@ -1113,6 +1120,63 @@ TEST_CASE("createVulkanLogicalDevice enables VK_KHR_maintenance5 only when the d
         CHECK(std::ranges::contains(captured.enabledExtensions,
                                     std::string_view{VK_KHR_MAINTENANCE_5_EXTENSION_NAME}) == maintenance5);
         CHECK(captured.maintenance4);
+    }
+}
+
+TEST_CASE("createVulkanLogicalDevice enables VK_EXT_conditional_rendering only when the device provides it",
+          "[size:small][rhi][vulkan][device-create][predicate]")
+{
+    rachis::vulkan::VulkanInstanceTable instanceTable{};
+    instanceTable.vkGetPhysicalDeviceFeatures2 = &mockDeviceCreateFeatures2;
+    instanceTable.vkCreateDevice = &mockCaptureCreateDevice;
+    instanceTable.vkGetDeviceProcAddr = &mockCreateDeviceGetProcAddr;
+
+    const rachis::VulkanInstanceReport instanceReport{
+        .apiMajor = 1,
+        .apiMinor = 3,
+        .khrSurface = true,
+        .khrWin32Surface = true,
+        .khrWaylandSurface = true,
+        .khrPortabilityEnumeration = true,
+    };
+
+    rachis::vulkan::VulkanPhysicalDeviceRecord record{};
+    record.physical = fakeVk<VkPhysicalDevice>(0x42);
+    record.report = baselineProfileDevice();
+    record.queues = {.graphics = 0, .compute = 0, .transfer = 0};
+    gMockSupportMaintenance4 = true;
+
+    for (const bool conditionalRendering : {true, false})
+    {
+        CAPTURE(conditionalRendering);
+        record.conditionalRendering = conditionalRendering;
+        CapturedDeviceCreation captured;
+        gCapturedDeviceCreate = &captured;
+        rachis::vulkan::VulkanQueueHandles queues{};
+        const auto created =
+            rachis::vulkan::createVulkanLogicalDevice(instanceTable, record, instanceReport, queues, false);
+        gCapturedDeviceCreate = nullptr;
+        REQUIRE(created.has_value());
+        CHECK(captured.conditionalRendering == conditionalRendering);
+        CHECK(std::ranges::contains(captured.enabledExtensions,
+                                    std::string_view{VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME}) ==
+              conditionalRendering);
+
+        const auto published = rachis::vulkan::publishVulkanCapabilities(instanceTable, record, false);
+        CHECK(published.conditionalExecution == conditionalRendering);
+        CHECK(published.multiDispatchIndirect);
+    }
+
+    for (const bool bufferDeviceAddress : {true, false})
+    {
+        for (const bool shaderInt64 : {true, false})
+        {
+            CAPTURE(bufferDeviceAddress, shaderInt64);
+            record.bufferDeviceAddress = bufferDeviceAddress;
+            record.shaderInt64 = shaderInt64;
+            const auto published = rachis::vulkan::publishVulkanCapabilities(instanceTable, record, false);
+            CHECK(published.dispatchIndirectCount == (bufferDeviceAddress && shaderInt64));
+        }
     }
 }
 
@@ -3798,6 +3862,7 @@ namespace
         std::vector<std::unique_ptr<std::byte[]>> hostAllocations;
         std::vector<RecordedDrawIndirectCall> draws;
         std::vector<RecordedBindDescriptorsCall> binds;
+        std::vector<VkDeviceSize> dispatchOffsets;
     };
 
     thread_local IndirectAndBindingMockState* gIndirectMock = nullptr;
@@ -4113,8 +4178,9 @@ namespace
         });
     }
 
-    VKAPI_ATTR void VKAPI_CALL indMockCmdDispatchIndirect(VkCommandBuffer, VkBuffer, VkDeviceSize)
+    VKAPI_ATTR void VKAPI_CALL indMockCmdDispatchIndirect(VkCommandBuffer, VkBuffer, VkDeviceSize offset)
     {
+        gIndirectMock->dispatchOffsets.push_back(offset);
     }
     VKAPI_ATTR void VKAPI_CALL
     indMockCmdCopyBuffer(VkCommandBuffer, VkBuffer, VkBuffer, std::uint32_t, const VkBufferCopy*)
@@ -4364,8 +4430,24 @@ TEST_CASE("Vulkan multi-draw indirect, counted indirect, and native buffer align
         vkCb.computeState().pipelineOwner = csPipe;
         CHECK(graphics.dispatchIndirect(vkCb, {.argumentBuffer = *argBuf, .maxDispatchCount = 2}).error().code ==
               rachis::ErrorCode::unsupported);
+        CHECK(mock.dispatchOffsets.empty());
+
+        caps.multiDispatchIndirect = true;
+        REQUIRE(graphics
+                    .dispatchIndirect(vkCb,
+                                      {
+                                          .argumentBuffer = *argBuf,
+                                          .argumentOffset = 16,
+                                          .maxDispatchCount = 3,
+                                          .stride = 20,
+                                      })
+                    .has_value());
+        CHECK(mock.dispatchOffsets == std::vector<VkDeviceSize>{16, 36, 56});
+        REQUIRE(graphics.dispatchIndirect(vkCb, {.argumentBuffer = *argBuf, .maxDispatchCount = 0}).has_value());
+        CHECK(mock.dispatchOffsets.size() == 3);
         CHECK(graphics.dispatchIndirect(vkCb, {.argumentBuffer = *argBuf, .countBuffer = *cntBuf}).error().code ==
               rachis::ErrorCode::unsupported);
+        CHECK(mock.dispatchOffsets.size() == 3);
     }
 
     SECTION("dispatchMeshIndirect honors multiDrawIndirect, drawIndirectCount, maxDrawIndirectCount, and its "

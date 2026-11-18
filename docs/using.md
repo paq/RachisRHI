@@ -7,7 +7,7 @@
 - **Presentation:** [Surfaces](#surfaces)
 - **Resources & lifetimes:** [Handles and lifetime](#handles-and-lifetime) · [Texture layouts](#texture-layouts) · [Buffer fills and storage-texture clears](#buffer-fills-and-storage-texture-clears) · [Readback buffers](#readback-buffers) · [Acceleration structures](#acceleration-structures) · [Sharing resources](#sharing-resources)
 - **Bindings & barriers:** [Samplers](#samplers) · [Binding pools](#binding-pools) · [Variable-count binding arrays](#variable-count-binding-arrays) · [Direct3D 12 without enhanced barriers](#direct3d-12-without-enhanced-barriers)
-- **Execution & operations:** [Threads](#threads) · [Queries](#queries) · [Device loss](#device-loss) · [Diagnostics](#diagnostics) · [Examples](#examples)
+- **Execution & operations:** [Threads](#threads) · [Queries](#queries) · [Conditional execution](#conditional-execution) · [Indirect dispatch batches](#indirect-dispatch-batches) · [Device loss](#device-loss) · [Diagnostics](#diagnostics) · [Examples](#examples)
 
 ---
 
@@ -272,7 +272,7 @@ RachisShaderBinaryTool cook-metallib \
 On Vulkan, binding visibility masks, push-constant stage masks, and pipeline barriers ignore unsupported optional shader stages as long as at least one supported stage remains (`ShaderStage::all` and `ShaderStage::allGraphics` always work). Passing a stage mask containing **only** unsupported stages fails with `ErrorCode::unsupported`.
 
 Similarly, barriers whose `stagesBefore` or `stagesAfter` mask contains no supported stage (or whose `Access` flags belong exclusively to unsupported stages) return `ErrorCode::unsupported`. Specifically on Vulkan:
-- `conditionalExecution`, `streamOutput`, and `accelerationStructureCopy` are rejected as unsupported when targeted exclusively.
+- `streamOutput` and `accelerationStructureCopy` are rejected as unsupported when targeted exclusively, and so is `conditionalExecution` on devices without `DeviceCapabilities::conditionalExecution`.
 - `Access::shadingRateSource` requires `DeviceCapabilities::variableRateShadingTier2`.
 
 ### Stage inputs and outputs
@@ -556,6 +556,29 @@ When `DeviceCapabilities::enhancedBarriers` is `false`, Direct3D 12 falls back t
   - Pipeline-statistics and stream-output-statistics queries must begin and end on the same side of any rendering boundary (mismatches return `ErrorCode::invalidState` and leave both the query and rendering scope open).
 - **Vulkan multiview restrictions:** Inside a multiview rendering pass (`viewMask` selecting multiple views) on Vulkan, `writeTimestamp`, `beginGpuProfileScope` / `endGpuProfileScope`, `beginOcclusionQuery`, and `beginPipelineStatisticsQuery` fail with `ErrorCode::unsupported`. `RenderingDesc::timestampWrites` works on all backends (Vulkan writes timestamps immediately before and after the render pass).
 - **Queue clock calibration:** `calibrateQueueClock` returns paired CPU and GPU timestamps using `QueryPerformanceCounter` (Windows), `CLOCK_MONOTONIC` (Linux), or `CLOCK_MONOTONIC_RAW` (macOS), backed by `VK_EXT_calibrated_timestamps` on Vulkan. Convert a GPU timestamp $t$ via $\text{cpuTimestamp} + (t - \text{gpuTimestamp}) \cdot \text{cpuFrequency} / \text{gpuFrequency}$, and check for `gpuTimestamp == 0` where driver support is unavailable.
+
+---
+
+## Conditional execution
+
+`beginConditionalExecution` and `endConditionalExecution` skip GPU work when a predicate written by the GPU (for example a resolved occlusion query) says so. Check `DeviceCapabilities::conditionalExecution` first; without it, `beginConditionalExecution` fails with `ErrorCode::unsupported`.
+
+- **Predicate:** A `uint64` value at an 8-byte aligned offset in a buffer with `BufferUsage::predicate`. With `PredicateOperation::notEqualZero` the work runs when the value is not zero; with `PredicateOperation::equalZero` it runs when the value is zero. Vulkan reads only the low 32 bits of the value, so portable code writes predicate values below 2^32 (for example `0` and `1`).
+- **Visibility:** Before the scope begins, make the predicate visible with a barrier to `PipelineStage::conditionalExecution` and `Access::predicate`. When the scope begins inside a rendering scope, record that barrier before `beginRendering`. Do not write the predicate while the scope is active.
+- **What is skipped:** Only draws (direct, indexed, indirect, and counted), mesh dispatches, and compute dispatches (direct, indirect, multi-record, and counted). Binding, state, push-constant, barrier, query begin and end, timestamp, and debug commands always run.
+- **What is rejected:** While a scope is active, these commands fail with `ErrorCode::invalidState`, because backends disagree on whether they would be skipped: buffer and texture copies, texture resolves, `generateMipmaps`, attachment clears, `beginRendering` and `endRendering`, ray dispatches, acceleration-structure builds, updates, compaction, serialization, and property writes, sampler-feedback operations, and query resolves.
+- **Scope rules:** Scopes do not nest and are not available on copy command buffers. A scope that begins inside a rendering scope must end before that rendering scope ends; a scope that begins outside rendering cannot contain one. `submit` and `resetCommandBuffer` reject a command buffer with an active scope (`ErrorCode::invalidState`). The predicate buffer stays alive until the command buffer completes, even if you destroy it while the scope is active.
+
+---
+
+## Indirect dispatch batches
+
+`dispatchIndirect` runs one or more `DispatchIndirectArguments` records from a buffer with `BufferUsage::indirect`:
+
+- **Records:** `maxDispatchCount` records start at `argumentOffset` and are `stride` bytes apart. A `stride` of `0` means `12`; otherwise it must be a multiple of `4` and at least `12`. A `maxDispatchCount` above `1` requires `DeviceCapabilities::multiDispatchIndirect`. A `maxDispatchCount` of `0` records nothing.
+- **GPU count:** With `countBuffer`, the GPU reads a `uint32` count at `countOffset` (4-byte aligned, in a buffer with `BufferUsage::indirect`) when the command runs, and executes the first `min(count, maxDispatchCount)` records. This requires `DeviceCapabilities::dispatchIndirectCount`.
+- **Visibility:** Make GPU-written records and counts visible with a barrier to `PipelineStage::indirect` and `Access::indirectArgument` before the dispatch.
+- **Bound state:** The bound compute pipeline, binding sets, and push constants stay bound after the call on every backend. Vulkan records an internal pass for GPU-counted batches; see [Indirect dispatch batches on Vulkan](platforms.md#indirect-dispatch-batches-on-vulkan) for its cost.
 
 ---
 

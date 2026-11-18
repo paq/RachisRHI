@@ -180,6 +180,7 @@ namespace rachis::vulkan
         bool multiviewMeshShader = false;
         bool multiDrawIndirect = false;
         bool drawIndirectCount = false;
+        bool conditionalRendering = false;
         bool maintenance4 = false;
         bool maintenance5 = false;
         MeshShaderCapabilities meshShader{};

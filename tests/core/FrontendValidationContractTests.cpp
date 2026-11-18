@@ -1038,6 +1038,81 @@ TEST_CASE("Device frontend keeps a rendering scope open while a query that began
     queries.reset();
 }
 
+TEST_CASE("Device frontend allows only draws, dispatches, and state commands inside conditional execution",
+          "[size:small][rhi][core][predicate]")
+{
+    auto backend = std::make_unique<TrackingBackendDevice>();
+    auto* raw = backend.get();
+    auto device = rachis::detail::DeviceAccess::make(std::move(backend));
+    auto cb = makeCommandBuffer(raw->token);
+    auto* native = rachis::detail::CommandBufferAccess::get(cb);
+    REQUIRE(native != nullptr);
+    native->queryState().activeConditionalExecution =
+        rachis::detail::ActiveConditionalExecution{.owner = std::make_shared<int>(1)};
+
+    const auto expectRejected = [&](std::string_view operation, const Status& status) {
+        INFO("Operation: " << operation);
+        REQUIRE_FALSE(status.has_value());
+        INFO("Error: " << status.error().message);
+        CHECK(status.error().code == ErrorCode::invalidState);
+        CHECK(raw->backendInvocations == 0);
+    };
+
+    expectRejected("copyBuffer", device.copyBuffer(cb, BufferCopy{.size = 16}));
+    expectRejected("copyBufferToTexture", device.copyBufferToTexture(cb, rachis::BufferTextureCopy{}));
+    expectRejected("copyTextureToBuffer", device.copyTextureToBuffer(cb, rachis::BufferTextureCopy{}));
+    expectRejected("copyTexture", device.copyTexture(cb, rachis::TextureCopy{}));
+    expectRejected("resolveTexture", device.resolveTexture(cb, TextureResolve{}));
+    expectRejected("generateMipmaps", device.generateMipmaps(cb, TextureMipmapGeneration{}));
+    expectRejected("beginRendering", device.beginRendering(cb, RenderingDesc{}));
+    expectRejected("dispatchRays", device.dispatchRays(cb, rachis::RayTracingDispatchDesc{}));
+    expectRejected("dispatchRaysIndirect", device.dispatchRaysIndirect(cb, rachis::RayTracingIndirectDispatchDesc{}));
+    expectRejected(
+        "buildBottomLevelAccelerationStructure",
+        device.buildBottomLevelAccelerationStructure(cb, rachis::BottomLevelAccelerationStructureBuildDesc{}));
+    expectRejected("buildTopLevelAccelerationStructure",
+                   device.buildTopLevelAccelerationStructure(cb, rachis::TopLevelAccelerationStructureBuildDesc{}));
+    expectRejected(
+        "updateBottomLevelAccelerationStructure",
+        device.updateBottomLevelAccelerationStructure(cb, rachis::BottomLevelAccelerationStructureUpdateDesc{}));
+    expectRejected("updateTopLevelAccelerationStructure",
+                   device.updateTopLevelAccelerationStructure(cb, rachis::TopLevelAccelerationStructureUpdateDesc{}));
+    expectRejected("compactAccelerationStructure",
+                   device.compactAccelerationStructure(cb, rachis::AccelerationStructureCompactionDesc{}));
+    expectRejected("serializeAccelerationStructure",
+                   device.serializeAccelerationStructure(cb, rachis::AccelerationStructureSerializationDesc{}));
+    expectRejected("deserializeAccelerationStructure",
+                   device.deserializeAccelerationStructure(cb, rachis::AccelerationStructureDeserializationDesc{}));
+    expectRejected("resetSamplerFeedbackMap", device.resetSamplerFeedbackMap(cb, rachis::SamplerFeedbackMapHandle{}));
+    expectRejected("decodeMinMipFeedback", device.decodeMinMipFeedback(cb, rachis::MinMipFeedbackDecode{}));
+    expectRejected("resolveTimestamps", device.resolveTimestamps(cb, rachis::TimestampQueryResolveDesc{}));
+    expectRejected("resolveOcclusionQueries", device.resolveOcclusionQueries(cb, rachis::OcclusionQueryResolveDesc{}));
+    expectRejected("resolvePipelineStatisticsQueries",
+                   device.resolvePipelineStatisticsQueries(cb, rachis::PipelineStatisticsQueryResolveDesc{}));
+
+    native->graphicsState().renderingOwner = std::make_shared<int>(2);
+    expectRejected("clearColorAttachment", device.clearColorAttachment(cb, 0, ClearColor{}));
+    expectRejected("clearDepthStencilAttachment",
+                   device.clearDepthStencilAttachment(cb, DepthStencilClearAspect::depth, 1.0F, 0));
+    expectRejected("endRendering", device.endRendering(cb));
+    CHECK(native->graphicsState().renderingOwner != nullptr);
+    CHECK(native->queryState().activeConditionalExecution.has_value());
+
+    REQUIRE(device.draw(cb, 3).has_value());
+    REQUIRE(device.drawIndirect(cb, IndirectDrawDesc{}).has_value());
+    CHECK(raw->backendInvocations == 2);
+    native->graphicsState().renderingOwner.reset();
+    REQUIRE(device.bufferBarrier(cb, BufferBarrier{}).has_value());
+    REQUIRE(device.dispatch(cb, 1, 1, 1).has_value());
+    REQUIRE(device.dispatchIndirect(cb, IndirectDispatchDesc{}).has_value());
+    CHECK(raw->backendInvocations == 5);
+
+    native->queryState().activeConditionalExecution.reset();
+    REQUIRE(device.copyBuffer(cb, BufferCopy{.size = 16}).has_value());
+    REQUIRE(device.beginRendering(cb, RenderingDesc{}).has_value());
+    CHECK(raw->backendInvocations == 7);
+}
+
 TEST_CASE("DeviceOperationalState::lost takes precedence over frontend invalidArgument, invalidState, and unsupported",
           "[size:small][rhi][core]")
 {

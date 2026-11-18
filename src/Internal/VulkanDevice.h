@@ -6,6 +6,7 @@
 #include "Internal/VulkanCommands.h"
 #include "Internal/VulkanGraphics.h"
 #include "Internal/VulkanImageUtilities.h"
+#include "Internal/VulkanIndirectDispatch.h"
 #include "Internal/VulkanPipelines.h"
 #include "Internal/VulkanQueries.h"
 #include "Internal/VulkanQueues.h"
@@ -310,6 +311,9 @@ namespace rachis::vulkan
                                           const IndirectDrawDesc& desc) override;
         [[nodiscard]] Status drawIndexedIndirect(detail::BackendCommandBuffer& commandBuffer,
                                                  const IndirectDrawDesc& desc) override;
+        [[nodiscard]] Status beginConditionalExecution(detail::BackendCommandBuffer& commandBuffer,
+                                                       const ConditionalExecutionDesc& desc) override;
+        [[nodiscard]] Status endConditionalExecution(detail::BackendCommandBuffer& commandBuffer) override;
         [[nodiscard]] Status setShadingRate(detail::BackendCommandBuffer& commandBuffer,
                                             ShadingRate rate,
                                             const ShadingRateCombiners& combiners) override;
@@ -430,6 +434,7 @@ namespace rachis::vulkan
         VulkanAccelerationManager acceleration_{};
         VulkanQueryManager queries_{};
         VulkanImageUtilities images_{};
+        VulkanCountedDispatchPass countedDispatch_{};
         VulkanSwapchainManager swapchains_{};
         std::uint64_t deviceToken_ = 0;
         mutable std::mutex acquiredPoolsMutex_{};

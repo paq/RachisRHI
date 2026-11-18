@@ -113,7 +113,7 @@ if(NOT shaders)
 endif()
 list(REMOVE_DUPLICATES shaders)
 set(unexpected ${shaders})
-list(FILTER unexpected EXCLUDE REGEX "^(Rachis)?GenerateMipmaps([123]D)?\\.|^RachisResolveDepth(Vertex|Pixel)\\.(h|dxil)$")
+list(FILTER unexpected EXCLUDE REGEX "^(Rachis)?GenerateMipmaps([123]D)?\\.|^(Rachis)?CountedDispatchArguments\\.|^RachisResolveDepth(Vertex|Pixel)\\.(h|dxil)$")
 if(unexpected)
     list(JOIN unexpected "\n  " unexpected)
     message(FATAL_ERROR

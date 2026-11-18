@@ -855,6 +855,21 @@ namespace rachis::vulkan
         allCommandsBarrierSources_ = enabled;
     }
 
+    bool VulkanResourceAllocator::waitsOnAllCommandsBeforeBarriers() const noexcept
+    {
+        const std::scoped_lock lock(mutex_);
+        return allCommandsBarrierSources_;
+    }
+
+    void VulkanResourceAllocator::enableConditionalRendering(bool enabled) noexcept
+    {
+        const std::scoped_lock lock(mutex_);
+        conditionalRendering_ = enabled;
+        const auto conditional = static_cast<std::uint32_t>(PipelineStage::conditionalExecution);
+        const auto stages = static_cast<std::uint32_t>(barrierStages_);
+        barrierStages_ = static_cast<PipelineStage>(enabled ? stages | conditional : stages & ~conditional);
+    }
+
 #ifdef RACHIS_TESTING
     void VulkanResourceAllocator::initializeDispatchForTesting(VkDevice device,
                                                                const VolkDeviceTable* table,
@@ -1024,6 +1039,7 @@ namespace rachis::vulkan
         accelerationStructureScratchAlignment_ = 0;
         barrierStages_ = corePipelineStages;
         allCommandsBarrierSources_ = false;
+        conditionalRendering_ = false;
         maxMemoryAllocationSize_ = std::numeric_limits<std::uint64_t>::max();
         if (device_ != VK_NULL_HANDLE && table_ != nullptr && table_->vkDestroyCommandPool != nullptr &&
             transferPool_ != VK_NULL_HANDLE)
@@ -2720,6 +2736,12 @@ namespace rachis::vulkan
         {
             info.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
         }
+#ifdef VK_EXT_conditional_rendering
+        if (conditionalRendering_ && hasAny(desc.usage, BufferUsage::predicate))
+        {
+            info.usage |= VK_BUFFER_USAGE_CONDITIONAL_RENDERING_BIT_EXT;
+        }
+#endif
         return info;
     }
 

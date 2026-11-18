@@ -41,7 +41,7 @@ namespace
 
 } // namespace
 
-TEST_CASE("conditional execution gates GPU work and retains its predicate resource",
+TEST_CASE("conditional execution gates dispatches, rejects copies, and retains its predicate resource",
           "[size:medium][rhi][query][predicate][compute][warp]")
 {
     auto created = rachis::createDevice(rachis::DeviceDesc{
@@ -233,16 +233,7 @@ TEST_CASE("conditional execution gates GPU work and retains its predicate resour
                             {
                                 .source = *predicateSeed,
                                 .destination = *copyReadback,
-                                .size = sizeof(std::uint64_t),
-                            })
-                .has_value());
-    REQUIRE(device
-                .copyBuffer(*command,
-                            {
-                                .source = *predicateSeed,
-                                .destination = *copyReadback,
-                                .destinationOffset = sizeof(std::uint64_t),
-                                .size = sizeof(std::uint64_t),
+                                .size = sizeof(predicateValues),
                             })
                 .has_value());
     REQUIRE(device
@@ -252,34 +243,15 @@ TEST_CASE("conditional execution gates GPU work and retains its predicate resour
                                                .operation = rachis::PredicateOperation::notEqualZero,
                                            })
                 .has_value());
-    REQUIRE(device
-                .copyBuffer(*command,
-                            {
-                                .source = *predicateSeed,
-                                .sourceOffset = sizeof(std::uint64_t),
-                                .destination = *copyReadback,
-                                .size = sizeof(std::uint64_t),
-                            })
-                .has_value());
-    REQUIRE(device.endConditionalExecution(*command).has_value());
-    REQUIRE(device
-                .beginConditionalExecution(*command,
-                                           {
-                                               .buffer = *predicate,
-                                               .offset = sizeof(std::uint64_t),
-                                               .operation = rachis::PredicateOperation::notEqualZero,
-                                           })
-                .has_value());
-    REQUIRE(device
-                .copyBuffer(*command,
-                            {
-                                .source = *predicateSeed,
-                                .sourceOffset = sizeof(std::uint64_t),
-                                .destination = *copyReadback,
-                                .destinationOffset = sizeof(std::uint64_t),
-                                .size = sizeof(std::uint64_t),
-                            })
-                .has_value());
+    const auto conditionalCopy = device.copyBuffer(*command,
+                                                   {
+                                                       .source = *predicateSeed,
+                                                       .sourceOffset = sizeof(std::uint64_t),
+                                                       .destination = *copyReadback,
+                                                       .size = sizeof(std::uint64_t),
+                                                   });
+    REQUIRE_FALSE(conditionalCopy.has_value());
+    CHECK(conditionalCopy.error().code == rachis::ErrorCode::invalidState);
     REQUIRE(device.endConditionalExecution(*command).has_value());
     REQUIRE(device
                 .bufferBarrier(*command,

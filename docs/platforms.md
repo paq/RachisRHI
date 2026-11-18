@@ -10,6 +10,8 @@ This page describes the host platforms RachisRHI targets, optional feature avail
 - [Fallback and validation](#fallback-and-validation)
 - [Direct3D 12 validation is process-wide](#direct3d-12-validation-is-process-wide)
 - [Vulkan copy queues](#vulkan-copy-queues)
+- [Indirect dispatch batches on Vulkan](#indirect-dispatch-batches-on-vulkan)
+- [Conditional execution on Vulkan](#conditional-execution-on-vulkan)
 - [Attachment clears on Metal](#attachment-clears-on-metal)
 - [Scissors on Metal](#scissors-on-metal)
 - [Shared resources](#shared-resources)
@@ -49,6 +51,11 @@ The table below shows which backends *can* report each feature (subject to adapt
 | `variableRateShading`, `variableRateShadingTier2` | Yes | Yes | No |
 | `sparseBuffers`, `sparseTextures` | Yes | No | No |
 | `samplerFeedback` | Yes | No | No |
+| `conditionalExecution` | Yes | Yes, with `VK_EXT_conditional_rendering` | No |
+| `multiDispatchIndirect` | Yes | Yes | No |
+| `dispatchIndirectCount` | Yes | Yes, with the `bufferDeviceAddress` and `shaderInt64` features | No |
+
+On Vulkan, `multiDispatchIndirect` and `dispatchIndirectCount` are emulated; see [Indirect dispatch batches on Vulkan](#indirect-dispatch-batches-on-vulkan).
 
 ## Vulkan profile
 
@@ -68,7 +75,7 @@ A Vulkan device must support Vulkan 1.3 with:
 - **Formats:** `RGBA8` and `BGRA8` (with their sRGB variants), `D32`, at least one packed depth-stencil format, `RGBA16F`, and `R32` unsigned.
 - **Minimum limits:** 2D images up to `8192` texels, `4` binding sets, `128` bytes of push constants, `8` color attachments, and `256` compute invocations per workgroup.
 
-When provided by the driver, RachisRHI also enables swapchain maintenance, present wait, device fault extensions, `VK_KHR_maintenance5`, and `shaderDrawParameters` (required by shader modules declaring SPIR-V `DrawParameters`, such as vertex shaders compiled via `rachis_add_shader` that read `SV_VertexID` or `SV_InstanceID`; see [Shaders](using.md#shaders)). `DeviceCapabilities::shaderDrawIndex` is true only when the driver provides `shaderDrawParameters`.
+When provided by the driver, RachisRHI also enables swapchain maintenance, present wait, device fault extensions, `VK_KHR_maintenance5`, `VK_EXT_conditional_rendering` (for `conditionalExecution`), and `shaderDrawParameters` (required by shader modules declaring SPIR-V `DrawParameters`, such as vertex shaders compiled via `rachis_add_shader` that read `SV_VertexID` or `SV_InstanceID`; see [Shaders](using.md#shaders)). `DeviceCapabilities::shaderDrawIndex` is true only when the driver provides `shaderDrawParameters`.
 
 ### Native queue mapping
 
@@ -123,6 +130,21 @@ When a Vulkan device exposes a transfer-only queue family (supporting neither gr
 - On a transfer-only copy queue (or a compute queue whose family lacks graphics support), `copyBufferToTexture` and `copyTextureToBuffer` fail with `ErrorCode::unsupported` without recording anything if any region specifies `TextureAspect::depth` or `TextureAspect::stencil`.
 - Color buffer-texture copies and `copyTexture` between depth-stencil textures still work on the copy queue.
 - **Portable rule:** Record depth and stencil buffer uploads/readbacks on a **graphics** command buffer, which works on every backend. (Vulkan devices without a qualifying transfer-only family fall back as noted in [Native queue mapping](#native-queue-mapping) and allow depth/stencil buffer copies when the selected family supports graphics; D3D12 and Metal accept them on `QueueType::copy`.)
+
+## Indirect dispatch batches on Vulkan
+
+Core Vulkan dispatches one indirect record per call and has no GPU-counted dispatch, so RachisRHI emulates both:
+
+- **Multi-record batches** (`maxDispatchCount > 1`, no `countBuffer`): RachisRHI records one `vkCmdDispatchIndirect` per record, at `argumentOffset + index * stride`. Recording time grows with `maxDispatchCount`.
+- **GPU-counted batches** (`countBuffer` set): RachisRHI records an internal compute pass before the dispatches. One thread per record (64 threads per workgroup) copies the records into a new device-local scratch buffer of `12 * maxDispatchCount` bytes and sets the group counts of every record at or past `min(count, maxDispatchCount)` to zero. RachisRHI then records `maxDispatchCount` `vkCmdDispatchIndirect` calls on the scratch records; records past the count dispatch zero workgroups.
+- **Barriers:** The pass adds two barriers: indirect-argument reads to compute-shader reads before it, and compute-shader writes of the scratch buffer to indirect-argument reads after it. Work before the dispatch that writes the arguments or count still needs your own barrier to `PipelineStage::indirect`.
+- **Bound state:** The pass binds its own pipeline and push constants, then rebinds your compute pipeline and pushes your compute push constants again. Your binding sets stay bound. An active conditional execution scope is paused for the pass, so the pass always runs and only your dispatches are conditional.
+- **Lifetime:** The scratch buffer is freed when the command buffer completes, also for command pools with `CommandPoolFlag::unretainedResources`.
+- **Queries:** The pass counts towards `computeShaderInvocations` of an active pipeline-statistics query and adds its time to timestamps around the dispatch.
+
+## Conditional execution on Vulkan
+
+Vulkan implements conditional execution with `VK_EXT_conditional_rendering`, which reads a 32-bit predicate. RachisRHI passes the low 32 bits of the `uint64` predicate, so a value whose low 32 bits are zero counts as zero on Vulkan, while Direct3D 12 reads all 64 bits. Write predicate values below 2^32 for the same result on every backend.
 
 ## Attachment clears on Metal
 
