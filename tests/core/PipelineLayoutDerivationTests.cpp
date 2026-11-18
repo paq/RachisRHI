@@ -349,3 +349,33 @@ TEST_CASE("derivePipelineLayout rejects interfaces that a shader module could no
     rejects(pushOnly(ShaderStage::pixel, {{.offset = 0, .size = 0}}));
     rejects(pushOnly(ShaderStage::pixel, {{.offset = 120, .size = 16}}));
 }
+
+TEST_CASE("Derived pipeline layouts reserve the draw index when a vertex, task, or mesh shader reads it",
+          "[size:small][rhi][core][draw-index]")
+{
+    const std::array withoutDrawIndex{
+        ShaderInterfaceSnapshot{.stage = ShaderStage::vertex},
+        ShaderInterfaceSnapshot{.stage = ShaderStage::pixel},
+    };
+    const auto plain = rachis::derivePipelineLayout(withoutDrawIndex);
+    REQUIRE(plain.has_value());
+    CHECK_FALSE(plain->drawIndex);
+
+    for (const auto stage : {ShaderStage::vertex, ShaderStage::task, ShaderStage::mesh})
+    {
+        const std::array shaders{
+            ShaderInterfaceSnapshot{.stage = stage, .drawIndex = true},
+            ShaderInterfaceSnapshot{.stage = ShaderStage::pixel},
+        };
+        const auto derived = rachis::derivePipelineLayout(shaders);
+        REQUIRE(derived.has_value());
+        CHECK(derived->drawIndex);
+        CHECK(derived->bindingSets.empty());
+        CHECK(derived->pushConstantRanges.empty());
+    }
+
+    const std::array pixelDrawIndex{ShaderInterfaceSnapshot{.stage = ShaderStage::pixel, .drawIndex = true}};
+    const auto rejected = rachis::derivePipelineLayout(pixelDrawIndex);
+    REQUIRE_FALSE(rejected.has_value());
+    CHECK(rejected.error().code == rachis::ErrorCode::invalidArgument);
+}

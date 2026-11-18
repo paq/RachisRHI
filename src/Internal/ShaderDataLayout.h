@@ -433,6 +433,7 @@ namespace rachis::shader_tool
                 std::vector<DataResource> dataResources;
                 std::vector<std::uint32_t> vertexInputLocations;
                 std::optional<std::array<std::uint32_t, 3>> workgroupSize;
+                bool drawIndex = false;
             };
 
             static constexpr std::uint32_t executionModelVertex = 0;
@@ -661,6 +662,11 @@ namespace rachis::shader_tool
                     const auto storage = variable.storageClass;
                     if (storage == storageInput)
                     {
+                        if (const auto builtIn = builtIns_.find(id);
+                            builtIn != builtIns_.end() && builtIn->second == builtInDrawIndex && uses(id))
+                        {
+                            result.drawIndex = true;
+                        }
                         if (executionModel == executionModelVertex && uses(id) && !builtIns_.contains(id))
                         {
                             if (auto appended = appendVertexInput(id, variable, result.vertexInputLocations); !appended)
@@ -755,6 +761,7 @@ namespace rachis::shader_tool
             static constexpr std::uint32_t decorationDescriptorSet = 34;
             static constexpr std::uint32_t decorationOffset = 35;
             static constexpr std::uint32_t builtInWorkgroupSize = 25;
+            static constexpr std::uint32_t builtInDrawIndex = 4426;
             static constexpr std::uint32_t executionModeLocalSize = 17;
             static constexpr std::uint32_t executionModeLocalSizeId = 38;
             static constexpr std::uint32_t imageDimBuffer = 5;

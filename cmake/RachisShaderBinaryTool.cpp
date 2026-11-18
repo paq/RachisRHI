@@ -57,10 +57,10 @@ namespace
                << "  RachisShaderBinaryTool cook-metallib --slangc <slangc> --source <shader> --entry <entry> --output "
                   "<shader.metallib> --json <reflection.json> --pnms <shader.pnms> [--stage <stage>] "
                   "[--metal-source <shader.metal>] [--depfile <shader.d>] [--no-warnings-as-errors] "
-                  "[--define <NAME=VALUE> ...]\n"
+                  "[--define <NAME=VALUE> ...] [--include-dir <directory> ...]\n"
                << "  RachisShaderBinaryTool reflect-interface --name <identifier> --stage <stage> --entry <entry> "
                   "--output <header> --reflection <backend>=<reflection.json> ... [--layout <backend>=<file> ...] "
-                  "[--spirv-reflection vulkan=<module.spv>] [--tag <tag>]\n";
+                  "[--spirv-reflection vulkan=<module.spv>] [--bytecode <d3d12|vulkan>=<file> ...] [--tag <tag>]\n";
     }
 
     [[nodiscard]] std::expected<std::vector<std::byte>, std::string> readBinaryFile(const std::string& rawPath)
@@ -602,6 +602,7 @@ namespace
         std::optional<std::string> metalSourcePath;
         std::optional<std::string> depfilePath;
         std::vector<std::string> defines{};
+        std::vector<std::string> includeDirectories{};
         bool noWarningsAsErrors = false;
     };
 
@@ -660,6 +661,11 @@ namespace
             arguments.defines.emplace_back(value);
             return true;
         }
+        if (flag == "--include-dir")
+        {
+            arguments.includeDirectories.emplace_back(value);
+            return true;
+        }
         return false;
     }
 
@@ -700,6 +706,7 @@ namespace
         std::optional<std::string> metalSourcePath;
         std::optional<std::string> depfilePath;
         std::vector<std::string> defines{};
+        std::vector<std::string> includeDirectories{};
         bool noWarningsAsErrors = false;
     };
 
@@ -728,6 +735,7 @@ namespace
             .metalSourcePath = std::move(arguments->metalSourcePath),
             .depfilePath = std::move(arguments->depfilePath),
             .defines = std::move(arguments->defines),
+            .includeDirectories = std::move(arguments->includeDirectories),
             .noWarningsAsErrors = arguments->noWarningsAsErrors,
         };
     }
@@ -798,6 +806,15 @@ namespace
         }
     }
 
+    void appendIncludeArgs(std::vector<std::string>& args, const CookMetallibOptions& options)
+    {
+        for (const auto& directory : options.includeDirectories)
+        {
+            args.push_back("-I");
+            args.push_back(directory);
+        }
+    }
+
     void appendEntryArgs(std::vector<std::string>& args, const CookMetallibOptions& options)
     {
         args.push_back("-entry");
@@ -826,6 +843,7 @@ namespace
             "-Wno-40100",
         };
         appendDefineArgs(args, options.defines);
+        appendIncludeArgs(args, options);
         appendEntryArgs(args, options);
         args.insert(args.end(), {"-reflection-json", tempFiles.spirvProbeJson});
         return args;
@@ -861,6 +879,7 @@ namespace
             "-Wno-40100",
         };
         appendDefineArgs(args, options.defines);
+        appendIncludeArgs(args, options);
         appendEntryArgs(args, options);
         args.insert(args.end(), {"-reflection-json", tempFiles.metalProbeJson});
         return args;
@@ -1008,6 +1027,7 @@ namespace
             args.push_back("all");
         }
         appendDefineArgs(args, options.defines);
+        appendIncludeArgs(args, options);
         appendEntryArgs(args, options);
         return args;
     }
@@ -1230,7 +1250,7 @@ namespace
             std::cout << "--slangc <slangc> --source <shader> --entry <entry> --output <shader.metallib> "
                          "--json <reflection.json> --pnms <shader.pnms> [--stage <stage>] "
                          "[--metal-source <shader.metal>] [--depfile <shader.d>] [--no-warnings-as-errors] "
-                         "[--define <NAME=VALUE> ...]\n";
+                         "[--define <NAME=VALUE> ...] [--include-dir <directory> ...]\n";
             return 0;
         }
 
@@ -1253,6 +1273,7 @@ namespace
         std::vector<std::pair<rachis::shader_tool::InterfaceBackend, std::string>> reflections;
         std::vector<std::pair<rachis::shader_tool::InterfaceBackend, std::string>> layouts;
         std::vector<std::pair<rachis::shader_tool::InterfaceBackend, std::string>> spirvReflections;
+        std::vector<std::pair<rachis::shader_tool::InterfaceBackend, std::string>> bytecodes;
     };
 
     [[nodiscard]] std::expected<ReflectInterfaceOptions, std::string> parseReflectInterfaceOptions(
@@ -1325,6 +1346,23 @@ namespace
                 }
                 options.reflections.emplace_back(*backend, std::string(value.substr(separator + 1)));
             }
+            else if (flag == "--bytecode")
+            {
+                const auto separator = value.find('=');
+                const auto backend = separator == std::string_view::npos
+                                         ? std::nullopt
+                                         : rachis::shader_tool::parseInterfaceBackend(value.substr(0, separator));
+                if (!backend.has_value() || *backend == rachis::shader_tool::InterfaceBackend::metal ||
+                    separator + 1 == value.size())
+                {
+                    return std::unexpected("--bytecode takes <d3d12|vulkan>=<file>.");
+                }
+                if (std::ranges::any_of(options.bytecodes, [&](const auto& item) { return item.first == *backend; }))
+                {
+                    return std::unexpected("--bytecode names a backend twice.");
+                }
+                options.bytecodes.emplace_back(*backend, std::string(value.substr(separator + 1)));
+            }
             else if (flag == "--spirv-reflection")
             {
                 const auto separator = value.find('=');
@@ -1367,7 +1405,8 @@ namespace
         {
             std::cout << "--name <identifier> --stage <stage> --entry <entry> --output <header> "
                          "--reflection <backend>=<reflection.json> ... [--layout <backend>=<file> ...] "
-                         "[--spirv-reflection vulkan=<module.spv>] [--tag <tag>]\n";
+                         "[--spirv-reflection vulkan=<module.spv>] [--bytecode <d3d12|vulkan>=<file> ...] "
+                         "[--tag <tag>]\n";
             return 0;
         }
         const auto options = parseReflectInterfaceOptions(args);
@@ -1419,6 +1458,17 @@ namespace
                     std::cerr << layoutPath.value_or(path) << ": " << attached.error() << '\n';
                     return 1;
                 }
+                if (backend == rachis::shader_tool::InterfaceBackend::vulkan)
+                {
+                    const auto drawIndex =
+                        rachis::shader_tool::spirvReadsDrawIndex(*layoutBytes, options->entryPoint, options->stage);
+                    if (!drawIndex.has_value())
+                    {
+                        std::cerr << *layoutPath << ": " << drawIndex.error() << '\n';
+                        return 1;
+                    }
+                    reflected->drawIndex = *drawIndex;
+                }
             }
             backends.push_back({.backend = backend, .reflected = std::move(*reflected)});
         }
@@ -1438,6 +1488,40 @@ namespace
                 return 1;
             }
             backends.push_back({.backend = backend, .reflected = std::move(*reflected)});
+        }
+        for (const auto& [backend, path] : options->bytecodes)
+        {
+            auto* const target = [&]() -> rachis::shader_tool::BackendInterface* {
+                for (auto& item : backends)
+                {
+                    if (item.backend == backend)
+                    {
+                        return &item;
+                    }
+                }
+                return nullptr;
+            }();
+            if (target == nullptr)
+            {
+                std::cerr << "--bytecode names a backend that no --reflection or --spirv-reflection reflects.\n";
+                return 1;
+            }
+            const auto bytes = readBinaryFile(path);
+            if (!bytes.has_value())
+            {
+                std::cerr << bytes.error() << '\n';
+                return 1;
+            }
+            const auto drawIndex =
+                backend == rachis::shader_tool::InterfaceBackend::d3d12
+                    ? rachis::shader_tool::dxilReadsDrawIndex(*bytes)
+                    : rachis::shader_tool::spirvReadsDrawIndex(*bytes, options->entryPoint, options->stage);
+            if (!drawIndex.has_value())
+            {
+                std::cerr << path << ": " << drawIndex.error() << '\n';
+                return 1;
+            }
+            target->reflected.drawIndex = *drawIndex && options->stage == rachis::shader_tool::InterfaceStage::vertex;
         }
         const auto header = rachis::shader_tool::generateShaderInterfaceHeader(
             options->name, options->stage, options->entryPoint, backends, options->tag);

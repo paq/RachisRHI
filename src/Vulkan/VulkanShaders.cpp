@@ -149,6 +149,7 @@ namespace rachis::vulkan
             std::vector<std::uint32_t> vertexInputLocations;
             std::optional<ShaderWorkgroupSize> workgroupSize;
             std::optional<ShaderRecordConstantRange> shaderRecordConstants;
+            bool drawIndex = false;
         };
 
         [[nodiscard]] constexpr bool isValidInterfaceBinding(const ShaderBindingRequirement& binding) noexcept
@@ -350,6 +351,7 @@ namespace rachis::vulkan
             record.vertexInputLocations = std::move(*vertexInputLocations);
             record.workgroupSize = desc.workgroupSize;
             record.shaderRecordConstants = desc.shaderRecordConstants;
+            record.drawIndex = desc.drawIndex;
             return record;
         }
 
@@ -574,6 +576,7 @@ namespace rachis::vulkan
         constexpr std::uint32_t spirvDecorationOffset = 35;
         constexpr std::uint32_t spirvDecorationPerVertexKHR = 5285;
         constexpr std::uint32_t spirvBuiltInPointSize = 1;
+        constexpr std::uint32_t spirvBuiltInDrawIndex = 4426;
         constexpr std::uint32_t spirvStorageClassUniformConstant = 0;
         constexpr std::uint32_t spirvStorageClassInput = 1;
         constexpr std::uint32_t spirvStorageClassUniform = 2;
@@ -662,6 +665,7 @@ namespace rachis::vulkan
             std::uint32_t storageArrayStride = 0;
             bool writesPointSize = false;
             bool writableStorage = false;
+            bool readsDrawIndex = false;
             std::vector<detail::StageInterfaceVariable> stageOutputs = {};
             std::vector<detail::StageInterfaceVariable> stageInputs = {};
         };
@@ -1486,6 +1490,7 @@ namespace rachis::vulkan
             std::unordered_map<std::uint32_t, std::unordered_set<std::uint32_t>> rowMajorMembers;
             std::unordered_set<std::uint32_t> pointSizeVariables;
             std::unordered_map<std::uint32_t, std::uint32_t> pointSizeMembers;
+            std::unordered_set<std::uint32_t> drawIndexVariables;
         };
 
         struct SpirvVariableTable final
@@ -1672,6 +1677,10 @@ namespace rachis::vulkan
                 if (hasLiteral && instruction.words[3] == spirvBuiltInPointSize)
                 {
                     decorations.pointSizeVariables.insert(target);
+                }
+                if (hasLiteral && instruction.words[3] == spirvBuiltInDrawIndex)
+                {
+                    decorations.drawIndexVariables.insert(target);
                 }
             }
             else if (decoration == spirvDecorationPerVertexKHR)
@@ -3362,6 +3371,9 @@ namespace rachis::vulkan
                 .specIds = std::move(module->specialization.specIds),
                 .non32BitSpecIds = std::move(module->specialization.non32BitSpecIds),
                 .writesPointSize = usage.writesPointSize,
+                .readsDrawIndex = std::ranges::any_of(
+                    module->entryPoint.interfaceIds,
+                    [&](std::uint32_t id) { return module->decorations.drawIndexVariables.contains(id); }),
             };
             if (auto reflected = reflectVariables(*module, usage.usedIds, stage, reflection); !reflected)
             {
@@ -3444,6 +3456,17 @@ namespace rachis::vulkan
                     ErrorCode::invalidArgument,
                     0,
                     "Declared vertex input locations do not match the reflected SPIR-V locations.",
+                });
+            }
+            if (declared.drawIndex != reflected.readsDrawIndex)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidArgument,
+                    0,
+                    declared.drawIndex ? "The shader interface declares the draw index, but the SPIR-V entry point "
+                                         "reads no DrawIndex builtin."
+                                       : "The SPIR-V entry point reads the DrawIndex builtin, but the shader "
+                                         "interface does not declare the draw index.",
                 });
             }
             return {};
@@ -4167,6 +4190,7 @@ namespace rachis::vulkan
         record.shaderInterface.vertexInputLocations = std::move(shaderInterface->vertexInputLocations);
         record.shaderInterface.workgroupSize = shaderInterface->workgroupSize;
         record.shaderInterface.shaderRecordConstants = shaderInterface->shaderRecordConstants;
+        record.shaderInterface.drawIndex = shaderInterface->drawIndex;
         record.specializationConstants = std::move(*specializationConstants);
         record.stageOutputs = std::move(reflected->stageOutputs);
         record.stageInputs = std::move(reflected->stageInputs);
@@ -4216,6 +4240,7 @@ namespace rachis::vulkan
             .vertexInputLocations = found->shaderInterface.vertexInputLocations,
             .workgroupSize = found->shaderInterface.workgroupSize,
             .shaderRecordConstants = found->shaderInterface.shaderRecordConstants,
+            .drawIndex = found->shaderInterface.drawIndex,
         };
     }
 
@@ -4258,6 +4283,7 @@ namespace rachis::vulkan
             .specializationConstants = found->specializationConstants,
             .shaderRecordConstants = found->shaderInterface.shaderRecordConstants,
             .writesPointSize = found->writesPointSize,
+            .drawIndex = found->shaderInterface.drawIndex,
             .stageOutputs = found->stageOutputs,
             .stageInputs = found->stageInputs,
         };

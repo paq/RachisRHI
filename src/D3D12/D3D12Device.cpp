@@ -615,6 +615,7 @@ namespace rachis::d3d12
             capabilities.indirectDrawBaseInstance = true;
             capabilities.multiDrawIndirect = true;
             capabilities.drawIndirectCount = true;
+            capabilities.shaderDrawIndex = true;
             capabilities.multiViewport = true;
             capabilities.occlusionQueries = true;
             capabilities.pipelineStatisticsQueries = true;

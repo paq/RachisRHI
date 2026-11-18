@@ -26,7 +26,8 @@
 # Every backend defines RACHIS_D3D12=1, RACHIS_VULKAN=1, or RACHIS_METAL=1, and Vulkan SPIR-V is
 # for vulkan1.3, checked with spirv-val. HLSL and Slang SPIR-V also define __spirv__, which dxc
 # defines itself. GLSL is Vulkan-only: on the other backends its bytecode is empty, and
-# Rachis::RHI needs Vulkan.
+# Rachis::RHI needs Vulkan. HLSL and Slang compile with the RachisRHI include directory on the
+# include path, so a shader can include "Rachis/DrawIndex.hlsli".
 #
 # The results are embedded in "<identifier>.h", which <target> can include. It declares
 #
@@ -41,13 +42,15 @@
 # emits. rachis_shaders::reflection::<identifier> has
 #
 #   ShaderInterfaceDesc shaderInterface(Backend)      bindings, push constants, vertex inputs,
-#                                                     and workgroup size
+#                                                     workgroup size, and draw index
 #   span<const BindingLayoutEntry> bindingLayout(Backend, set)
 #                                                     the set's entries, visible to the stage
 #   span<const BindingPoolSize> bindingPoolSizes(Backend, set)
 #                                                     the pool sizes of one binding set
 #   span<const PushConstantRange> pushConstantRanges(Backend)
 #   uint32_t bindingSetCount(Backend)
+#   bool drawIndex(Backend)                           whether the shader reads the draw index, for
+#                                                     PipelineLayoutDesc::drawIndex
 #   ShaderModuleDesc moduleDesc(Backend, label)       stage, bytecode, entry point, interface
 #
 # and the same data per backend in its d3d12, vulkan, and metal namespaces. Each backend namespace
@@ -82,13 +85,17 @@ function(_rachis_shaders_embed target name backend binary symbol out_header)
 endfunction()
 
 # Runs slangc -reflection-json on one backend's compilation of the source; no code is generated.
-function(_rachis_shaders_reflect target name backend slang_target source entry stage stem defines out_json)
+function(_rachis_shaders_reflect target name backend slang_target source entry stage stem defines includes out_json)
     set(json "${stem}.${backend}.reflection.json")
     set(define_args)
     foreach(define IN LISTS defines)
         if(NOT define STREQUAL "")
             list(APPEND define_args "-D${define}")
         endif()
+    endforeach()
+    set(include_args)
+    foreach(directory IN LISTS includes)
+        list(APPEND include_args -I "${directory}")
     endforeach()
     set(target_args -target "${slang_target}")
     if(slang_target STREQUAL "spirv")
@@ -114,6 +121,7 @@ function(_rachis_shaders_reflect target name backend slang_target source entry s
             -Wno-39001
             -Wno-40100
             ${define_args}
+            ${include_args}
             -entry "${entry}"
             -stage "${stage}"
             -reflection-json "${json}"
@@ -206,6 +214,12 @@ function(rachis_add_shader target)
             set(enabled_${backend} OFF)
         endif()
     endforeach()
+    # Every compiler run for HLSL and Slang gets the RachisRHI include directory, so a shader can include
+    # Rachis/DrawIndex.hlsli.
+    get_target_property(shader_includes Rachis::RHI RACHIS_SHADER_INCLUDE_DIR)
+    if(NOT shader_includes)
+        set(shader_includes)
+    endif()
     if(language STREQUAL "GLSL" AND NOT enabled_VULKAN)
         message(FATAL_ERROR
             "rachis_add_shader: GLSL shaders compile for Vulkan only, and Rachis::RHI was built without Vulkan. "
@@ -277,6 +291,7 @@ function(rachis_add_shader target)
     set(cases)
     set(reflections)
     set(layouts)
+    set(bytecodes)
 
     set(spirv_reflections)
     if(enabled_D3D12)
@@ -287,6 +302,7 @@ function(rachis_add_shader target)
                 STAGE "${SHADER_STAGE}"
                 OUTPUT "${binary_stem}.dxil"
                 DEFINES RACHIS_D3D12=1 ${SHADER_DEFINES}
+                INCLUDE_DIRECTORIES ${shader_includes}
                 COMMENT "Compiling DXIL ${SHADER_NAME} for ${target}"
             )
         else()
@@ -296,14 +312,18 @@ function(rachis_add_shader target)
                 PROFILE "${dxc_profile}"
                 OUTPUT "${binary_stem}.dxil"
                 DEFINES RACHIS_D3D12=1 ${SHADER_DEFINES}
+                INCLUDE_DIRECTORIES ${shader_includes}
                 COMMENT "Compiling DXIL ${SHADER_NAME} for ${target}"
             )
         endif()
         _rachis_shaders_embed("${target}" "${SHADER_NAME}" d3d12 "${binary_stem}.dxil" "${symbol_stem}_dxil" header)
         if(SHADER_REFLECT)
             _rachis_shaders_reflect("${target}" "${SHADER_NAME}" d3d12 hlsl "${SHADER_SOURCE}" "${SHADER_ENTRY}"
-                "${SHADER_STAGE}" "${binary_stem}" "RACHIS_D3D12=1;${SHADER_DEFINES}" reflection)
+                "${SHADER_STAGE}" "${binary_stem}" "RACHIS_D3D12=1;${SHADER_DEFINES}" "${shader_includes}" reflection)
             list(APPEND reflections "d3d12=${reflection}")
+            # slangc reflects every resource the source declares; the DXIL tells whether this entry point reads
+            # the draw index.
+            list(APPEND bytecodes "d3d12=${binary_stem}.dxil")
         endif()
         list(APPEND headers "${header}")
         string(APPEND includes "#include \"${SHADER_NAME}.d3d12.h\"\n")
@@ -322,6 +342,7 @@ function(rachis_add_shader target)
                 STAGE "${SHADER_STAGE}"
                 OUTPUT "${binary_stem}.spv"
                 DEFINES RACHIS_VULKAN=1 __spirv__=1 ${SHADER_DEFINES}
+                INCLUDE_DIRECTORIES ${shader_includes}
                 COMMENT "Compiling SPIR-V ${SHADER_NAME} for ${target}"
             )
         elseif(language STREQUAL "GLSL")
@@ -340,6 +361,7 @@ function(rachis_add_shader target)
                 PROFILE "${dxc_profile}"
                 OUTPUT "${binary_stem}.spv"
                 DEFINES RACHIS_VULKAN=1 ${SHADER_DEFINES}
+                INCLUDE_DIRECTORIES ${shader_includes}
                 COMMENT "Compiling SPIR-V ${SHADER_NAME} for ${target}"
             )
         endif()
@@ -351,11 +373,13 @@ function(rachis_add_shader target)
         elseif(SHADER_REFLECT)
             # dxc -spirv defines __spirv__; define it for slangc too, so both see the same source.
             _rachis_shaders_reflect("${target}" "${SHADER_NAME}" vulkan spirv "${SHADER_SOURCE}" "${SHADER_ENTRY}"
-                "${SHADER_STAGE}" "${binary_stem}" "RACHIS_VULKAN=1;__spirv__=1;${SHADER_DEFINES}" reflection)
+                "${SHADER_STAGE}" "${binary_stem}" "RACHIS_VULKAN=1;__spirv__=1;${SHADER_DEFINES}" "${shader_includes}"
+                reflection)
             list(APPEND reflections "vulkan=${reflection}")
             # dxc's relaxed std140 and std430 rules differ from Slang's, so Vulkan data layouts come from the
             # SPIR-V the compiler emitted.
             list(APPEND layouts "vulkan=${binary_stem}.spv")
+            list(APPEND bytecodes "vulkan=${binary_stem}.spv")
         endif()
         list(APPEND headers "${header}")
         string(APPEND includes "#include \"${SHADER_NAME}.vulkan.h\"\n")
@@ -371,17 +395,19 @@ function(rachis_add_shader target)
             STAGE "${SHADER_STAGE}"
             OUTPUT "${binary_stem}.metallib"
             DEFINES ${SHADER_DEFINES}
+            INCLUDE_DIRECTORIES ${shader_includes}
             COMMENT "Compiling the Metal library ${SHADER_NAME} for ${target}"
         )
         _rachis_shaders_embed("${target}" "${SHADER_NAME}" metal "${binary_stem}.pnms" "${symbol_stem}_pnms" header)
         if(SHADER_REFLECT)
             # Metal's logical sets and bindings follow the SPIR-V layout, as RachisShaderBinaryTool plans them.
             _rachis_shaders_reflect("${target}" "${SHADER_NAME}" metal spirv "${SHADER_SOURCE}" "${SHADER_ENTRY}"
-                "${SHADER_STAGE}" "${binary_stem}" "RACHIS_METAL=1;${SHADER_DEFINES}" reflection)
+                "${SHADER_STAGE}" "${binary_stem}" "RACHIS_METAL=1;${SHADER_DEFINES}" "${shader_includes}" reflection)
             list(APPEND reflections "metal=${reflection}")
             # Slang compiles Metal itself, so its Metal reflection gives the data layouts.
             _rachis_shaders_reflect("${target}" "${SHADER_NAME}" metal-layout metal "${SHADER_SOURCE}"
-                "${SHADER_ENTRY}" "${SHADER_STAGE}" "${binary_stem}" "RACHIS_METAL=1;${SHADER_DEFINES}" layout)
+                "${SHADER_ENTRY}" "${SHADER_STAGE}" "${binary_stem}" "RACHIS_METAL=1;${SHADER_DEFINES}" "${shader_includes}"
+                layout)
             list(APPEND layouts "metal=${layout}")
         endif()
         list(APPEND headers "${header}")
@@ -414,6 +440,11 @@ function(rachis_add_shader target)
         endforeach()
         foreach(item IN LISTS spirv_reflections)
             list(APPEND reflection_args --spirv-reflection "${item}")
+            string(REGEX REPLACE "^[a-z0-9]+=" "" file "${item}")
+            list(APPEND reflection_files "${file}")
+        endforeach()
+        foreach(item IN LISTS bytecodes)
+            list(APPEND reflection_args --bytecode "${item}")
             string(REGEX REPLACE "^[a-z0-9]+=" "" file "${item}")
             list(APPEND reflection_files "${file}")
         endforeach()

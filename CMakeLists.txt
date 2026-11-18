@@ -981,6 +981,27 @@ if(RACHIS_ENABLE_VULKAN AND rachis_build_tests)
         OUTPUT "${rachis_rhi_spirv_dir}/TaskMeshWorkload.ps.spv"
         COMMENT "Cooking RHI test Vulkan SPIR-V TaskMeshWorkload.ps"
     )
+    foreach(rachis_draw_index_entry IN ITEMS
+            drawIndexVertex:vs_6_0:DrawIndex.vs plainVertex:vs_6_0:DrawIndex.plain.vs
+            drawIndexMesh:ms_6_5:DrawIndex.ms recordPixel:ps_6_0:DrawIndex.ps)
+        string(REPLACE ":" ";" rachis_draw_index_parts "${rachis_draw_index_entry}")
+        list(GET rachis_draw_index_parts 0 rachis_draw_index_name)
+        list(GET rachis_draw_index_parts 1 rachis_draw_index_profile)
+        list(GET rachis_draw_index_parts 2 rachis_draw_index_output)
+        set(rachis_draw_index_options)
+        if(rachis_draw_index_profile STREQUAL "ms_6_5")
+            set(rachis_draw_index_options -fspv-extension=SPV_EXT_mesh_shader)
+        endif()
+        rachis_cook_dxc_spirv(
+            SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/DrawIndex.hlsl"
+            ENTRY ${rachis_draw_index_name}
+            PROFILE ${rachis_draw_index_profile}
+            OUTPUT "${rachis_rhi_spirv_dir}/${rachis_draw_index_output}.spv"
+            OPTIONS ${rachis_draw_index_options}
+            INCLUDE_DIRECTORIES "${rachis_rhi_public_include_dir}"
+            COMMENT "Cooking RHI test Vulkan SPIR-V ${rachis_draw_index_output}"
+        )
+    endforeach()
     rachis_cook_dxc_spirv(
         SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/RayQueryWorkload.hlsl"
         ENTRY main
@@ -1127,6 +1148,10 @@ if(RACHIS_ENABLE_VULKAN AND rachis_build_tests)
             "${rachis_rhi_spirv_dir}/TaskMeshWorkload.ms.spv"
             "${rachis_rhi_spirv_dir}/TaskMeshWorkload.no-task.ms.spv"
             "${rachis_rhi_spirv_dir}/TaskMeshWorkload.ps.spv"
+            "${rachis_rhi_spirv_dir}/DrawIndex.vs.spv"
+            "${rachis_rhi_spirv_dir}/DrawIndex.plain.vs.spv"
+            "${rachis_rhi_spirv_dir}/DrawIndex.ms.spv"
+            "${rachis_rhi_spirv_dir}/DrawIndex.ps.spv"
             "${rachis_rhi_spirv_dir}/RayQueryWorkload.spv"
             "${rachis_rhi_spirv_dir}/RayTracingPipeline.raygen.spv"
             "${rachis_rhi_spirv_dir}/RayTracingPipeline.miss.spv"
@@ -1573,6 +1598,9 @@ set_target_properties(RachisRHI PROPERTIES
     RACHIS_ENABLE_METAL "${RACHIS_ENABLE_METAL}"
     EXPORT_PROPERTIES "RACHIS_ENABLE_D3D12;RACHIS_ENABLE_VULKAN;RACHIS_ENABLE_METAL"
 )
+# rachis_add_shader passes this directory to the shader compilers, so shaders can include Rachis/DrawIndex.hlsli.
+# It is not exported: RachisConfig.cmake sets it to the installed include directory.
+set_target_properties(RachisRHI PROPERTIES RACHIS_SHADER_INCLUDE_DIR "${rachis_rhi_public_include_dir}")
 
 target_include_directories(RachisRHI
     PUBLIC
@@ -2154,7 +2182,7 @@ if(rachis_build_tests)
     set(rachis_rhi_test_dxil_outputs)
     set(rachis_rhi_test_dxil_sources)
     function(rachis_rhi_test_dxil name source profile)
-        cmake_parse_arguments(DXIL "" "ENTRY" "OPTIONS" ${ARGN})
+        cmake_parse_arguments(DXIL "" "ENTRY" "OPTIONS;INCLUDE_DIRECTORIES" ${ARGN})
         set(output "${rachis_rhi_dxil_dir}/${name}")
         rachis_cook_dxc_dxil(
             SOURCE "${source}"
@@ -2162,6 +2190,7 @@ if(rachis_build_tests)
             PROFILE "${profile}"
             OUTPUT "${output}"
             OPTIONS ${DXIL_OPTIONS}
+            INCLUDE_DIRECTORIES ${DXIL_INCLUDE_DIRECTORIES}
             COMMENT "Compiling DXIL ${name}"
         )
         set(rachis_rhi_test_dxil_outputs ${rachis_rhi_test_dxil_outputs} "${output}" PARENT_SCOPE)
@@ -2236,6 +2265,7 @@ if(rachis_build_tests)
         tests/d3d12/rendering/GeometryShaderContractTests.cpp
         tests/d3d12/rendering/GraphicsContractTests.cpp
         tests/d3d12/rendering/IndependentStencilReferenceContractTests.cpp
+        tests/d3d12/rendering/DrawIndexContractTests.cpp
         tests/d3d12/rendering/IndirectDrawContractTests.cpp
         tests/d3d12/rendering/LayeredRenderingContractTests.cpp
         tests/d3d12/rendering/LogicOperationContractTests.cpp
@@ -2329,6 +2359,7 @@ if(rachis_build_tests)
         tests/vulkan/raytracing/VulkanRayQueryContractTests.cpp
         tests/vulkan/raytracing/VulkanRayTracingPipelineContractTests.cpp
         tests/vulkan/rendering/VulkanGraphicsContractTests.cpp
+        tests/vulkan/rendering/VulkanDrawIndexContractTests.cpp
         tests/vulkan/rendering/VulkanHeadlessParityContractTests.cpp
         tests/vulkan/rendering/VulkanIndirectContractTests.cpp
         tests/vulkan/rendering/VulkanMeshShaderContractTests.cpp
@@ -2398,6 +2429,10 @@ if(rachis_build_tests)
             RACHIS_TEST_MESH_SHADER_PATH="${rachis_rhi_dxil_dir}/MeshShader.ms.dxil"
             RACHIS_TEST_MESH_NO_TASK_SHADER_PATH="${rachis_rhi_dxil_dir}/MeshShader.no-task.ms.dxil"
             RACHIS_TEST_MESH_PIXEL_SHADER_PATH="${rachis_rhi_dxil_dir}/MeshShader.ps.dxil"
+            RACHIS_TEST_DRAW_INDEX_VERTEX_SHADER_PATH="${rachis_rhi_dxil_dir}/DrawIndex.vs.dxil"
+            RACHIS_TEST_DRAW_INDEX_PLAIN_VERTEX_SHADER_PATH="${rachis_rhi_dxil_dir}/DrawIndex.plain.vs.dxil"
+            RACHIS_TEST_DRAW_INDEX_MESH_SHADER_PATH="${rachis_rhi_dxil_dir}/DrawIndex.ms.dxil"
+            RACHIS_TEST_DRAW_INDEX_PIXEL_SHADER_PATH="${rachis_rhi_dxil_dir}/DrawIndex.ps.dxil"
             RACHIS_TEST_DUAL_SOURCE_PIXEL_SHADER_PATH="${rachis_rhi_dxil_dir}/DualSourceBlend.ps.dxil"
             RACHIS_TEST_RASTERIZER_ORDERED_STORAGE_PIXEL_SHADER_PATH="${rachis_rhi_dxil_dir}/RasterizerOrderedStorage.ps.dxil"
             RACHIS_TEST_FRAGMENT_PRIMITIVE_ID_VERTEX_SHADER_PATH="${rachis_rhi_dxil_dir}/FragmentPrimitiveId.vs.dxil"
@@ -2516,6 +2551,17 @@ if(rachis_build_tests)
     rachis_rhi_test_dxil(MeshShader.ms.dxil "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MeshShader.hlsl" ms_6_5 ENTRY meshMain)
     rachis_rhi_test_dxil(MeshShader.no-task.ms.dxil "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MeshShader.hlsl" ms_6_5 ENTRY meshNoTask)
     rachis_rhi_test_dxil(MeshShader.ps.dxil "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MeshShader.hlsl" ps_6_5 ENTRY meshPixel)
+    foreach(rachis_draw_index_entry IN ITEMS
+            drawIndexVertex:vs_6_0:DrawIndex.vs plainVertex:vs_6_0:DrawIndex.plain.vs
+            drawIndexMesh:ms_6_5:DrawIndex.ms recordPixel:ps_6_5:DrawIndex.ps)
+        string(REPLACE ":" ";" rachis_draw_index_parts "${rachis_draw_index_entry}")
+        list(GET rachis_draw_index_parts 0 rachis_draw_index_name)
+        list(GET rachis_draw_index_parts 1 rachis_draw_index_profile)
+        list(GET rachis_draw_index_parts 2 rachis_draw_index_output)
+        rachis_rhi_test_dxil(${rachis_draw_index_output}.dxil "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/DrawIndex.hlsl"
+            ${rachis_draw_index_profile} ENTRY ${rachis_draw_index_name}
+            INCLUDE_DIRECTORIES "${rachis_rhi_public_include_dir}")
+    endforeach()
     rachis_rhi_test_dxil(DualSourceBlend.ps.dxil "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/DualSourceBlend.hlsl" ps_6_0 ENTRY main)
     rachis_rhi_test_dxil(RasterizerOrderedStorage.ps.dxil "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/RasterizerOrderedStorage.hlsl" ps_6_0 ENTRY main)
     rachis_rhi_test_dxil(FragmentPrimitiveId.vs.dxil "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/FragmentShaderBuiltins.hlsl" vs_6_0 ENTRY primitiveIdVertex)
@@ -2609,6 +2655,7 @@ if(rachis_build_tests)
             tests/vulkan/raytracing/VulkanRayQueryContractTests.cpp
             tests/vulkan/raytracing/VulkanRayTracingPipelineContractTests.cpp
             tests/vulkan/rendering/VulkanGraphicsContractTests.cpp
+            tests/vulkan/rendering/VulkanDrawIndexContractTests.cpp
             tests/vulkan/rendering/VulkanHeadlessParityContractTests.cpp
             tests/vulkan/rendering/VulkanIndirectContractTests.cpp
             tests/vulkan/rendering/VulkanMeshShaderContractTests.cpp
@@ -2854,6 +2901,29 @@ if(rachis_build_tests)
                     REFLECT)
             endforeach()
         endif()
+        if(NOT RACHIS_ENABLE_METAL)
+            # Shaders that include Rachis/DrawIndex.hlsli through the include directory rachis_add_shader passes.
+            # Metal cannot read the draw index yet, so Metal builds leave them out.
+            rachis_add_shader(RachisRHITests
+                NAME GeneratedDrawIndexVertex
+                SOURCE tests/shaders/DrawIndex.hlsl
+                ENTRY drawIndexVertex
+                STAGE vertex
+                REFLECT)
+            rachis_add_shader(RachisRHITests
+                NAME GeneratedDrawIndexVertexSlang
+                SOURCE tests/shaders/DrawIndex.hlsl
+                LANGUAGE SLANG
+                ENTRY drawIndexVertex
+                STAGE vertex
+                REFLECT)
+            rachis_add_shader(RachisRHITests
+                NAME GeneratedDrawIndexPixel
+                SOURCE tests/shaders/DrawIndex.hlsl
+                ENTRY recordPixel
+                STAGE pixel
+                REFLECT)
+        endif()
         add_executable(RachisFakeSlangc tests/support/FakeSlangc.cpp)
         rachis_configure_rhi_target(RachisFakeSlangc)
         set_target_properties(RachisFakeSlangc PROPERTIES
@@ -2928,6 +2998,7 @@ if(RACHIS_INSTALL)
 set(rachis_package_cmake_dir "${CMAKE_INSTALL_LIBDIR}/cmake/Rachis")
 set(rachis_private_library_dir "${CMAKE_INSTALL_LIBDIR}/Rachis")
 set(rachis_runtime_dir "${CMAKE_INSTALL_BINDIR}")
+set(rachis_include_dir "${CMAKE_INSTALL_INCLUDEDIR}")
 
 function(rachis_install_bundled_archive name target)
     get_target_property(type ${target} TYPE)
@@ -2968,7 +3039,7 @@ install(TARGETS ${rachis_package_targets} EXPORT RachisTargets
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
     INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 install(DIRECTORY include/Rachis DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
-    FILES_MATCHING PATTERN "*.h")
+    FILES_MATCHING PATTERN "*.h" PATTERN "*.hlsli")
 install(FILES LICENSE THIRD_PARTY_NOTICES.md README.md CHANGELOG.md
     DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/Rachis")
 install(DIRECTORY docs
@@ -2985,7 +3056,7 @@ install(DIRECTORY third_party/
 configure_package_config_file(cmake/RachisConfig.cmake.in
     "${CMAKE_CURRENT_BINARY_DIR}/RachisConfig.cmake"
     INSTALL_DESTINATION "${rachis_package_cmake_dir}"
-    PATH_VARS rachis_private_library_dir rachis_runtime_dir)
+    PATH_VARS rachis_private_library_dir rachis_runtime_dir rachis_include_dir)
 write_basic_package_version_file("${CMAKE_CURRENT_BINARY_DIR}/RachisConfigVersion.cmake"
     VERSION "${RACHIS_PACKAGE_VERSION}" COMPATIBILITY SameMinorVersion)
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/RachisConfig.cmake"

@@ -44,6 +44,7 @@ The table below shows which backends *can* report each feature (subject to adapt
 | --- | --- | --- | --- |
 | `rayTracing`, `rayQuery` | Yes | Yes | No |
 | `meshShaders`, `taskShaders` | Yes | Yes | No |
+| `shaderDrawIndex` ([draw index in indirect calls](using.md#draw-index-in-indirect-calls)) | Yes | Yes, with `shaderDrawParameters` | No |
 | `geometryShaders`, `tessellationShaders` | Yes | Yes | No |
 | `variableRateShading`, `variableRateShadingTier2` | Yes | Yes | No |
 | `sparseBuffers`, `sparseTextures` | Yes | No | No |
@@ -67,7 +68,7 @@ A Vulkan device must support Vulkan 1.3 with:
 - **Formats:** `RGBA8` and `BGRA8` (with their sRGB variants), `D32`, at least one packed depth-stencil format, `RGBA16F`, and `R32` unsigned.
 - **Minimum limits:** 2D images up to `8192` texels, `4` binding sets, `128` bytes of push constants, `8` color attachments, and `256` compute invocations per workgroup.
 
-When provided by the driver, RachisRHI also enables swapchain maintenance, present wait, device fault extensions, `VK_KHR_maintenance5`, and `shaderDrawParameters` (required by shader modules declaring SPIR-V `DrawParameters`, such as vertex shaders compiled via `rachis_add_shader` that read `SV_VertexID` or `SV_InstanceID`; see [Shaders](using.md#shaders)).
+When provided by the driver, RachisRHI also enables swapchain maintenance, present wait, device fault extensions, `VK_KHR_maintenance5`, and `shaderDrawParameters` (required by shader modules declaring SPIR-V `DrawParameters`, such as vertex shaders compiled via `rachis_add_shader` that read `SV_VertexID` or `SV_InstanceID`; see [Shaders](using.md#shaders)). `DeviceCapabilities::shaderDrawIndex` is true only when the driver provides `shaderDrawParameters`.
 
 ### Native queue mapping
 

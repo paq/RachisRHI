@@ -3099,6 +3099,7 @@ namespace rachis::vulkan
         capabilities.indirectDraws = true;
         capabilities.multiDrawIndirect = record.multiDrawIndirect;
         capabilities.drawIndirectCount = record.drawIndirectCount;
+        capabilities.shaderDrawIndex = record.shaderDrawParameters;
         publishBindingArrayCapabilities(capabilities, record);
         publishShaderCapabilities(capabilities, record);
 

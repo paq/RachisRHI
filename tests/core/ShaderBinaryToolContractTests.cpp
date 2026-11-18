@@ -721,6 +721,72 @@ TEST_CASE("RachisShaderBinaryTool cook-metallib stops when a slangc reflection p
     }
 }
 
+TEST_CASE("RachisShaderBinaryTool cook-metallib passes every include directory to each slangc run",
+          "[size:small][rhi][shader][tooling]")
+{
+    ScopedTempDirectory const temp;
+    const auto slangc = std::filesystem::path(RACHIS_FAKE_SLANGC_PATH).lexically_normal();
+    REQUIRE(std::filesystem::is_regular_file(slangc));
+    const auto source = temp.path / "shader.slang";
+    writeBinaryFile(source, asBytes(fakeCookSource));
+    const auto first = temp.path / "first include";
+    const auto second = temp.path / "second";
+    const auto cook = [&](std::string_view expectedIncludes, const CookOutputs& outputs) {
+        return runShaderBinaryTool(temp.path,
+                                   {"cook-metallib",
+                                    "--slangc",
+                                    slangc,
+                                    "--source",
+                                    source,
+                                    "--entry",
+                                    "computeMain",
+                                    "--output",
+                                    outputs.metallib,
+                                    "--json",
+                                    outputs.json,
+                                    "--pnms",
+                                    outputs.pnms,
+                                    "--include-dir",
+                                    first,
+                                    "--define",
+                                    "FAKE_SLANGC_INCLUDES=" + std::string(expectedIncludes),
+                                    "--include-dir",
+                                    second});
+    };
+
+    const auto cooked = cookOutputsIn(temp.path / "cooked");
+    const auto result = cook("2", cooked);
+    INFO("stderr=" << result.stderrText);
+    REQUIRE(result.status == 0);
+    CHECK(result.stderrText.contains("fake slangc: metallib includes " + first.string()));
+    CHECK(result.stderrText.contains("fake slangc: metallib includes " + second.string()));
+    CHECK(std::filesystem::is_regular_file(cooked.pnms));
+
+    const auto mismatched = cookOutputsIn(temp.path / "mismatched");
+    const auto rejected = cook("3", mismatched);
+    INFO("stderr=" << rejected.stderrText);
+    CHECK(rejected.status != 0);
+    CHECK(rejected.stderrText.contains("fake slangc: spirv-probe got 2 include directories"));
+    CHECK_FALSE(anyCookOutputExists(mismatched));
+
+    const auto missing = runShaderBinaryTool(temp.path,
+                                             {"cook-metallib",
+                                              "--slangc",
+                                              slangc,
+                                              "--source",
+                                              source,
+                                              "--entry",
+                                              "computeMain",
+                                              "--output",
+                                              cooked.metallib,
+                                              "--json",
+                                              cooked.json,
+                                              "--pnms",
+                                              cooked.pnms,
+                                              "--include-dir"});
+    CHECK(missing.status != 0);
+    CHECK(missing.stderrText.contains("Missing value for argument: --include-dir"));
+}
 TEST_CASE("RachisShaderBinaryTool cook-metallib reports the command when slangc cannot start",
           "[size:small][rhi][shader][tooling]")
 {

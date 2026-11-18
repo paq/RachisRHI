@@ -591,7 +591,25 @@ namespace rachis::d3d12
             record.vertexInputLocations = std::move(*vertexInputLocations);
             record.workgroupSize = desc.workgroupSize;
             record.shaderRecordConstants = desc.shaderRecordConstants;
+            record.drawIndex = desc.drawIndex;
             return record;
+        }
+
+        [[nodiscard]] Status validateDrawIndexBytecode(std::span<const std::byte> bytecode, bool declared)
+        {
+            const auto binds = dxil::bindsConstantBuffer(bytecode, drawIndexRegister, drawIndexRegisterSpace);
+            if (!binds || !binds->has_value() || **binds == declared)
+            {
+                return {};
+            }
+            return std::unexpected(Error{
+                ErrorCode::invalidArgument,
+                0,
+                declared ? "The shader interface declares the draw index, but the DXIL binds no constant buffer at "
+                           "register b0, space5."
+                         : "The DXIL binds the draw-index constant buffer at register b0, space5, but the shader "
+                           "interface does not declare the draw index.",
+            });
         }
 
         [[nodiscard]] Status validateVertexInterface(const ShaderModuleRecord& shader,
@@ -1234,7 +1252,8 @@ namespace rachis::d3d12
         }
 
         [[nodiscard]] RootSignaturePlan planLayoutRootSignature(std::span<const NativeBindingLayout> layouts,
-                                                                std::uint32_t pushConstantSize)
+                                                                std::uint32_t pushConstantSize,
+                                                                bool drawIndex)
         {
             std::array<std::vector<RootSignatureSlotEntryInput>, maxBindingSets> planEntries;
             std::array<RootSignatureSlotInput, maxBindingSets> planSlots{};
@@ -1250,8 +1269,8 @@ namespace rachis::d3d12
                 }
                 planSlots[setIndex] = RootSignatureSlotInput{.entries = planEntries[setIndex]};
             }
-            return planRootSignature(std::span<const RootSignatureSlotInput>{planSlots.data(), layouts.size()},
-                                     pushConstantSize);
+            return planRootSignature(
+                std::span<const RootSignatureSlotInput>{planSlots.data(), layouts.size()}, pushConstantSize, drawIndex);
         }
 
         struct DescriptorTable final
@@ -1345,6 +1364,20 @@ namespace rachis::d3d12
             };
         }
 
+        [[nodiscard]] constexpr D3D12_ROOT_PARAMETER1 nativeDrawIndexParameter() noexcept
+        {
+            return {
+                .ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+                .Constants =
+                    {
+                        .ShaderRegister = drawIndexRegister,
+                        .RegisterSpace = drawIndexRegisterSpace,
+                        .Num32BitValues = 1,
+                    },
+                .ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL,
+            };
+        }
+
         [[nodiscard]] D3D12_ROOT_PARAMETER1 nativeRootDescriptorParameter(const PromotedDynamicRootDescriptor& promoted,
                                                                           bool hasRayTracingStage) noexcept
         {
@@ -1398,6 +1431,7 @@ namespace rachis::d3d12
             std::vector<D3D12_ROOT_PARAMETER1> parameters;
             std::vector<NativePipelineLayoutSlot> slots;
             std::uint32_t pushConstantRootParameter = invalidRootParameter;
+            std::uint32_t drawIndexRootParameter = invalidRootParameter;
         };
 
         [[nodiscard]] RootParameterLayout buildRootParameters(std::span<const NativeBindingLayout> layouts,
@@ -1413,6 +1447,11 @@ namespace rachis::d3d12
             {
                 result.pushConstantRootParameter = static_cast<std::uint32_t>(result.parameters.size());
                 result.parameters.push_back(nativePushConstantParameter(pushConstantSize));
+            }
+            if (rootPlan.drawIndexDwords != 0)
+            {
+                result.drawIndexRootParameter = static_cast<std::uint32_t>(result.parameters.size());
+                result.parameters.push_back(nativeDrawIndexParameter());
             }
             for (const auto& promoted : rootPlan.promotedRootDescriptors)
             {
@@ -1492,7 +1531,7 @@ namespace rachis::d3d12
                 return std::unexpected(std::move(pushConstantSize.error()));
             }
             const bool hasRayTracingStage = hasRayTracingVisibility(layouts, desc.pushConstantRanges);
-            const auto rootPlan = planLayoutRootSignature(layouts, *pushConstantSize);
+            const auto rootPlan = planLayoutRootSignature(layouts, *pushConstantSize, desc.drawIndex);
             const auto tableRanges = buildDescriptorTableRanges(layouts, rootPlan);
 
             auto record = std::make_shared<PipelineLayoutRecord>();
@@ -1502,6 +1541,7 @@ namespace rachis::d3d12
             auto rootParameters =
                 buildRootParameters(layouts, rootPlan, tableRanges, *pushConstantSize, hasRayTracingStage);
             record->pushConstantRootParameter = rootParameters.pushConstantRootParameter;
+            record->drawIndexRootParameter = rootParameters.drawIndexRootParameter;
             record->slots = std::move(rootParameters.slots);
 
             auto serialized = serializeRootSignature(rootParameters.parameters);
@@ -1580,6 +1620,14 @@ namespace rachis::d3d12
                     ErrorCode::validationError,
                     0,
                     "The pipeline layout's stage-visible push constants do not exactly match the shader interface.",
+                });
+            }
+            if (shaderInterface.drawIndex && layout.drawIndexRootParameter == invalidRootParameter)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::validationError,
+                    0,
+                    "The shader reads the draw index, but the pipeline layout does not reserve it.",
                 });
             }
             return {};
@@ -2140,6 +2188,60 @@ namespace rachis::d3d12
         return signature;
     }
 
+    Result<ComPtr<ID3D12CommandSignature>> PipelineManager::Impl::drawIndexSignature(PipelineLayoutRecord& layout,
+                                                                                     DrawIndexCommandKind kind,
+                                                                                     std::uint32_t stride)
+    {
+        const auto key = (static_cast<std::uint64_t>(stride) << 2U) | static_cast<std::uint64_t>(kind);
+        const std::scoped_lock lock(layout.drawIndexSignatureMutex);
+        if (const auto found = layout.drawIndexSignatures.find(key); found != layout.drawIndexSignatures.end())
+        {
+            return found->second;
+        }
+
+        const D3D12_INDIRECT_ARGUMENT_TYPE commandType =
+            kind == DrawIndexCommandKind::draw          ? D3D12_INDIRECT_ARGUMENT_TYPE_DRAW
+            : kind == DrawIndexCommandKind::drawIndexed ? D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED
+                                                        : D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_MESH;
+        std::array<D3D12_INDIRECT_ARGUMENT_DESC, 2> arguments{};
+        arguments[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
+        arguments[0].Constant = {
+            .RootParameterIndex = layout.drawIndexRootParameter,
+            .DestOffsetIn32BitValues = 0,
+            .Num32BitValuesToSet = 1,
+        };
+        arguments[1].Type = commandType;
+        const D3D12_COMMAND_SIGNATURE_DESC desc{
+            .ByteStride = stride,
+            .NumArgumentDescs = static_cast<UINT>(arguments.size()),
+            .pArgumentDescs = arguments.data(),
+            .NodeMask = 0,
+        };
+        ComPtr<ID3D12CommandSignature> signature;
+        const HRESULT result =
+            device->CreateCommandSignature(&desc, layout.rootSignature.Get(), IID_PPV_ARGS(&signature));
+        if (FAILED(result))
+        {
+            return std::unexpected(
+                nativeError(result == E_OUTOFMEMORY ? ErrorCode::outOfMemory : ErrorCode::nativeFailure,
+                            result,
+                            "ID3D12Device::CreateCommandSignature(draw index)"));
+        }
+        try
+        {
+            layout.drawIndexSignatures.emplace(key, signature);
+        }
+        catch (const std::bad_alloc&)
+        {
+            return std::unexpected(Error{
+                ErrorCode::outOfMemory,
+                0,
+                "Failed to cache the draw-index command signature.",
+            });
+        }
+        return signature;
+    }
+
     Result<std::shared_ptr<PipelineCacheRecord>> PipelineManager::Impl::pipelineCache(PipelineCacheHandle cache,
                                                                                       PipelineCacheKey key)
     {
@@ -2352,6 +2454,11 @@ namespace rachis::d3d12
 
         if (!hasLibrary)
         {
+            if (auto drawIndex = validateDrawIndexBytecode(desc.bytecode, record->shaderInterface.drawIndex);
+                !drawIndex)
+            {
+                return std::unexpected(std::move(drawIndex.error()));
+            }
             record->directBytecode.assign(desc.bytecode.begin(), desc.bytecode.end());
             record->bytecode = &record->directBytecode;
             const std::scoped_lock lock(impl_->mutex);
@@ -2381,6 +2488,11 @@ namespace rachis::d3d12
                 "The shader library does not contain the requested stage, entry point, and specialization values.",
             });
         }
+        if (auto drawIndex = validateDrawIndexBytecode(foundEntry->bytecode, record->shaderInterface.drawIndex);
+            !drawIndex)
+        {
+            return std::unexpected(std::move(drawIndex.error()));
+        }
         record->bytecode = &foundEntry->bytecode;
         record->library = *foundLibrary;
         return impl_->shaderModules.emplace(std::move(record));
@@ -2407,6 +2519,7 @@ namespace rachis::d3d12
             .vertexInputLocations = shaderInterface.vertexInputLocations,
             .workgroupSize = shaderInterface.workgroupSize,
             .shaderRecordConstants = shaderInterface.shaderRecordConstants,
+            .drawIndex = shaderInterface.drawIndex,
         };
         return snapshot;
     }
@@ -3450,6 +3563,11 @@ namespace rachis::d3d12
             record->dynamicDepthBias = desc.dynamicDepthBiasEnabled;
             record->depthBoundsTest = desc.depthStencil.depthBoundsTestEnabled;
             record->stencilEnabled = desc.depthStencil.stencilTestEnabled;
+            record->readsDrawIndex = std::ranges::any_of(
+                std::array{record->vertexShader.get(), record->taskShader.get(), record->meshShader.get()},
+                [](const ShaderModuleRecord* shader) {
+                    return shader != nullptr && shader->shaderInterface.drawIndex;
+                });
             record->label = desc.label;
             return record;
         }

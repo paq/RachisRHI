@@ -26,7 +26,7 @@ The RachisRHI test suite is organized by test scope (`core`, `portable`, backend
 | `c_abi/` | C11 interface in `rachis.h`, including pure C smoke test | Device for enabled backends |
 | `package/` | Installed CMake package & `add_subdirectory` embedding (`consumer/`, `subdirectories/`, `shadernames/`, `includes/`, `buildpaths/`, `config/`, [`examples/`](../examples), `CheckEmbeddedProject.cmake`) | Built package and device for examples |
 | `shaders/` | HLSL shader sources compiled for tests | — |
-| `support/` | Shared test helpers: device descriptors, window hosts, fault injection, contract bodies that several backends run (`FillAndClearContract.h` drives the `fillBuffer` and `clearStorageTexture` contracts in `d3d12/resources/` and `vulkan/resources/`), and a stand-in `slangc` | — |
+| `support/` | Shared test helpers: device descriptors, window hosts, fault injection, a stand-in `slangc`, and contract bodies that several backends run (`DrawIndexContract.h` for the draw index, `FillAndClearContract.h` for `fillBuffer` and `clearStorageTexture`) | — |
 
 ## Feature areas
 
@@ -117,7 +117,7 @@ ctest --test-dir out/build/macos-arm64-metal -C Debug -R "RachisRHI.Metal textur
 | `RachisPackageCrossCompiling` | `small` | Configures `package/subdirectories/` with cross-compiling variables set: verifies configure stops without `RACHIS_SHADER_BINARY_TOOL` and succeeds when pointing at the installed tool |
 | `RachisPackageConfig` | `small` | Configures `package/config/`, testing `find_package(Rachis COMPONENTS ...)` per target and confirming `RelWithDebInfo`/`MinSizeRel` select Release exports |
 | `RachisPackageShaderNames` | `small` | Builds and runs `package/shadernames/`, verifying per-target isolation when multiple targets call `rachis_add_shader` with the same `NAME` (`FillShader`), duplicate `NAME` errors, `REFLECT` failure without `slangc`, `LANGUAGE` errors for an unknown extension or language, and `STAGE` forwarding to `slangc` on Metal |
-| `RachisPackageShaderIncludes` | `small` | Builds `package/includes/` (nested shader includes in a space-containing path), modifies a nested header, and verifies rebuilds plus updated hashes and macOS SDK versions in `.key` files |
+| `RachisPackageShaderIncludes` | `small` | Builds `package/includes/` (nested shader includes in a space-containing path, and a shader that includes `Rachis/DrawIndex.hlsli` from the installed package), modifies a nested header, and verifies rebuilds plus updated hashes and macOS SDK versions in `.key` files |
 | `RachisPackageShaderBuildPaths` | `small` | Builds `package/buildpaths/` in a directory containing a comma (`build,comma`) and hashes the compiled `.dxil`/`.spv`/`.pnms` artifacts |
 | `RachisEmbeddedProject` | `small` | Configures `package/subdirectories/` via `add_subdirectory` (with CTest enabled): verifies no RachisRHI tests/test-shaders leak into CTest or CMake File API, checks `RachisShaderBinaryTool` stays in its binary dir, verifies cross-compiling error without `RACHIS_SHADER_BINARY_TOOL`, and hides `slangc` on non-Metal builds |
 

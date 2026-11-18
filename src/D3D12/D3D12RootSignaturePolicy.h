@@ -87,6 +87,8 @@ namespace rachis::d3d12
         std::vector<PromotedDynamicRootDescriptor> promotedRootDescriptors{};
         std::uint32_t pushConstantRootParameter = unpromotedRootParameter;
         std::uint32_t pushConstantDwords = 0;
+        std::uint32_t drawIndexRootParameter = unpromotedRootParameter;
+        std::uint32_t drawIndexDwords = 0;
         std::uint32_t totalRootParameters = 0;
         std::uint32_t totalRootDwords = 0;
     };
@@ -320,6 +322,10 @@ namespace rachis::d3d12
             {
                 plan.pushConstantRootParameter = nextRootParameter++;
             }
+            if (plan.drawIndexDwords != 0)
+            {
+                plan.drawIndexRootParameter = nextRootParameter++;
+            }
             for (auto& promoted : plan.promotedRootDescriptors)
             {
                 promoted.rootParameter = nextRootParameter++;
@@ -350,14 +356,16 @@ namespace rachis::d3d12
     } // namespace root_signature_detail
 
     [[nodiscard]] inline RootSignaturePlan planRootSignature(std::span<const RootSignatureSlotInput> slots,
-                                                             std::uint32_t pushConstantBytes)
+                                                             std::uint32_t pushConstantBytes,
+                                                             bool drawIndex = false)
     {
         RootSignaturePlan plan;
         plan.pushConstantDwords = (pushConstantBytes + 3U) / 4U;
+        plan.drawIndexDwords = drawIndex ? 1U : 0U;
         plan.slots.resize(slots.size());
 
         std::vector<root_signature_detail::BindingSetSummary> summaries(slots.size());
-        std::uint32_t totalDwords = plan.pushConstantDwords;
+        std::uint32_t totalDwords = plan.pushConstantDwords + plan.drawIndexDwords;
         std::size_t totalEligibleDynamic = 0;
         for (std::size_t setIndex = 0; setIndex < slots.size(); ++setIndex)
         {

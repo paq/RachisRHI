@@ -66,6 +66,7 @@ namespace rachis::vulkan
             std::vector<SpecializationConstant> specializationConstants;
             std::optional<ShaderRecordConstantRange> shaderRecordConstants;
             bool writesPointSize = false;
+            bool drawIndex = false;
             std::vector<detail::StageInterfaceVariable> stageOutputs;
             std::vector<detail::StageInterfaceVariable> stageInputs;
         };
@@ -97,6 +98,7 @@ namespace rachis::vulkan
             std::vector<std::uint32_t> vertexInputLocations;
             std::optional<ShaderWorkgroupSize> workgroupSize;
             std::optional<ShaderRecordConstantRange> shaderRecordConstants;
+            bool drawIndex = false;
         };
 
         struct ShaderKeepAlive final

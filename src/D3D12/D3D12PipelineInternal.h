@@ -105,6 +105,7 @@ namespace rachis::d3d12
         std::vector<std::uint32_t> vertexInputLocations;
         std::optional<ShaderWorkgroupSize> workgroupSize;
         std::optional<ShaderRecordConstantRange> shaderRecordConstants;
+        bool drawIndex = false;
     };
 
     struct ShaderModuleRecord final
@@ -119,6 +120,13 @@ namespace rachis::d3d12
         SpecializationSet specializationConstants;
     };
 
+    enum class DrawIndexCommandKind : std::uint32_t
+    {
+        draw,
+        drawIndexed,
+        dispatchMesh,
+    };
+
     struct PipelineLayoutRecord final
     {
         Microsoft::WRL::ComPtr<ID3D12RootSignature> rootSignature;
@@ -126,6 +134,9 @@ namespace rachis::d3d12
         std::vector<PushConstantRange> pushConstantRanges;
         std::uint32_t pushConstantRootParameter = invalidRootParameter;
         std::uint32_t pushConstantSize = 0;
+        std::uint32_t drawIndexRootParameter = invalidRootParameter;
+        std::mutex drawIndexSignatureMutex;
+        std::unordered_map<std::uint64_t, Microsoft::WRL::ComPtr<ID3D12CommandSignature>> drawIndexSignatures;
         std::string label;
     };
 
@@ -188,6 +199,7 @@ namespace rachis::d3d12
         bool dynamicDepthBias = false;
         bool depthBoundsTest = false;
         bool stencilEnabled = false;
+        bool readsDrawIndex = false;
         std::string label;
     };
 
@@ -587,6 +599,8 @@ namespace rachis::d3d12
                                                                                                std::uint32_t stride);
         [[nodiscard]] Result<Microsoft::WRL::ComPtr<ID3D12CommandSignature>> indirectMeshSignature(
             std::uint32_t stride);
+        [[nodiscard]] Result<Microsoft::WRL::ComPtr<ID3D12CommandSignature>> drawIndexSignature(
+            PipelineLayoutRecord& layout, DrawIndexCommandKind kind, std::uint32_t stride);
         [[nodiscard]] Result<std::shared_ptr<PipelineCacheRecord>> pipelineCache(PipelineCacheHandle cache,
                                                                                  PipelineCacheKey key);
         [[nodiscard]] Status validateGraphicsFixedFunctionState(const GraphicsPipelineDesc& desc) const;

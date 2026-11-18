@@ -518,6 +518,51 @@ TEST_CASE("D3D12 root-signature planner promotes scalar dynamic uniform buffers 
         CHECK(boundedPlan.slots[1].dynamicTableDescriptorCount == 1U);
         CHECK(boundedPlan.slots[1].dynamicTableOffsets[7] == 0U);
         CHECK(boundedPlan.slots[1].dynamicTableRootParameter == boundedPlan.slots[1].resourceRootParameter);
+
+        const auto drawIndexPlan = planRootSignature(exactFitSlots, 128, true);
+        CHECK(drawIndexPlan.totalRootDwords == maxRootSignatureDwords);
+        CHECK(drawIndexPlan.drawIndexDwords == 1U);
+        CHECK(drawIndexPlan.pushConstantRootParameter == 0U);
+        CHECK(drawIndexPlan.drawIndexRootParameter == 1U);
+        CHECK(drawIndexPlan.promotedRootDescriptors.size() == 15U);
+        REQUIRE_FALSE(drawIndexPlan.promotedRootDescriptors.empty());
+        CHECK(drawIndexPlan.promotedRootDescriptors.front().rootParameter == 2U);
+        CHECK(drawIndexPlan.slots[0].allDynamicBuffersPromoted());
+        CHECK_FALSE(drawIndexPlan.slots[0].hasResourceDescriptorTable);
+        CHECK_FALSE(drawIndexPlan.slots[1].allDynamicBuffersPromoted());
+        CHECK(drawIndexPlan.slots[1].promotedDynamicBufferCount == 7U);
+        CHECK(drawIndexPlan.slots[1].hasResourceDescriptorTable);
+        CHECK(drawIndexPlan.slots[1].dynamicRootParameters[7] == unpromotedRootParameter);
+        CHECK(drawIndexPlan.slots[1].resourceRootParameter == drawIndexPlan.totalRootParameters - 1U);
+    }
+
+    SECTION("the draw index takes one DWORD and the root parameter after the push constants")
+    {
+        const std::array entries{
+            RootSignatureSlotEntryInput{
+                .entry = {0, rachis::BindingType::dynamicUniformBuffer, rachis::ShaderStage::vertex, 1},
+                .descriptorOffset = 0,
+            },
+        };
+        const std::array slots{RootSignatureSlotInput{.entries = entries}};
+
+        const auto withoutPush = planRootSignature(slots, 0, true);
+        CHECK(withoutPush.pushConstantRootParameter == unpromotedRootParameter);
+        CHECK(withoutPush.drawIndexRootParameter == 0U);
+        CHECK(withoutPush.totalRootDwords == 3U);
+        CHECK(withoutPush.totalRootParameters == 2U);
+        CHECK(withoutPush.slots[0].dynamicRootParameters[0] == 1U);
+
+        const auto withPush = planRootSignature(slots, 8, true);
+        CHECK(withPush.pushConstantRootParameter == 0U);
+        CHECK(withPush.drawIndexRootParameter == 1U);
+        CHECK(withPush.totalRootDwords == 5U);
+        CHECK(withPush.slots[0].dynamicRootParameters[0] == 2U);
+
+        const auto withoutDrawIndex = planRootSignature(slots, 8);
+        CHECK(withoutDrawIndex.drawIndexRootParameter == unpromotedRootParameter);
+        CHECK(withoutDrawIndex.drawIndexDwords == 0U);
+        CHECK(withoutDrawIndex.totalRootDwords == 4U);
     }
 
     SECTION("static resources keep their table while unpromoted dynamic buffers get a separate per-bind table")

@@ -1711,3 +1711,58 @@ TEST_CASE("Device frontend rejects vertex layouts that break format alignment be
     CHECK(lost.error().code == ErrorCode::deviceLost);
     CHECK(raw->backendInvocations == 2 * acceptedLayouts.size());
 }
+
+TEST_CASE("Device frontend gates the draw index on shaderDrawIndex and on stages that can read it",
+          "[size:small][rhi][core][draw-index]")
+{
+    auto backend = std::make_unique<TrackingBackendDevice>();
+    auto* raw = backend.get();
+    auto device = rachis::detail::DeviceAccess::make(std::move(backend));
+    auto cb = makeCommandBuffer(raw->token);
+
+    const auto moduleReadingDrawIndex = [](ShaderStage stage) {
+        return ShaderModuleDesc{
+            .stage = stage,
+            .shaderInterface = rachis::ShaderInterfaceDesc{.drawIndex = true},
+        };
+    };
+    const auto checkCode = [](const auto& result, ErrorCode code) {
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().code == code);
+    };
+
+    checkCode(device.createShaderModule(moduleReadingDrawIndex(ShaderStage::vertex)), ErrorCode::unsupported);
+    checkCode(device.createShaderModule(moduleReadingDrawIndex(ShaderStage::mesh)), ErrorCode::unsupported);
+    checkCode(device.createPipelineLayout(PipelineLayoutDesc{.drawIndex = true}), ErrorCode::unsupported);
+    checkCode(device.drawIndirect(cb, IndirectDrawDesc{.drawIndexPrefix = true}), ErrorCode::unsupported);
+    checkCode(device.drawIndexedIndirect(cb, IndirectDrawDesc{.drawIndexPrefix = true}), ErrorCode::unsupported);
+    checkCode(device.dispatchMeshIndirect(cb, rachis::IndirectMeshDispatchDesc{.drawIndexPrefix = true}),
+              ErrorCode::unsupported);
+    for (const auto stage : {ShaderStage::pixel,
+                             ShaderStage::compute,
+                             ShaderStage::geometry,
+                             ShaderStage::hull,
+                             ShaderStage::domain,
+                             ShaderStage::rayGeneration})
+    {
+        checkCode(device.createShaderModule(moduleReadingDrawIndex(stage)), ErrorCode::invalidArgument);
+    }
+    CHECK(raw->backendInvocations == 0);
+
+    raw->caps.shaderDrawIndex = true;
+    for (const auto stage : {ShaderStage::vertex, ShaderStage::task, ShaderStage::mesh})
+    {
+        CHECK(device.createShaderModule(moduleReadingDrawIndex(stage)).has_value());
+    }
+    checkCode(device.createShaderModule(moduleReadingDrawIndex(ShaderStage::pixel)), ErrorCode::invalidArgument);
+    CHECK(device.createPipelineLayout(PipelineLayoutDesc{.drawIndex = true}).has_value());
+    CHECK(device.drawIndirect(cb, IndirectDrawDesc{.drawIndexPrefix = true}).has_value());
+    CHECK(device.drawIndexedIndirect(cb, IndirectDrawDesc{.drawIndexPrefix = true}).has_value());
+    CHECK(raw->backendInvocations == 6);
+
+    raw->state = DeviceOperationalState::lost;
+    raw->caps.shaderDrawIndex = false;
+    checkCode(device.createPipelineLayout(PipelineLayoutDesc{.drawIndex = true}), ErrorCode::deviceLost);
+    checkCode(device.createShaderModule(moduleReadingDrawIndex(ShaderStage::pixel)), ErrorCode::deviceLost);
+    CHECK(raw->backendInvocations == 6);
+}

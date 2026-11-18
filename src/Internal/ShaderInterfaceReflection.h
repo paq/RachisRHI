@@ -7,6 +7,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <optional>
 #include <span>
@@ -34,6 +35,8 @@ namespace rachis::shader_tool
 
     inline constexpr std::uint32_t d3d12PushConstantRegister = 0;
     inline constexpr std::uint32_t d3d12PushConstantSpace = 4;
+    inline constexpr std::uint32_t drawIndexRegister = 0;
+    inline constexpr std::uint32_t drawIndexSpace = 5;
     inline constexpr std::uint32_t unboundedResourceCount = 0xFFFFFFFFU;
 
     struct ReflectedBinding final
@@ -55,6 +58,7 @@ namespace rachis::shader_tool
         std::optional<std::array<std::uint32_t, 3>> workgroupSize;
         std::vector<DataResource> dataResources;
         std::vector<DataBlock> blocks;
+        bool drawIndex = false;
     };
 
     struct BackendInterface final
@@ -253,6 +257,19 @@ namespace rachis::shader_tool
                 }
             }
             return std::nullopt;
+        }
+
+        [[nodiscard]] inline bool isDrawIndexParameter(const JsonValue& parameter,
+                                                       InterfaceBackend backend,
+                                                       const std::optional<RegisterSlot>& slot)
+        {
+            if (backend == InterfaceBackend::vulkan || !slot.has_value() || slot->set != drawIndexSpace ||
+                slot->binding != drawIndexRegister)
+            {
+                return false;
+            }
+            const auto* type = parameter.find("type");
+            return type != nullptr && jsonString(type->find("kind")) == "constantBuffer";
         }
 
         [[nodiscard]] inline bool isTextureShape(std::string_view shape) noexcept
@@ -480,6 +497,11 @@ namespace rachis::shader_tool
                     continue;
                 }
                 const auto slot = detail::resourceSlot(parameter, backend);
+                if (detail::isDrawIndexParameter(parameter, backend, slot))
+                {
+                    reflected.drawIndex = true;
+                    continue;
+                }
                 if (!slot.has_value())
                 {
                     if (const auto* binding = parameter.find("binding");
@@ -563,6 +585,7 @@ namespace rachis::shader_tool
                 return std::unexpected("Two vertex inputs share a location.");
             }
         }
+        reflected.drawIndex = reflected.drawIndex && stage == InterfaceStage::vertex;
         return reflected;
     }
 
@@ -633,6 +656,105 @@ namespace rachis::shader_tool
         return {};
     }
 
+    [[nodiscard]] inline std::expected<bool, std::string> dxilReadsDrawIndex(std::span<const std::byte> container)
+    {
+        constexpr std::size_t headerSize = 32;
+        constexpr std::uint32_t constantBufferType = 2;
+        constexpr std::uint32_t bindInfoSize = 16;
+        const auto readU32 = [](std::span<const std::byte> bytes, std::size_t offset) {
+            std::uint32_t value = 0;
+            std::memcpy(&value, bytes.data() + offset, sizeof(value));
+            return value;
+        };
+        if (container.size() < headerSize || std::memcmp(container.data(), "DXBC", 4) != 0)
+        {
+            return std::unexpected("The Direct3D 12 bytecode is not a DXIL container.");
+        }
+        const auto size = std::min<std::size_t>(readU32(container, 24), container.size());
+        const auto parts = readU32(container, 28);
+        if (size < headerSize || parts > (size - headerSize) / sizeof(std::uint32_t))
+        {
+            return std::unexpected("The DXIL container has an invalid size or part count.");
+        }
+        for (std::uint32_t part = 0; part < parts; ++part)
+        {
+            const std::size_t offset = readU32(container, headerSize + part * sizeof(std::uint32_t));
+            if (offset > size || size - offset < 8)
+            {
+                return std::unexpected("The DXIL container has a part outside the container.");
+            }
+            const std::size_t partSize = readU32(container, offset + 4);
+            if (partSize > size - offset - 8)
+            {
+                return std::unexpected("The DXIL container has a part that runs past the container.");
+            }
+            if (std::memcmp(container.data() + offset, "PSV0", 4) != 0)
+            {
+                continue;
+            }
+            const auto data = container.subspan(offset + 8, partSize);
+            if (data.size() < sizeof(std::uint32_t))
+            {
+                return std::unexpected("The DXIL PSV0 part is truncated.");
+            }
+            const std::size_t infoSize = readU32(data, 0);
+            if (infoSize > data.size() - 4 || data.size() - 4 - infoSize < sizeof(std::uint32_t))
+            {
+                return std::unexpected("The DXIL PSV0 part is truncated.");
+            }
+            const auto resources = readU32(data, 4 + infoSize);
+            if (resources == 0)
+            {
+                return false;
+            }
+            const std::size_t table = 4 + infoSize + 4;
+            if (data.size() - table < sizeof(std::uint32_t))
+            {
+                return std::unexpected("The DXIL PSV0 resource table is truncated.");
+            }
+            const std::size_t recordSize = readU32(data, table);
+            if (recordSize < bindInfoSize || resources > (data.size() - table - 4) / recordSize)
+            {
+                return std::unexpected("The DXIL PSV0 resource table is truncated.");
+            }
+            for (std::uint32_t resource = 0; resource < resources; ++resource)
+            {
+                const auto record = table + 4 + resource * recordSize;
+                if (readU32(data, record) == constantBufferType && readU32(data, record + 4) == drawIndexSpace &&
+                    readU32(data, record + 8) <= drawIndexRegister && drawIndexRegister <= readU32(data, record + 12))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return std::unexpected("The DXIL container has no PSV0 part.");
+    }
+
+    [[nodiscard]] constexpr std::uint32_t spirvExecutionModel(InterfaceStage stage) noexcept
+    {
+        return stage == InterfaceStage::vertex  ? detail::SpirvLayoutModule::executionModelVertex
+               : stage == InterfaceStage::pixel ? detail::SpirvLayoutModule::executionModelFragment
+                                                : detail::SpirvLayoutModule::executionModelGLCompute;
+    }
+
+    [[nodiscard]] inline std::expected<bool, std::string> spirvReadsDrawIndex(std::span<const std::byte> spirv,
+                                                                              std::string_view entryPoint,
+                                                                              InterfaceStage stage)
+    {
+        auto module = detail::SpirvLayoutModule::parse(spirv);
+        if (!module)
+        {
+            return std::unexpected(std::move(module.error()));
+        }
+        auto found = module->interfaceOf(entryPoint, spirvExecutionModel(stage));
+        if (!found)
+        {
+            return std::unexpected(std::move(found.error()));
+        }
+        return found->drawIndex;
+    }
+
     [[nodiscard]] inline std::expected<ReflectedInterface, std::string> reflectSpirvShaderInterface(
         std::span<const std::byte> spirv, std::string_view entryPoint, InterfaceStage stage)
     {
@@ -641,10 +763,7 @@ namespace rachis::shader_tool
         {
             return std::unexpected(std::move(module.error()));
         }
-        const auto model = stage == InterfaceStage::vertex  ? detail::SpirvLayoutModule::executionModelVertex
-                           : stage == InterfaceStage::pixel ? detail::SpirvLayoutModule::executionModelFragment
-                                                            : detail::SpirvLayoutModule::executionModelGLCompute;
-        auto found = module->interfaceOf(entryPoint, model);
+        auto found = module->interfaceOf(entryPoint, spirvExecutionModel(stage));
         if (!found)
         {
             return std::unexpected(std::move(found.error()));
@@ -667,6 +786,7 @@ namespace rachis::shader_tool
         reflected.dataResources = std::move(found->dataResources);
         reflected.vertexInputLocations = std::move(found->vertexInputLocations);
         reflected.workgroupSize = found->workgroupSize;
+        reflected.drawIndex = found->drawIndex;
         if (auto attached = attachSpirvDataLayouts(reflected, spirv); !attached)
         {
             return std::unexpected(std::move(attached.error()));
@@ -825,6 +945,8 @@ namespace rachis::shader_tool
             {
                 text += "{};\n";
             }
+            text += "        inline constexpr bool drawIndex = ";
+            text += reflected.drawIndex ? "true;\n" : "false;\n";
 
             const auto sets = bindingSetCount(reflected);
             text += "        inline constexpr std::uint32_t bindingSetCount = " + std::to_string(sets) + ";\n";
@@ -918,6 +1040,7 @@ namespace rachis::shader_tool
                     "                .pushConstants = pushConstants,\n"
                     "                .vertexInputLocations = vertexInputLocations,\n"
                     "                .workgroupSize = workgroupSize,\n"
+                    "                .drawIndex = drawIndex,\n"
                     "            };\n"
                     "        }\n";
             text += "    } // namespace ";
@@ -1049,6 +1172,12 @@ namespace rachis::shader_tool
                                "pushConstantRanges(rachis::Backend backend) noexcept",
                                "pushConstantRanges",
                                "{}");
+        detail::appendDispatch(text,
+                               backends,
+                               "// Whether the shader reads the draw index, for PipelineLayoutDesc::drawIndex.\n"
+                               "    [[nodiscard]] constexpr bool drawIndex(rachis::Backend backend) noexcept",
+                               "drawIndex",
+                               "false");
         if (!tag.empty())
         {
             text += "} // inline namespace t_";

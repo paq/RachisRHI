@@ -2069,6 +2069,10 @@ namespace rachis
                     "Cannot create a shader module on an invalid device.",
                 });
             }
+            if (auto valid = detail::validateShaderDrawIndex(desc, backend_->capabilities()); !valid)
+            {
+                return std::unexpected(detail::preferDeviceLossError(*backend_, std::move(valid.error())));
+            }
             return backend_->createShaderModule(desc);
         });
     }
@@ -2143,6 +2147,14 @@ namespace rachis
                     0,
                     "Cannot create a pipeline layout on an invalid device.",
                 });
+            }
+            if (auto valid = detail::validateDrawIndexSupport(
+                    desc.drawIndex,
+                    backend_->capabilities(),
+                    "The device does not support pipeline layouts that reserve the draw index.");
+                !valid)
+            {
+                return std::unexpected(detail::preferDeviceLossError(*backend_, std::move(valid.error())));
             }
             return backend_->createPipelineLayout(desc);
         });
@@ -3115,6 +3127,14 @@ namespace rachis
             {
                 return valid;
             }
+            if (auto valid = detail::validateDrawIndexSupport(
+                    desc.drawIndexPrefix,
+                    backend_->capabilities(),
+                    "The device does not support draw-index prefixes in indirect mesh dispatches.");
+                !valid)
+            {
+                return std::unexpected(detail::preferDeviceLossError(*backend_, std::move(valid.error())));
+            }
             return backend_->dispatchMeshIndirect(*commandBuffer.backend_, desc);
         });
     }
@@ -3128,6 +3148,14 @@ namespace rachis
                 !valid)
             {
                 return valid;
+            }
+            if (auto valid = detail::validateDrawIndexSupport(
+                    desc.drawIndexPrefix,
+                    backend_->capabilities(),
+                    "The device does not support draw-index prefixes in indirect draws.");
+                !valid)
+            {
+                return std::unexpected(detail::preferDeviceLossError(*backend_, std::move(valid.error())));
             }
             return backend_->drawIndirect(*commandBuffer.backend_, desc);
         });
@@ -3143,6 +3171,14 @@ namespace rachis
                 !valid)
             {
                 return valid;
+            }
+            if (auto valid = detail::validateDrawIndexSupport(
+                    desc.drawIndexPrefix,
+                    backend_->capabilities(),
+                    "The device does not support draw-index prefixes in indirect draws.");
+                !valid)
+            {
+                return std::unexpected(detail::preferDeviceLossError(*backend_, std::move(valid.error())));
             }
             return backend_->drawIndexedIndirect(*commandBuffer.backend_, desc);
         });

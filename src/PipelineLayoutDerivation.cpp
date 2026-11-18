@@ -242,6 +242,7 @@ namespace rachis
     {
         std::array<std::vector<DerivedBinding>, maxBindingSets> sets{};
         std::array<ShaderStage, pushConstantWordCount> wordStages{};
+        bool drawIndex = false;
         for (const auto& shader : shaders)
         {
             const auto stageBits = static_cast<std::underlying_type_t<ShaderStage>>(shader.stage);
@@ -249,6 +250,13 @@ namespace rachis
             {
                 return std::unexpected(invalidInterface("Each shader interface must name exactly one shader stage."));
             }
+            if (shader.drawIndex && shader.stage != ShaderStage::vertex && shader.stage != ShaderStage::task &&
+                shader.stage != ShaderStage::mesh)
+            {
+                return std::unexpected(
+                    invalidInterface("Only vertex, task, and mesh shader interfaces can read the draw index."));
+            }
+            drawIndex = drawIndex || shader.drawIndex;
             for (const auto& binding : shader.bindings)
             {
                 if (auto added = addBinding(sets, shader.stage, binding); !added)
@@ -286,6 +294,7 @@ namespace rachis
             std::ranges::sort(entries, {}, &BindingLayoutEntry::binding);
         }
         layout.pushConstantRanges = mergePushConstants(wordStages);
+        layout.drawIndex = drawIndex;
         return layout;
     }
 

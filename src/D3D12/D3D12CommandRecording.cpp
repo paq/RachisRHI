@@ -387,7 +387,8 @@ namespace rachis::d3d12
                                                      detail::BackendCommandBuffer& commandBuffer,
                                                      ID3D12GraphicsCommandList& commandList,
                                                      ID3D12CommandSignature* signature,
-                                                     const ResolvedIndirectCommand& command)
+                                                     const ResolvedIndirectCommand& command,
+                                                     std::uint32_t drawIndexRootParameter = invalidRootParameter)
         {
             auto retained = retainIndirectBufferDependencies(queues, commandBuffer, command.arguments, command.count);
             if (!retained)
@@ -401,6 +402,26 @@ namespace rachis::d3d12
                                         command.layout.argumentOffset,
                                         command.count.has_value() ? command.count->resource : nullptr,
                                         command.count.has_value() ? command.layout.countOffset : 0);
+            if (drawIndexRootParameter != invalidRootParameter)
+            {
+                commandList.SetGraphicsRoot32BitConstant(drawIndexRootParameter, 0, 0);
+            }
+            return {};
+        }
+
+        [[nodiscard]] Status validateDrawIndexPrefix(const GraphicsPipelineRecord& pipeline,
+                                                     bool drawIndexPrefix,
+                                                     std::uint32_t maxCommandCount)
+        {
+            if (!drawIndexPrefix && maxCommandCount > 1 && pipeline.readsDrawIndex)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidArgument,
+                    0,
+                    "The bound pipeline reads the draw index, so an indirect call with more than one record needs "
+                    "drawIndexPrefix.",
+                });
+            }
             return {};
         }
 
@@ -1771,6 +1792,10 @@ namespace rachis::d3d12
         ID3D12DescriptorHeap* const nativeHeaps[]{heaps.resources, heaps.samplers};
         (*commandList)->SetDescriptorHeaps(static_cast<UINT>(std::size(nativeHeaps)), nativeHeaps);
         (*commandList)->SetGraphicsRootSignature(record->layout->rootSignature.Get());
+        if (record->layout->drawIndexRootParameter != invalidRootParameter)
+        {
+            (*commandList)->SetGraphicsRoot32BitConstant(record->layout->drawIndexRootParameter, 0, 0);
+        }
         (*commandList)->SetPipelineState(record->pipelineState.Get());
         if (commandList1 != nullptr)
         {
@@ -2608,10 +2633,16 @@ namespace rachis::d3d12
             });
         }
 
-        constexpr std::uint32_t recordSize = sizeof(DispatchIndirectArguments);
+        if (auto prefix = validateDrawIndexPrefix(*pipeline, desc.drawIndexPrefix, desc.maxDispatchCount); !prefix)
+        {
+            return prefix;
+        }
+
+        const std::uint32_t recordSize =
+            sizeof(DispatchIndirectArguments) + (desc.drawIndexPrefix ? drawIndexPrefixSize : 0U);
         constexpr IndirectCommandErrorMessages errorMessages{
-            .invalidLayout =
-                "Indirect mesh dispatch requires an argument buffer, aligned offsets, and an aligned 12-byte record.",
+            .invalidLayout = "Indirect mesh dispatch requires an argument buffer, aligned offsets, and an aligned "
+                             "record-sized stride.",
             .invalidArgumentBuffer =
                 "The mesh-dispatch argument buffer requires indirect usage and an in-bounds offset.",
             .argumentSpanOverflow = "The indirect mesh-dispatch argument span overflows.",
@@ -2635,12 +2666,22 @@ namespace rachis::d3d12
         {
             return {};
         }
-        auto signature = impl_->indirectMeshSignature(command->layout.stride);
+        const auto drawIndexRootParameter =
+            desc.drawIndexPrefix ? pipeline->layout->drawIndexRootParameter : invalidRootParameter;
+        auto signature = drawIndexRootParameter != invalidRootParameter
+                             ? impl_->drawIndexSignature(
+                                   *pipeline->layout, DrawIndexCommandKind::dispatchMesh, command->layout.stride)
+                             : impl_->indirectMeshSignature(command->layout.stride);
         if (!signature)
         {
             return std::unexpected(std::move(signature.error()));
         }
-        return recordIndirectExecution(queues, commandBuffer, **commandList, signature->Get(), *command);
+        if (desc.drawIndexPrefix && drawIndexRootParameter == invalidRootParameter)
+        {
+            command->layout.argumentOffset += drawIndexPrefixSize;
+        }
+        return recordIndirectExecution(
+            queues, commandBuffer, **commandList, signature->Get(), *command, drawIndexRootParameter);
     }
 
     Status PipelineManager::drawIndirect(QueueManager& queues,
@@ -2678,7 +2719,14 @@ namespace rachis::d3d12
             });
         }
 
-        const std::uint32_t recordSize = indexed ? sizeof(DrawIndexedIndirectArguments) : sizeof(DrawIndirectArguments);
+        if (auto prefix = validateDrawIndexPrefix(*pipeline, desc.drawIndexPrefix, desc.maxDrawCount); !prefix)
+        {
+            return prefix;
+        }
+
+        const std::uint32_t recordSize =
+            (indexed ? sizeof(DrawIndexedIndirectArguments) : sizeof(DrawIndirectArguments)) +
+            (desc.drawIndexPrefix ? drawIndexPrefixSize : 0U);
         constexpr IndirectCommandErrorMessages errorMessages{
             .invalidLayout =
                 "Indirect draw requires an argument buffer, aligned offsets, and a record-sized aligned stride.",
@@ -2704,12 +2752,24 @@ namespace rachis::d3d12
         {
             return {};
         }
-        auto signature = impl_->indirectSignature(indexed, command->layout.stride);
+        const auto drawIndexRootParameter =
+            desc.drawIndexPrefix ? pipeline->layout->drawIndexRootParameter : invalidRootParameter;
+        auto signature =
+            drawIndexRootParameter != invalidRootParameter
+                ? impl_->drawIndexSignature(*pipeline->layout,
+                                            indexed ? DrawIndexCommandKind::drawIndexed : DrawIndexCommandKind::draw,
+                                            command->layout.stride)
+                : impl_->indirectSignature(indexed, command->layout.stride);
         if (!signature)
         {
             return std::unexpected(std::move(signature.error()));
         }
-        return recordIndirectExecution(queues, commandBuffer, **commandList, signature->Get(), *command);
+        if (desc.drawIndexPrefix && drawIndexRootParameter == invalidRootParameter)
+        {
+            command->layout.argumentOffset += drawIndexPrefixSize;
+        }
+        return recordIndirectExecution(
+            queues, commandBuffer, **commandList, signature->Get(), *command, drawIndexRootParameter);
     }
 
 } // namespace rachis::d3d12

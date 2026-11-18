@@ -2,8 +2,12 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -336,4 +340,207 @@ TEST_CASE("Generated shader structs reject layouts C++ cannot express", "[size:s
         rachis::shader_tool::generateShaderInterfaceHeader("Layout", InterfaceStage::compute, "main", backends);
     REQUIRE_FALSE(header.has_value());
     CHECK(header.error().find("overlaps") != std::string::npos);
+}
+
+namespace
+{
+    constexpr std::string_view drawIndexHlslJson = R"({
+        "parameters": [
+            {"name": "RachisDrawIndex", "binding": {"kind": "constantBuffer", "space": 5, "index": 0},
+             "type": {"kind": "constantBuffer",
+                      "elementVarLayout": {
+                          "type": {"kind": "struct", "fields": [
+                              {"name": "rachisDrawIndexValue", "type": {"kind": "scalar", "scalarType": "uint32"},
+                               "binding": {"kind": "uniform", "offset": 0, "size": 4}}]},
+                          "binding": {"kind": "uniform", "offset": 0, "size": 4}}}},
+            {"name": "transforms", "binding": {"kind": "shaderResource", "index": 1},
+             "type": {"kind": "resource", "baseShape": "structuredBuffer", "resultType": {"kind": "scalar"}}}
+        ],
+        "entryPoints": [
+            {"name": "vertexMain", "stage": "vertex", "parameters": [],
+             "bindings": [
+                {"name": "RachisDrawIndex", "binding": {"kind": "constantBuffer", "space": 5, "index": 0, "used": 1}},
+                {"name": "transforms", "binding": {"kind": "shaderResource", "index": 1, "used": 1}}
+             ]}
+        ]
+    })";
+
+    constexpr std::string_view unusedDrawIndexJson = R"({
+        "parameters": [
+            {"name": "RachisDrawIndex", "binding": {"kind": "constantBuffer", "space": 5, "index": 0},
+             "type": {"kind": "constantBuffer"}}
+        ],
+        "entryPoints": [
+            {"name": "vertexMain", "stage": "vertex", "parameters": [],
+             "bindings": [
+                {"name": "RachisDrawIndex", "binding": {"kind": "constantBuffer", "space": 5, "index": 0, "used": 0}}
+             ]}
+        ]
+    })";
+
+    [[nodiscard]] std::vector<std::byte> vertexModuleWithBuiltIn(std::uint32_t builtIn, bool listed)
+    {
+        constexpr std::uint32_t mainName = 0x6E69616DU;
+        std::vector<std::uint32_t> words{
+            0x07230203U,
+            0x00010600U,
+            0U,
+            8U,
+            0U,
+            (2U << 16U) | 17U,
+            1U,
+            (2U << 16U) | 17U,
+            4427U,
+            (3U << 16U) | 14U,
+            0U,
+            1U,
+        };
+        if (listed)
+        {
+            words.insert(words.end(), {(6U << 16U) | 15U, 0U, 1U, mainName, 0U, 2U});
+        }
+        else
+        {
+            words.insert(words.end(), {(5U << 16U) | 15U, 0U, 1U, mainName, 0U});
+        }
+        words.insert(words.end(),
+                     {
+                         (4U << 16U) | 71U,
+                         2U,
+                         11U,
+                         builtIn,
+                         (4U << 16U) | 21U,
+                         3U,
+                         32U,
+                         0U,
+                         (4U << 16U) | 32U,
+                         4U,
+                         1U,
+                         3U,
+                         (4U << 16U) | 59U,
+                         4U,
+                         2U,
+                         1U,
+                     });
+        std::vector<std::byte> bytes(words.size() * sizeof(std::uint32_t));
+        std::memcpy(bytes.data(), words.data(), bytes.size());
+        return bytes;
+    }
+    [[nodiscard]] std::vector<std::byte> dxilContainer(std::span<const std::array<std::uint32_t, 4>> resources)
+    {
+        std::vector<std::uint32_t> psv{0U, static_cast<std::uint32_t>(resources.size())};
+        if (!resources.empty())
+        {
+            psv.push_back(16U);
+            for (const auto& resource : resources)
+            {
+                psv.insert(psv.end(), resource.begin(), resource.end());
+            }
+        }
+        const auto partSize = static_cast<std::uint32_t>(psv.size() * sizeof(std::uint32_t));
+        constexpr std::uint32_t partOffset = 36;
+        std::vector<std::uint32_t> words{
+            0x43425844U, 0U, 0U, 0U, 0U, 1U, partOffset + 8U + partSize, 1U, partOffset, 0x30565350U, partSize};
+        words.insert(words.end(), psv.begin(), psv.end());
+        std::vector<std::byte> bytes(words.size() * sizeof(std::uint32_t));
+        std::memcpy(bytes.data(), words.data(), bytes.size());
+        return bytes;
+    }
+} // namespace
+
+TEST_CASE("Shader interface reflection reads the draw index from each backend's reflection",
+          "[size:small][rhi][tooling][shader-interface][draw-index]")
+{
+    for (const auto backend : {InterfaceBackend::d3d12, InterfaceBackend::metal})
+    {
+        INFO("backend " << rachis::shader_tool::interfaceBackendName(backend));
+        auto reflected = reflectShaderInterface(drawIndexHlslJson, backend, "vertexMain", InterfaceStage::vertex);
+        REQUIRE(reflected.has_value());
+        CHECK(reflected->drawIndex);
+        const std::vector<ReflectedBinding> expected{
+            {.name = "transforms", .set = 0, .binding = 1, .type = "readOnlyStorageBuffer", .count = 1},
+        };
+        CHECK(reflected->bindings == expected);
+        CHECK(std::ranges::none_of(reflected->dataResources,
+                                   [](const auto& resource) { return resource.name == "RachisDrawIndex"; }));
+
+        const auto unused = reflectShaderInterface(unusedDrawIndexJson, backend, "vertexMain", InterfaceStage::vertex);
+        REQUIRE(unused.has_value());
+        CHECK_FALSE(unused->drawIndex);
+        CHECK(unused->bindings.empty());
+    }
+
+    const auto vulkan =
+        reflectShaderInterface(drawIndexHlslJson, InterfaceBackend::vulkan, "vertexMain", InterfaceStage::vertex);
+    REQUIRE(vulkan.has_value());
+    CHECK_FALSE(vulkan->drawIndex);
+
+    const auto drawIndexModule = vertexModuleWithBuiltIn(4426U, true);
+    const auto reads = rachis::shader_tool::spirvReadsDrawIndex(drawIndexModule, "main", InterfaceStage::vertex);
+    REQUIRE(reads.has_value());
+    CHECK(*reads);
+    const auto spirv =
+        rachis::shader_tool::reflectSpirvShaderInterface(drawIndexModule, "main", InterfaceStage::vertex);
+    REQUIRE(spirv.has_value());
+    CHECK(spirv->drawIndex);
+    CHECK(spirv->vertexInputLocations.empty());
+
+    const auto baseInstance =
+        rachis::shader_tool::spirvReadsDrawIndex(vertexModuleWithBuiltIn(4425U, true), "main", InterfaceStage::vertex);
+    REQUIRE(baseInstance.has_value());
+    CHECK_FALSE(*baseInstance);
+    const auto unlisted =
+        rachis::shader_tool::spirvReadsDrawIndex(vertexModuleWithBuiltIn(4426U, false), "main", InterfaceStage::vertex);
+    REQUIRE(unlisted.has_value());
+    CHECK_FALSE(*unlisted);
+    CHECK_FALSE(rachis::shader_tool::spirvReadsDrawIndex(drawIndexModule, "other", InterfaceStage::vertex).has_value());
+    CHECK_FALSE(rachis::shader_tool::spirvReadsDrawIndex(drawIndexModule, "main", InterfaceStage::pixel).has_value());
+
+    const std::array drawIndexResources{std::array<std::uint32_t, 4>{4U, 0U, 1U, 1U},
+                                        std::array<std::uint32_t, 4>{2U, 5U, 0U, 0U}};
+    const auto dxilReads = rachis::shader_tool::dxilReadsDrawIndex(dxilContainer(drawIndexResources));
+    REQUIRE(dxilReads.has_value());
+    CHECK(*dxilReads);
+    const std::array otherResources{std::array<std::uint32_t, 4>{2U, 4U, 0U, 0U},
+                                    std::array<std::uint32_t, 4>{2U, 5U, 1U, 1U}};
+    const auto dxilOther = rachis::shader_tool::dxilReadsDrawIndex(dxilContainer(otherResources));
+    REQUIRE(dxilOther.has_value());
+    CHECK_FALSE(*dxilOther);
+    const auto dxilEmpty = rachis::shader_tool::dxilReadsDrawIndex(dxilContainer({}));
+    REQUIRE(dxilEmpty.has_value());
+    CHECK_FALSE(*dxilEmpty);
+    CHECK_FALSE(rachis::shader_tool::dxilReadsDrawIndex(drawIndexModule).has_value());
+    auto truncated = dxilContainer(drawIndexResources);
+    truncated.resize(truncated.size() - 8);
+    CHECK_FALSE(rachis::shader_tool::dxilReadsDrawIndex(truncated).has_value());
+
+    const auto pixel =
+        reflectShaderInterface(drawIndexHlslJson, InterfaceBackend::d3d12, "vertexMain", InterfaceStage::pixel);
+    REQUIRE(pixel.has_value());
+    CHECK_FALSE(pixel->drawIndex);
+    CHECK(pixel->bindings.size() == 1);
+
+    auto d3d12 =
+        reflectShaderInterface(drawIndexHlslJson, InterfaceBackend::d3d12, "vertexMain", InterfaceStage::vertex);
+    REQUIRE(d3d12.has_value());
+    const auto vulkanWithoutDrawIndex =
+        reflectShaderInterface(unusedDrawIndexJson, InterfaceBackend::vulkan, "vertexMain", InterfaceStage::vertex);
+    REQUIRE(vulkanWithoutDrawIndex.has_value());
+    const std::array backends{
+        BackendInterface{.backend = InterfaceBackend::d3d12, .reflected = *d3d12},
+        BackendInterface{.backend = InterfaceBackend::vulkan, .reflected = *vulkanWithoutDrawIndex},
+    };
+    const auto header = rachis::shader_tool::generateShaderInterfaceHeader(
+        "DrawIndexProbe", InterfaceStage::vertex, "vertexMain", backends);
+    REQUIRE(header.has_value());
+    const auto d3d12Namespace = header->find("namespace d3d12");
+    const auto vulkanNamespace = header->find("namespace vulkan");
+    REQUIRE(d3d12Namespace != std::string::npos);
+    REQUIRE(vulkanNamespace != std::string::npos);
+    CHECK(header->find("inline constexpr bool drawIndex = true;", d3d12Namespace) < vulkanNamespace);
+    CHECK(header->find("inline constexpr bool drawIndex = false;", vulkanNamespace) != std::string::npos);
+    CHECK(header->find("                .drawIndex = drawIndex,\n") != std::string::npos);
+    CHECK(header->find("constexpr bool drawIndex(rachis::Backend backend) noexcept") != std::string::npos);
+    CHECK(header->find("case rachis::Backend::d3d12:\n            return d3d12::drawIndex;") != std::string::npos);
+    CHECK(header->find("RachisDrawIndex") == std::string::npos);
 }

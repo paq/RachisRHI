@@ -25,6 +25,7 @@ namespace
         std::optional<std::filesystem::path> output;
         std::optional<std::filesystem::path> reflectionJson;
         std::vector<std::string> defines{};
+        std::vector<std::string> includeDirectories{};
     };
 
     [[nodiscard]] std::string asciiText(const std::filesystem::path& arg)
@@ -56,6 +57,10 @@ namespace
             else if (flag == "-reflection-json" && hasValue)
             {
                 request.reflectionJson = args[++index];
+            }
+            else if (flag == "-I" && hasValue)
+            {
+                request.includeDirectories.push_back(asciiText(args[++index]));
             }
             else if (flag.starts_with("-D"))
             {
@@ -153,6 +158,21 @@ namespace
         const Request request = parseRequest(args);
         const std::string_view name = invocationName(request.invocation);
         std::cerr << "fake slangc: " << name << " ran\n";
+        for (const auto& directory : request.includeDirectories)
+        {
+            std::cerr << "fake slangc: " << name << " includes " << directory << '\n';
+        }
+        constexpr std::string_view expectedIncludesKey = "FAKE_SLANGC_INCLUDES=";
+        for (const auto& define : request.defines)
+        {
+            if (define.starts_with(expectedIncludesKey) &&
+                define.substr(expectedIncludesKey.size()) != std::to_string(request.includeDirectories.size()))
+            {
+                std::cerr << "fake slangc: " << name << " got " << request.includeDirectories.size()
+                          << " include directories\n";
+                return 5;
+            }
+        }
 
         const std::string behavior = requestedBehavior(request);
         if (behavior == "fail")

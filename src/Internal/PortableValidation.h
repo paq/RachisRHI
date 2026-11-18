@@ -653,4 +653,46 @@ namespace rachis::detail
         return {};
     }
 
+    [[nodiscard]] constexpr bool canReadDrawIndex(ShaderStage stage) noexcept
+    {
+        return stage == ShaderStage::vertex || stage == ShaderStage::task || stage == ShaderStage::mesh;
+    }
+
+    [[nodiscard]] inline Status validateShaderDrawIndex(const ShaderModuleDesc& desc,
+                                                        const DeviceCapabilities& capabilities)
+    {
+        if (!desc.shaderInterface.drawIndex)
+        {
+            return {};
+        }
+        if (!canReadDrawIndex(desc.stage))
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidArgument,
+                0,
+                "Only vertex, task, and mesh shaders can read the draw index.",
+            });
+        }
+        if (!capabilities.shaderDrawIndex)
+        {
+            return std::unexpected(Error{
+                ErrorCode::unsupported,
+                0,
+                "The device does not support shaders that read the draw index.",
+            });
+        }
+        return {};
+    }
+
+    [[nodiscard]] inline Status validateDrawIndexSupport(bool requested,
+                                                         const DeviceCapabilities& capabilities,
+                                                         std::string_view message)
+    {
+        if (requested && !capabilities.shaderDrawIndex)
+        {
+            return std::unexpected(Error{ErrorCode::unsupported, 0, std::string(message)});
+        }
+        return {};
+    }
+
 } // namespace rachis::detail

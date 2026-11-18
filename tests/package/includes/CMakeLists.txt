@@ -25,6 +25,12 @@ rachis_add_shader(RachisShaderIncludes
     SOURCE "${PROJECT_SOURCE_DIR}/shaders/Fill.hlsl"
     ENTRY fillMain
     STAGE compute)
+# Rachis/DrawIndex.hlsli comes from the installed package's include directory.
+rachis_add_shader(RachisShaderIncludes
+    NAME DrawIndexShader
+    SOURCE "${PROJECT_SOURCE_DIR}/shaders/DrawIndex.hlsl"
+    ENTRY drawIndexMain
+    STAGE vertex)
 
 add_test(NAME RachisShaderIncludes
     COMMAND "${CMAKE_COMMAND}"

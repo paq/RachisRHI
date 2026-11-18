@@ -28,6 +28,8 @@ namespace rachis
     inline constexpr std::uint32_t maxSpecializationConstants = 64;
     inline constexpr std::uint32_t pushConstantRegister = 0;
     inline constexpr std::uint32_t pushConstantRegisterSpace = maxBindingSets;
+    inline constexpr std::uint32_t drawIndexRegister = 0;
+    inline constexpr std::uint32_t drawIndexRegisterSpace = maxBindingSets + 1;
 
     struct PipelineCacheKey final
     {
@@ -171,6 +173,8 @@ namespace rachis
         std::optional<ShaderWorkgroupSize> workgroupSize = {};
 
         std::optional<ShaderRecordConstantRange> shaderRecordConstants = {};
+
+        bool drawIndex = false;
     };
 
     struct ShaderInterfaceSnapshot final
@@ -181,6 +185,7 @@ namespace rachis
         std::vector<std::uint32_t> vertexInputLocations = {};
         std::optional<ShaderWorkgroupSize> workgroupSize = {};
         std::optional<ShaderRecordConstantRange> shaderRecordConstants = {};
+        bool drawIndex = false;
     };
 
     struct ShaderModuleDesc final
@@ -207,6 +212,8 @@ namespace rachis
     {
         std::span<const BindingLayoutHandle> bindingLayouts = {};
         std::span<const PushConstantRange> pushConstantRanges = {};
+
+        bool drawIndex = false;
         std::string_view label = {};
     };
 
@@ -214,6 +221,7 @@ namespace rachis
     {
         std::vector<std::vector<BindingLayoutEntry>> bindingSets = {};
         std::vector<PushConstantRange> pushConstantRanges = {};
+        bool drawIndex = false;
     };
 
     [[nodiscard]] Result<DerivedPipelineLayout> derivePipelineLayout(std::span<const ShaderInterfaceSnapshot> shaders);

@@ -689,6 +689,34 @@ namespace rachis::vulkan
             };
         }
 
+        [[nodiscard]] Status validateDrawIndexPrefix(const VulkanNativePipeline& pipeline,
+                                                     bool drawIndexPrefix,
+                                                     std::uint32_t maxCount)
+        {
+            if (!drawIndexPrefix && maxCount > 1 && pipeline.readsDrawIndex)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidArgument,
+                    0,
+                    "The bound pipeline reads the draw index, so an indirect call with more than one record needs "
+                    "drawIndexPrefix.",
+                });
+            }
+            return {};
+        }
+
+        [[nodiscard]] constexpr std::uint32_t prefixedRecordSize(std::uint32_t argumentSize,
+                                                                 bool drawIndexPrefix) noexcept
+        {
+            return argumentSize + (drawIndexPrefix ? drawIndexPrefixSize : 0U);
+        }
+
+        [[nodiscard]] constexpr std::uint64_t nativeArgumentOffset(std::uint64_t argumentOffset,
+                                                                   bool drawIndexPrefix) noexcept
+        {
+            return argumentOffset + (drawIndexPrefix ? drawIndexPrefixSize : 0U);
+        }
+
         [[nodiscard]] bool requestsMultiviewOrTimestampsWithoutAttachments(const RenderingDesc& desc) noexcept
         {
             const bool hasNoAttachments = desc.colorAttachments.empty() && !desc.depthStencilAttachment.has_value();
@@ -1914,17 +1942,22 @@ namespace rachis::vulkan
                 "Indirect draw requires a conventional graphics pipeline and complete rendering state.",
             });
         }
-        auto arguments = validateIndirectArguments(resources_,
-                                                   desc.argumentBuffer,
-                                                   desc.argumentOffset,
-                                                   desc.maxDrawCount,
-                                                   desc.stride,
-                                                   desc.countBuffer,
-                                                   desc.countOffset,
-                                                   sizeof(DrawIndirectArguments),
-                                                   capabilities_ != nullptr && capabilities_->drawIndirectCount,
-                                                   capabilities_ != nullptr && capabilities_->multiDrawIndirect,
-                                                   maxDrawIndirectCount_);
+        if (auto prefix = validateDrawIndexPrefix(*pipeline, desc.drawIndexPrefix, desc.maxDrawCount); !prefix)
+        {
+            return prefix;
+        }
+        auto arguments =
+            validateIndirectArguments(resources_,
+                                      desc.argumentBuffer,
+                                      desc.argumentOffset,
+                                      desc.maxDrawCount,
+                                      desc.stride,
+                                      desc.countBuffer,
+                                      desc.countOffset,
+                                      prefixedRecordSize(sizeof(DrawIndirectArguments), desc.drawIndexPrefix),
+                                      capabilities_ != nullptr && capabilities_->drawIndirectCount,
+                                      capabilities_ != nullptr && capabilities_->multiDrawIndirect,
+                                      maxDrawIndirectCount_);
         if (!arguments)
         {
             return std::unexpected(std::move(arguments.error()));
@@ -1949,7 +1982,7 @@ namespace rachis::vulkan
         {
             table_->vkCmdDrawIndirectCount(commandBuffer.native(),
                                            arguments->buffer,
-                                           desc.argumentOffset,
+                                           nativeArgumentOffset(desc.argumentOffset, desc.drawIndexPrefix),
                                            arguments->countBuffer,
                                            desc.countOffset,
                                            desc.maxDrawCount,
@@ -1957,8 +1990,11 @@ namespace rachis::vulkan
         }
         else
         {
-            table_->vkCmdDrawIndirect(
-                commandBuffer.native(), arguments->buffer, desc.argumentOffset, desc.maxDrawCount, arguments->stride);
+            table_->vkCmdDrawIndirect(commandBuffer.native(),
+                                      arguments->buffer,
+                                      nativeArgumentOffset(desc.argumentOffset, desc.drawIndexPrefix),
+                                      desc.maxDrawCount,
+                                      arguments->stride);
         }
         if (auto* retained = retainSink(commandBuffer); retained != nullptr)
         {
@@ -1992,17 +2028,22 @@ namespace rachis::vulkan
                 "Indexed indirect draw requires complete graphics state and a bound index buffer.",
             });
         }
-        auto arguments = validateIndirectArguments(resources_,
-                                                   desc.argumentBuffer,
-                                                   desc.argumentOffset,
-                                                   desc.maxDrawCount,
-                                                   desc.stride,
-                                                   desc.countBuffer,
-                                                   desc.countOffset,
-                                                   sizeof(DrawIndexedIndirectArguments),
-                                                   capabilities_ != nullptr && capabilities_->drawIndirectCount,
-                                                   capabilities_ != nullptr && capabilities_->multiDrawIndirect,
-                                                   maxDrawIndirectCount_);
+        if (auto prefix = validateDrawIndexPrefix(*pipeline, desc.drawIndexPrefix, desc.maxDrawCount); !prefix)
+        {
+            return prefix;
+        }
+        auto arguments =
+            validateIndirectArguments(resources_,
+                                      desc.argumentBuffer,
+                                      desc.argumentOffset,
+                                      desc.maxDrawCount,
+                                      desc.stride,
+                                      desc.countBuffer,
+                                      desc.countOffset,
+                                      prefixedRecordSize(sizeof(DrawIndexedIndirectArguments), desc.drawIndexPrefix),
+                                      capabilities_ != nullptr && capabilities_->drawIndirectCount,
+                                      capabilities_ != nullptr && capabilities_->multiDrawIndirect,
+                                      maxDrawIndirectCount_);
         if (!arguments)
         {
             return std::unexpected(std::move(arguments.error()));
@@ -2027,7 +2068,7 @@ namespace rachis::vulkan
         {
             table_->vkCmdDrawIndexedIndirectCount(commandBuffer.native(),
                                                   arguments->buffer,
-                                                  desc.argumentOffset,
+                                                  nativeArgumentOffset(desc.argumentOffset, desc.drawIndexPrefix),
                                                   arguments->countBuffer,
                                                   desc.countOffset,
                                                   desc.maxDrawCount,
@@ -2035,8 +2076,11 @@ namespace rachis::vulkan
         }
         else
         {
-            table_->vkCmdDrawIndexedIndirect(
-                commandBuffer.native(), arguments->buffer, desc.argumentOffset, desc.maxDrawCount, arguments->stride);
+            table_->vkCmdDrawIndexedIndirect(commandBuffer.native(),
+                                             arguments->buffer,
+                                             nativeArgumentOffset(desc.argumentOffset, desc.drawIndexPrefix),
+                                             desc.maxDrawCount,
+                                             arguments->stride);
         }
         if (auto* retained = retainSink(commandBuffer); retained != nullptr)
         {
@@ -2721,17 +2765,24 @@ namespace rachis::vulkan
                 "The device does not support mesh shaders.",
             });
         }
-        auto arguments = validateIndirectArguments(resources_,
-                                                   desc.argumentBuffer,
-                                                   desc.argumentOffset,
-                                                   desc.maxDispatchCount,
-                                                   desc.stride,
-                                                   desc.countBuffer,
-                                                   desc.countOffset,
-                                                   sizeof(DispatchIndirectArguments),
-                                                   capabilities_->drawIndirectCount,
-                                                   capabilities_->multiDrawIndirect,
-                                                   maxDrawIndirectCount_);
+        const auto* const meshPipeline =
+            static_cast<const VulkanNativePipeline*>(commandBuffer.graphicsState().pipelineOwner.get());
+        if (auto prefix = validateDrawIndexPrefix(*meshPipeline, desc.drawIndexPrefix, desc.maxDispatchCount); !prefix)
+        {
+            return prefix;
+        }
+        auto arguments =
+            validateIndirectArguments(resources_,
+                                      desc.argumentBuffer,
+                                      desc.argumentOffset,
+                                      desc.maxDispatchCount,
+                                      desc.stride,
+                                      desc.countBuffer,
+                                      desc.countOffset,
+                                      prefixedRecordSize(sizeof(DispatchIndirectArguments), desc.drawIndexPrefix),
+                                      capabilities_->drawIndirectCount,
+                                      capabilities_->multiDrawIndirect,
+                                      maxDrawIndirectCount_);
         if (!arguments)
         {
             return std::unexpected(std::move(arguments.error()));
@@ -2759,7 +2810,7 @@ namespace rachis::vulkan
         {
             table_->vkCmdDrawMeshTasksIndirectCountEXT(commandBuffer.native(),
                                                        arguments->buffer,
-                                                       desc.argumentOffset,
+                                                       nativeArgumentOffset(desc.argumentOffset, desc.drawIndexPrefix),
                                                        arguments->countBuffer,
                                                        desc.countOffset,
                                                        desc.maxDispatchCount,
@@ -2769,7 +2820,7 @@ namespace rachis::vulkan
         {
             table_->vkCmdDrawMeshTasksIndirectEXT(commandBuffer.native(),
                                                   arguments->buffer,
-                                                  desc.argumentOffset,
+                                                  nativeArgumentOffset(desc.argumentOffset, desc.drawIndexPrefix),
                                                   desc.maxDispatchCount,
                                                   arguments->stride);
         }

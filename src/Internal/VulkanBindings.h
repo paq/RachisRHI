@@ -87,6 +87,7 @@ namespace rachis::vulkan
         std::vector<PushConstantRange> pushConstantRanges = {};
         std::vector<PushConstantRange> nativePushConstantRanges = {};
         std::vector<VulkanNativeBindingLayout> sets = {};
+        bool drawIndex = false;
     };
 
     class VulkanBindingManager final
@@ -264,6 +265,7 @@ namespace rachis::vulkan
             std::vector<PushConstantRange> pushConstantRanges;
             std::vector<PushConstantRange> nativePushConstantRanges;
             std::uint32_t pushConstantBytes = 0;
+            bool drawIndex = false;
             std::string label;
             std::shared_ptr<PipelineLayoutKeepAlive> keepAlive;
         };

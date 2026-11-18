@@ -1,6 +1,11 @@
 #include "Rachis/Device.h"
 
 #include "GeneratedComputePush.h"
+#if !(defined(RACHIS_ENABLE_METAL) && RACHIS_ENABLE_METAL)
+#include "GeneratedDrawIndexPixel.h"
+#include "GeneratedDrawIndexVertex.h"
+#include "GeneratedDrawIndexVertexSlang.h"
+#endif
 #include "GeneratedLayouts.h"
 #include "GeneratedLayoutsSlang.h"
 #include "GeneratedSlang.h"
@@ -770,4 +775,91 @@ TEST_CASE("rachis_add_shader compiles GLSL for Vulkan only", RACHIS_GENERATED_IN
     }
 }
 
+#endif
+
+#if !(defined(RACHIS_ENABLE_METAL) && RACHIS_ENABLE_METAL)
+TEST_CASE("rachis_add_shader interfaces declare the draw index a shader reads on every backend",
+          "[size:medium][rhi][portable][shader-interface][draw-index]")
+{
+    namespace drawIndexPixel = rachis_shaders::reflection::GeneratedDrawIndexPixel;
+    struct DrawIndexShader final
+    {
+        std::string_view name;
+        rachis::ShaderModuleDesc (*moduleDesc)(rachis::Backend, std::string_view) noexcept;
+        rachis::ShaderInterfaceDesc (*shaderInterface)(rachis::Backend) noexcept;
+        bool (*drawIndex)(rachis::Backend) noexcept;
+    };
+    const std::array vertexShaders{
+        DrawIndexShader{
+            "HLSL",
+            &rachis_shaders::reflection::GeneratedDrawIndexVertex::moduleDesc,
+            &rachis_shaders::reflection::GeneratedDrawIndexVertex::shaderInterface,
+            &rachis_shaders::reflection::GeneratedDrawIndexVertex::drawIndex,
+        },
+        DrawIndexShader{
+            "Slang",
+            &rachis_shaders::reflection::GeneratedDrawIndexVertexSlang::moduleDesc,
+            &rachis_shaders::reflection::GeneratedDrawIndexVertexSlang::shaderInterface,
+            &rachis_shaders::reflection::GeneratedDrawIndexVertexSlang::drawIndex,
+        },
+    };
+    for (const auto& spec : generatedBackends())
+    {
+        CAPTURE(spec.name);
+        auto created = rachis::createDevice(spec.desc);
+        if (!created && spec.skipWhenUnavailable && rachis::test::skipWithoutCreatedDevice(created))
+        {
+            continue;
+        }
+        REQUIRE(created.has_value());
+        auto device = std::move(*created);
+        const auto backend = spec.desc.backend;
+        const auto capabilities = rachis::test::requireCapabilities(device);
+
+        CHECK_FALSE(drawIndexPixel::drawIndex(backend));
+        CHECK_FALSE(drawIndexPixel::shaderInterface(backend).drawIndex);
+        auto pixelModule = device.createShaderModule(drawIndexPixel::moduleDesc(backend, "Generated draw-index pixel"));
+        REQUIRE(pixelModule.has_value());
+        for (const auto& shader : vertexShaders)
+        {
+            CAPTURE(shader.name);
+            const auto vertexInterface = shader.shaderInterface(backend);
+            CHECK(vertexInterface.drawIndex);
+            CHECK(shader.drawIndex(backend));
+            CHECK(vertexInterface.bindings.empty());
+            CHECK(vertexInterface.pushConstants.empty());
+            auto vertexModule = device.createShaderModule(shader.moduleDesc(backend, "Generated draw-index vertex"));
+            if (!capabilities.shaderDrawIndex)
+            {
+                REQUIRE_FALSE(vertexModule.has_value());
+                CHECK(vertexModule.error().code == rachis::ErrorCode::unsupported);
+                continue;
+            }
+            REQUIRE(vertexModule.has_value());
+            auto layout = device.createPipelineLayout({.drawIndex = shader.drawIndex(backend)});
+            REQUIRE(layout.has_value());
+            const std::array attributes{
+                rachis::VertexAttribute{.format = rachis::VertexFormat::float32x2, .shaderLocation = 0},
+            };
+            const std::array vertexBuffers{rachis::VertexBufferLayout{.stride = 8, .attributes = attributes}};
+            const std::array colorTargets{rachis::ColorTargetState{.format = rachis::Format::rgba8Unorm}};
+            auto pipeline = device.createGraphicsPipeline({
+                .layout = *layout,
+                .vertexShader = *vertexModule,
+                .pixelShader = *pixelModule,
+                .vertexBuffers = vertexBuffers,
+                .colorTargets = colorTargets,
+                .label = "Generated draw-index pipeline",
+            });
+            REQUIRE(pipeline.has_value());
+            CHECK(device.destroyPipeline(*pipeline).has_value());
+            CHECK(device.destroyPipelineLayout(*layout).has_value());
+            CHECK(device.destroyShaderModule(*vertexModule).has_value());
+        }
+        CHECK(device.destroyShaderModule(*pixelModule).has_value());
+        const auto counts = device.diagnosticCounts();
+        CHECK(counts.errors == 0);
+        CHECK(counts.corruptions == 0);
+    }
+}
 #endif

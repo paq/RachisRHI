@@ -426,6 +426,14 @@ namespace rachis::vulkan
                     });
                 }
             }
+            if (shader.drawIndex && !layout.drawIndex)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::validationError,
+                    0,
+                    "The shader reads the draw index, but the pipeline layout does not reserve it.",
+                });
+            }
             return validation_detail::validateShaderPushConstantCoverage(
                 shader.pushConstants, layout.pushConstantRanges, shader.stage);
         }
@@ -2946,7 +2954,8 @@ namespace rachis::vulkan
     Result<PipelineHandle> VulkanPipelineManager::publishGraphicsPipeline(
         const PreparedGraphicsCompilation& prepared,
         const std::shared_ptr<PipelineKeepAlive>& keepAlive,
-        std::vector<std::uint32_t> vertexStrides)
+        std::vector<std::uint32_t> vertexStrides,
+        bool readsDrawIndex)
     {
         const auto& desc = prepared.desc;
         const auto& layout = *prepared.layout;
@@ -2972,6 +2981,7 @@ namespace rachis::vulkan
                 .usesBlendConstants = anyTargetUsesBlendConstants(desc.colorTargets),
                 .dynamicDepthBias = desc.dynamicDepthBiasEnabled,
                 .depthBoundsTest = desc.depthStencil.depthBoundsTestEnabled,
+                .readsDrawIndex = readsDrawIndex,
                 .sampleCount = desc.sampleCount,
                 .viewMask = desc.viewMask,
                 .depthStencilFormat = desc.depthStencil.format,
@@ -3116,7 +3126,12 @@ namespace rachis::vulkan
 
         const auto keepAlive = adoptGraphicsPipeline(*pipeline, layout.owner, *shaders);
         labelPipeline(*pipeline, desc.label);
-        return publishGraphicsPipeline(prepared, keepAlive, std::move(vertexLayout->strides));
+        const bool readsDrawIndex =
+            std::ranges::any_of(std::array{&shaders->vertex, &shaders->task, &shaders->mesh},
+                                [](const std::optional<VulkanShaderManager::NativeShaderModule>* stage) {
+                                    return stage->has_value() && (*stage)->drawIndex;
+                                });
+        return publishGraphicsPipeline(prepared, keepAlive, std::move(vertexLayout->strides), readsDrawIndex);
     }
 
     Result<PipelineHandle> VulkanPipelineManager::createGraphicsPipeline(const GraphicsPipelineDesc& desc)

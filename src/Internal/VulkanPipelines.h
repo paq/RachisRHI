@@ -41,6 +41,7 @@ namespace rachis::vulkan
         bool usesBlendConstants = false;
         bool dynamicDepthBias = false;
         bool depthBoundsTest = false;
+        bool readsDrawIndex = false;
         std::uint32_t sampleCount = 1;
         std::uint32_t viewMask = 0;
         Format depthStencilFormat = Format::unknown;
@@ -375,7 +376,8 @@ namespace rachis::vulkan
         [[nodiscard]] Result<PipelineHandle> publishGraphicsPipeline(
             const PreparedGraphicsCompilation& prepared,
             const std::shared_ptr<PipelineKeepAlive>& keepAlive,
-            std::vector<std::uint32_t> vertexStrides);
+            std::vector<std::uint32_t> vertexStrides,
+            bool readsDrawIndex);
 
         VkDevice device_ = VK_NULL_HANDLE;
         const VolkDeviceTable* table_ = nullptr;

@@ -369,4 +369,60 @@ namespace rachis::d3d12::dxil
         return std::optional{std::move(variables)};
     }
 
+    [[nodiscard]] inline Result<std::optional<bool>> bindsConstantBuffer(std::span<const std::byte> container,
+                                                                         std::uint32_t shaderRegister,
+                                                                         std::uint32_t registerSpace)
+    {
+        using namespace signature_detail;
+        constexpr std::uint32_t constantBufferType = 2;
+        constexpr std::size_t bindInfo0Size = 16;
+        auto found = findPart(container, fourCC('P', 'S', 'V', '0'));
+        if (!found)
+        {
+            return std::unexpected(std::move(found.error()));
+        }
+        if (!found->has_value())
+        {
+            return std::optional<bool>{};
+        }
+        Cursor cursor(**found);
+        const auto infoSize = cursor.u32();
+        if (!infoSize.has_value() || !cursor.take(*infoSize).has_value())
+        {
+            return std::unexpected(malformed("has a truncated PSV0 runtime info"));
+        }
+        const auto resources = cursor.u32();
+        if (!resources.has_value())
+        {
+            return std::unexpected(malformed("has a truncated PSV0 resource table"));
+        }
+        if (*resources == 0)
+        {
+            return std::optional{false};
+        }
+        const auto bindSize = cursor.u32();
+        if (!bindSize.has_value() || *bindSize < bindInfo0Size)
+        {
+            return std::unexpected(malformed("has an unknown PSV0 resource record size"));
+        }
+        for (std::uint32_t index = 0; index < *resources; ++index)
+        {
+            const auto record = cursor.take(*bindSize);
+            if (!record.has_value())
+            {
+                return std::unexpected(malformed("has a truncated PSV0 resource table"));
+            }
+            const auto type = readU32(*record, 0);
+            const auto space = readU32(*record, 4);
+            const auto lowerBound = readU32(*record, 8);
+            const auto upperBound = readU32(*record, 12);
+            if (type == constantBufferType && space == registerSpace && lowerBound <= shaderRegister &&
+                shaderRegister <= upperBound)
+            {
+                return std::optional{true};
+            }
+        }
+        return std::optional{false};
+    }
+
 } // namespace rachis::d3d12::dxil

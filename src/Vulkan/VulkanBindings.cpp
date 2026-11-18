@@ -2207,6 +2207,7 @@ namespace rachis::vulkan
         record->nativePushConstantRanges =
             validation_detail::mergePushConstantRangesPerStage(enabledPushConstantRanges);
         record->pushConstantBytes = *pushConstantSize;
+        record->drawIndex = desc.drawIndex;
         record->sets = std::move(*sets);
         auto keepAlive = createNativePipelineLayout(*record);
         if (!keepAlive)
@@ -2340,6 +2341,7 @@ namespace rachis::vulkan
                 .dynamicBufferCount = set->dynamicBufferCount,
             });
         }
+        native.drawIndex = (*found)->drawIndex;
         return native;
     }
 

@@ -169,6 +169,7 @@ namespace rachis
     }
 
     inline constexpr std::uint64_t indirectArgumentAlignment = sizeof(std::uint32_t);
+    inline constexpr std::uint32_t drawIndexPrefixSize = sizeof(std::uint32_t);
 
     struct DispatchIndirectArguments final
     {
@@ -216,6 +217,8 @@ namespace rachis
         std::uint32_t stride = 0;
         BufferHandle countBuffer = {};
         std::uint64_t countOffset = 0;
+
+        bool drawIndexPrefix = false;
     };
 
     struct IndirectMeshDispatchDesc final
@@ -226,6 +229,8 @@ namespace rachis
         std::uint32_t stride = 0;
         BufferHandle countBuffer = {};
         std::uint64_t countOffset = 0;
+
+        bool drawIndexPrefix = false;
     };
 
 } // namespace rachis

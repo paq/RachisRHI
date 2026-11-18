@@ -337,6 +337,8 @@ namespace rachis
         bool multiDrawIndirect = false;
         bool drawIndirectCount = false;
 
+        bool shaderDrawIndex = false;
+
         bool multiViewport = false;
         bool debugMarkers = false;
         bool pipelineCaches = false;
