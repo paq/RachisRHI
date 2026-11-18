@@ -1377,3 +1377,41 @@ TEST_CASE("ShaderBinaryTool leaves Metal sources without a vertex_id parameter u
         CHECK_FALSE(rachis::shader_tool::rebaseMetalVertexIds(source).has_value());
     }
 }
+
+TEST_CASE("ShaderBinaryTool leaves the stage interface of Metal task and mesh entries to the Metal compiler",
+          "[size:small][rhi][shader][tooling]")
+{
+    constexpr std::string_view meshJson = R"({
+        "parameters": [],
+        "entryPoints": [{
+            "name": "meshMain",
+            "stage": "mesh",
+            "parameters": [
+                {"name": "payload", "stage": "mesh", "binding": {"kind": "varyingInput", "index": 0},
+                 "type": {"kind": "struct", "name": "Payload", "fields": [
+                     {"name": "color", "binding": {"kind": "varyingInput", "index": 0},
+                      "type": {"kind": "vector", "elementCount": 4, "elementType": {"kind": "scalar", "scalarType": "float32"}}}]}},
+                {"name": "vertices", "stage": "mesh", "binding": {"kind": "varyingOutput", "index": 0},
+                 "type": {"kind": "MeshOutput"}}
+            ],
+            "threadGroupSize": [1, 1, 1]
+        }]
+    })";
+    const auto mesh = rachis::shader_tool::collectMetalStageInterface(meshJson, "meshMain");
+    REQUIRE(mesh.has_value());
+    CHECK_FALSE(mesh->reflected);
+    CHECK(mesh->inputs.empty());
+    CHECK(mesh->outputs.empty());
+    const auto enriched = rachis::shader_tool::enrichMetalReflectionJson(meshJson, {}, "meshMain");
+    REQUIRE(enriched.has_value());
+    CHECK(enriched->contains(R"("rachisBindings": [])"));
+    CHECK_FALSE(enriched->contains("rachisStageInterface"));
+
+#if RACHIS_ENABLE_METAL
+    const auto reflected = rachis::metal::parseSlangReflectionJson(*enriched, "meshMain", rachis::ShaderStage::mesh);
+    REQUIRE(reflected.has_value());
+    CHECK_FALSE(reflected->stageInterface.has_value());
+    REQUIRE(reflected->workgroupSize.has_value());
+    CHECK(reflected->workgroupSize->x == 1);
+#endif
+}

@@ -274,6 +274,12 @@ namespace rachis::metal
                                           const IndirectDrawDesc& desc) override;
         [[nodiscard]] Status drawIndexedIndirect(detail::BackendCommandBuffer& commandBuffer,
                                                  const IndirectDrawDesc& desc) override;
+        [[nodiscard]] Status dispatchMesh(detail::BackendCommandBuffer& commandBuffer,
+                                          std::uint32_t groupCountX,
+                                          std::uint32_t groupCountY,
+                                          std::uint32_t groupCountZ) override;
+        [[nodiscard]] Status dispatchMeshIndirect(detail::BackendCommandBuffer& commandBuffer,
+                                                  const IndirectMeshDispatchDesc& desc) override;
         [[nodiscard]] Result<QueryPoolHandle> createTimestampQueryPool(const TimestampQueryPoolDesc& desc) override;
         [[nodiscard]] Status destroyQueryPool(QueryPoolHandle queryPool) override;
         [[nodiscard]] Status resetQueryPool(detail::BackendCommandBuffer& commandBuffer,

@@ -267,7 +267,9 @@ TEST_CASE("Metal reports exact view-index and layer limits and rejects unmapped 
         .colorTargets = colorTargets,
     });
     REQUIRE_FALSE(mesh);
-    CHECK(mesh.error().code == rachis::ErrorCode::unsupported);
+    CHECK(mesh.error().code == (rachis::test::requireCapabilities(device).meshShaders
+                                    ? rachis::ErrorCode::invalidArgument
+                                    : rachis::ErrorCode::unsupported));
 
     auto fans = device.createGraphicsPipeline({
         .layout = *layout,

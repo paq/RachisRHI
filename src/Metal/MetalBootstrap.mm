@@ -267,6 +267,22 @@ namespace rachis::metal
             capabilities.indirectDraws = true;
             capabilities.indirectDrawBaseInstance = true;
             capabilities.primitiveRestart = true;
+            if ([device supportsFamily:MTLGPUFamilyApple9])
+            {
+                const auto invocations = static_cast<std::uint32_t>(threadgroup.width);
+                capabilities.meshShaders = true;
+                capabilities.taskShaders = true;
+                capabilities.meshShader = {
+                    .maxTaskWorkgroupInvocations = invocations,
+                    .maxTaskPayloadBytes = metalMaxMeshPayloadBytes,
+                    .maxMeshWorkgroupInvocations = invocations,
+                    .maxMeshOutputVertices = metalMaxMeshOutputVertices,
+                    .maxMeshOutputPrimitives = metalMaxMeshOutputPrimitives,
+                    .maxMeshOutputMemoryBytes = metalMaxMeshOutputMemoryBytes,
+                    .maxWorkgroupCount = {65535, 65535, 65535},
+                    .maxTotalWorkgroups = metalMaxMeshGridThreadgroups,
+                };
+            }
             return capabilities;
         }
 

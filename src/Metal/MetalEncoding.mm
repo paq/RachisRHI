@@ -694,9 +694,12 @@ namespace rachis::metal
             id<MTLDevice> device, MetalCommandEntry& entry, const MetalPipelineRecord& pipeline)
         {
             std::optional<std::uint64_t> pushConstantGpuAddress;
+            const bool geometryPushConstants =
+                pipeline.mesh ? (pipeline.meshStageBindings.usesPushConstants ||
+                                 (pipeline.hasObjectShader && pipeline.objectStageBindings.usesPushConstants))
+                              : pipeline.vertexStageBindings.usesPushConstants;
             const bool anyStagePushConstants =
-                pipeline.vertexStageBindings.usesPushConstants ||
-                (pipeline.hasPixelShader && pipeline.pixelStageBindings.usesPushConstants);
+                geometryPushConstants || (pipeline.hasPixelShader && pipeline.pixelStageBindings.usesPushConstants);
             if (!anyStagePushConstants)
             {
                 return pushConstantGpuAddress;
@@ -714,7 +717,7 @@ namespace rachis::metal
                 }
                 entry.activeGraphicsPushSlice = *captured;
                 entry.graphicsPushConstantsDirty = false;
-                if (pipeline.vertexStageBindings.usesPushConstants)
+                if (geometryPushConstants)
                 {
                     entry.vertexTableDirty = true;
                 }
@@ -779,6 +782,57 @@ namespace rachis::metal
             return {};
         }
 
+        [[nodiscard]] Status metalApplyMeshStageArgumentTables(id<MTLDevice> device,
+                                                               MetalCommandEntry& entry,
+                                                               const MetalPipelineRecord& pipeline,
+                                                               std::optional<std::uint64_t> pushConstantGpuAddress)
+        {
+            if (!entry.vertexTableDirty)
+            {
+                return {};
+            }
+            if (pipeline.hasObjectShader)
+            {
+                auto objectTable = metalBuildStageArgumentTable(
+                    device,
+                    entry,
+                    MetalArgumentTableStage::object,
+                    pipeline.objectStageBindings,
+                    entry.boundGraphicsVersions,
+                    pipeline.objectStageBindings.usesPushConstants ? pushConstantGpuAddress : std::nullopt,
+                    {},
+                    0);
+                if (!objectTable)
+                {
+                    return std::unexpected(std::move(objectTable.error()));
+                }
+                if (*objectTable != nil)
+                {
+                    [entry.renderEncoder setArgumentTable:*objectTable atStages:MTLRenderStageObject];
+                }
+            }
+            auto meshTable = metalBuildStageArgumentTable(
+                device,
+                entry,
+                MetalArgumentTableStage::mesh,
+                pipeline.meshStageBindings,
+                entry.boundGraphicsVersions,
+                pipeline.meshStageBindings.usesPushConstants ? pushConstantGpuAddress : std::nullopt,
+                {},
+                0);
+            if (!meshTable)
+            {
+                return std::unexpected(std::move(meshTable.error()));
+            }
+            if (*meshTable != nil)
+            {
+                [entry.renderEncoder setArgumentTable:*meshTable atStages:MTLRenderStageMesh];
+            }
+            entry.activeVertexTable = nil;
+            entry.vertexTableDirty = false;
+            return {};
+        }
+
         [[nodiscard]] Status metalApplyFragmentArgumentTable(id<MTLDevice> device,
                                                              MetalCommandEntry& entry,
                                                              const MetalPipelineRecord& pipeline,
@@ -839,8 +893,10 @@ namespace rachis::metal
             {
                 return std::unexpected(std::move(pushConstantGpuAddress.error()));
             }
-            if (auto applied = metalApplyVertexArgumentTable(device, entry, pipeline, *pushConstantGpuAddress);
-                !applied)
+            auto applied = pipeline.mesh
+                               ? metalApplyMeshStageArgumentTables(device, entry, pipeline, *pushConstantGpuAddress)
+                               : metalApplyVertexArgumentTable(device, entry, pipeline, *pushConstantGpuAddress);
+            if (!applied)
             {
                 return applied;
             }
@@ -2830,7 +2886,8 @@ namespace rachis::metal
         const std::scoped_lock lock(native->owner()->mutex);
         auto& state = native->graphicsState();
         auto* const pipeline = static_cast<MetalPipelineRecord*>(state.pipelineOwner.get());
-        if (state.renderingOwner == nullptr || pipeline == nullptr || !pipeline->graphicsState.has_value() ||
+        if (state.renderingOwner == nullptr || pipeline == nullptr || pipeline->mesh ||
+            !pipeline->graphicsState.has_value() ||
             (pipeline->graphicsState->rasterizationEnabled && !metalHasCompleteViewportState(state)) ||
             (state.blendConstantsRequired && !state.blendConstantsSet) ||
             (state.stencilReferenceRequired && !state.stencilReferenceSet) || !metalAllBound(state.boundBindingSets) ||
@@ -2892,7 +2949,8 @@ namespace rachis::metal
         const std::scoped_lock lock(native->owner()->mutex);
         auto& state = native->graphicsState();
         auto* const pipeline = static_cast<MetalPipelineRecord*>(state.pipelineOwner.get());
-        if (state.renderingOwner == nullptr || pipeline == nullptr || !pipeline->graphicsState.has_value() ||
+        if (state.renderingOwner == nullptr || pipeline == nullptr || pipeline->mesh ||
+            !pipeline->graphicsState.has_value() ||
             (pipeline->graphicsState->rasterizationEnabled && !metalHasCompleteViewportState(state)) ||
             (state.blendConstantsRequired && !state.blendConstantsSet) ||
             (state.stencilReferenceRequired && !state.stencilReferenceSet) || !metalAllBound(state.boundBindingSets) ||
@@ -3000,7 +3058,7 @@ namespace rachis::metal
         auto& state = native->graphicsState();
         auto* const pipeline = static_cast<MetalPipelineRecord*>(state.pipelineOwner.get());
         auto* entry = native->entry();
-        if (entry == nullptr || state.renderingOwner == nullptr || pipeline == nullptr ||
+        if (entry == nullptr || state.renderingOwner == nullptr || pipeline == nullptr || pipeline->mesh ||
             !pipeline->graphicsState.has_value() ||
             (pipeline->graphicsState->rasterizationEnabled && !metalHasCompleteViewportState(state)) ||
             (state.blendConstantsRequired && !state.blendConstantsSet) ||
@@ -3091,7 +3149,7 @@ namespace rachis::metal
         auto& state = native->graphicsState();
         auto* const pipeline = static_cast<MetalPipelineRecord*>(state.pipelineOwner.get());
         auto* entry = native->entry();
-        if (entry == nullptr || state.renderingOwner == nullptr || pipeline == nullptr ||
+        if (entry == nullptr || state.renderingOwner == nullptr || pipeline == nullptr || pipeline->mesh ||
             !pipeline->graphicsState.has_value() ||
             (pipeline->graphicsState->rasterizationEnabled && !metalHasCompleteViewportState(state)) ||
             (state.blendConstantsRequired && !state.blendConstantsSet) ||
@@ -3130,6 +3188,194 @@ namespace rachis::metal
                       indexBuffer:entry->indexBuffer.buffer.gpuAddress + entry->indexBuffer.offset
                 indexBufferLength:static_cast<NSUInteger>(alignedRemaining)
                    indirectBuffer:argument.gpuAddress + desc.argumentOffset];
+        return {};
+    }
+
+    namespace
+    {
+
+        [[nodiscard]] bool metalMeshDispatchReady(const detail::GraphicsCommandState& state,
+                                                  const MetalPipelineRecord* pipeline,
+                                                  const MetalCommandEntry* entry)
+        {
+            return entry != nullptr && state.renderingOwner != nullptr && pipeline != nullptr && pipeline->mesh &&
+                   pipeline->graphicsState.has_value() &&
+                   (!pipeline->graphicsState->rasterizationEnabled || metalHasCompleteViewportState(state)) &&
+                   (!state.blendConstantsRequired || state.blendConstantsSet) &&
+                   (!state.stencilReferenceRequired || state.stencilReferenceSet) &&
+                   metalAllBound(state.boundBindingSets);
+        }
+
+    } // namespace
+
+    Status MetalDevice::dispatchMesh(detail::BackendCommandBuffer& commandBuffer,
+                                     std::uint32_t groupCountX,
+                                     std::uint32_t groupCountY,
+                                     std::uint32_t groupCountZ)
+    {
+        const MetalAutoreleasePool autoreleasePool;
+        if (auto blocked = requireActive(); !blocked)
+        {
+            return std::unexpected(std::move(blocked.error()));
+        }
+        if (!capabilities_.meshShaders)
+        {
+            return std::unexpected(unsupportedOperation("dispatchMesh"));
+        }
+        std::uint64_t deviceToken = 0;
+        id<MTLDevice> device = nil;
+        {
+            std::scoped_lock const lock(mutex_);
+            if (native_ == nullptr)
+            {
+                return std::unexpected(
+                    metalSelectionError(ErrorCode::invalidState, "Metal dispatchMesh requires an active device."));
+            }
+            deviceToken = native_->deviceToken;
+            device = native_->device;
+        }
+        auto* native = asMetalCommand(commandBuffer, deviceToken);
+        if (native == nullptr)
+        {
+            return std::unexpected(metalSelectionError(ErrorCode::invalidArgument,
+                                                       "The command buffer belongs to another device or backend."));
+        }
+        const std::scoped_lock lock(native->owner()->mutex);
+        auto& state = native->graphicsState();
+        auto* const pipeline = static_cast<MetalPipelineRecord*>(state.pipelineOwner.get());
+        auto* entry = native->entry();
+        if (!metalMeshDispatchReady(state, pipeline, entry))
+        {
+            return std::unexpected(metalSelectionError(
+                ErrorCode::invalidState,
+                "Mesh dispatch requires complete rendering, mesh-pipeline, binding, viewport, and scissor state."));
+        }
+        const auto& limits = capabilities_.meshShader;
+        const auto totalWorkgroups = static_cast<std::uint64_t>(groupCountX) * groupCountY * groupCountZ;
+        if (groupCountX == 0 || groupCountY == 0 || groupCountZ == 0 || groupCountX > limits.maxWorkgroupCount[0] ||
+            groupCountY > limits.maxWorkgroupCount[1] || groupCountZ > limits.maxWorkgroupCount[2] ||
+            totalWorkgroups > limits.maxTotalWorkgroups)
+        {
+            return std::unexpected(metalSelectionError(
+                ErrorCode::invalidArgument,
+                "Mesh dispatch counts must fit every dimension and the total device workgroup limit."));
+        }
+        if (metalDrawScissoredOut(*entry, *pipeline))
+        {
+            return {};
+        }
+        auto applied = metalApplyGraphicsDrawState(device, *entry, *pipeline);
+        if (!applied)
+        {
+            return applied;
+        }
+        [entry->renderEncoder drawMeshThreadgroups:MTLSizeMake(groupCountX, groupCountY, groupCountZ)
+                       threadsPerObjectThreadgroup:pipeline->objectThreadgroupSize
+                         threadsPerMeshThreadgroup:pipeline->meshThreadgroupSize];
+        return {};
+    }
+
+    Status MetalDevice::dispatchMeshIndirect(detail::BackendCommandBuffer& commandBuffer,
+                                             const IndirectMeshDispatchDesc& desc)
+    {
+        const MetalAutoreleasePool autoreleasePool;
+        if (auto blocked = requireActive(); !blocked)
+        {
+            return std::unexpected(std::move(blocked.error()));
+        }
+        if (!capabilities_.meshShaders)
+        {
+            return std::unexpected(unsupportedOperation("dispatchMeshIndirect"));
+        }
+        constexpr std::uint32_t recordSize = sizeof(DispatchIndirectArguments);
+        const std::uint32_t stride = desc.stride == 0 ? recordSize : desc.stride;
+        if (!desc.argumentBuffer.isValid() || desc.argumentOffset % indirectArgumentAlignment != 0 ||
+            stride < recordSize || stride % indirectArgumentAlignment != 0 ||
+            (!desc.countBuffer.isValid() && desc.countOffset != 0))
+        {
+            return std::unexpected(metalSelectionError(
+                ErrorCode::invalidArgument,
+                "Indirect mesh dispatch requires an argument buffer, aligned offsets, and an aligned 12-byte record."));
+        }
+        if (desc.countBuffer.isValid() && !capabilities_.drawIndirectCount)
+        {
+            return std::unexpected(unsupportedOperation("dispatchMeshIndirect with a count buffer"));
+        }
+        if (desc.maxDispatchCount > 1 && !capabilities_.multiDrawIndirect)
+        {
+            return std::unexpected(unsupportedOperation("dispatchMeshIndirect with more than one record"));
+        }
+        std::uint64_t deviceToken = 0;
+        id<MTLDevice> device = nil;
+        id<MTLBuffer> argument = nil;
+        std::shared_ptr<void> argumentOwner;
+        {
+            std::scoped_lock const lock(mutex_);
+            if (native_ == nullptr)
+            {
+                return std::unexpected(metalSelectionError(ErrorCode::invalidState,
+                                                           "Metal dispatchMeshIndirect requires an active device."));
+            }
+            deviceToken = native_->deviceToken;
+            device = native_->device;
+            auto* record = native_->buffers.find(desc.argumentBuffer);
+            if (record == nullptr || record->buffer == nil || !hasAny(record->desc.usage, BufferUsage::indirect) ||
+                desc.argumentOffset > record->desc.size)
+            {
+                return std::unexpected(metalSelectionError(
+                    ErrorCode::invalidArgument,
+                    "The mesh-dispatch argument buffer requires indirect usage and an in-bounds offset."));
+            }
+            const auto available = record->desc.size - desc.argumentOffset;
+            if (desc.maxDispatchCount != 0 &&
+                (available < recordSize ||
+                 static_cast<std::uint64_t>(desc.maxDispatchCount - 1U) > (available - recordSize) / stride))
+            {
+                return std::unexpected(metalSelectionError(
+                    ErrorCode::invalidArgument, "The indirect mesh-dispatch records exceed the argument buffer."));
+            }
+            argument = record->buffer;
+            argumentOwner = record->owner;
+        }
+        auto* native = asMetalCommand(commandBuffer, deviceToken);
+        if (native == nullptr)
+        {
+            return std::unexpected(metalSelectionError(ErrorCode::invalidArgument,
+                                                       "The command buffer belongs to another device or backend."));
+        }
+        const std::scoped_lock lock(native->owner()->mutex);
+        auto& state = native->graphicsState();
+        auto* const pipeline = static_cast<MetalPipelineRecord*>(state.pipelineOwner.get());
+        auto* entry = native->entry();
+        if (!metalMeshDispatchReady(state, pipeline, entry))
+        {
+            return std::unexpected(metalSelectionError(ErrorCode::invalidState,
+                                                       "Indirect mesh dispatch requires complete rendering, "
+                                                       "mesh-pipeline, binding, viewport, and scissor state."));
+        }
+        if (desc.maxDispatchCount == 0 || metalDrawScissoredOut(*entry, *pipeline))
+        {
+            return {};
+        }
+        auto kept = retainMetalApplicationResource(*native, argumentOwner);
+        if (!kept)
+        {
+            return kept;
+        }
+        auto applied = metalApplyGraphicsDrawState(device, *entry, *pipeline);
+        if (!applied)
+        {
+            return applied;
+        }
+        metalRetainResidency(*entry, argument);
+        for (std::uint32_t record = 0; record < desc.maxDispatchCount; ++record)
+        {
+            const auto address =
+                argument.gpuAddress + desc.argumentOffset + static_cast<std::uint64_t>(record) * stride;
+            [entry->renderEncoder drawMeshThreadgroupsWithIndirectBuffer:address
+                                             threadsPerObjectThreadgroup:pipeline->objectThreadgroupSize
+                                               threadsPerMeshThreadgroup:pipeline->meshThreadgroupSize];
+        }
         return {};
     }
 

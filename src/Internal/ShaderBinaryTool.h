@@ -1312,6 +1312,7 @@ namespace rachis::shader_tool
     {
         std::vector<MetalStageInterfaceEntry> inputs{};
         std::vector<MetalStageInterfaceEntry> outputs{};
+        bool reflected = true;
     };
 
     namespace detail
@@ -1557,6 +1558,12 @@ namespace rachis::shader_tool
                 return std::unexpected("Cooked Metal reflection JSON does not contain the selected entry point.");
             }
             MetalStageInterface stageInterface;
+            if (const auto* stage = findString(*entry, "stage");
+                stage != nullptr && (*stage == "mesh" || *stage == "amplification"))
+            {
+                stageInterface.reflected = false;
+                return stageInterface;
+            }
             if (const auto* parameters = entry->find("parameters");
                 parameters != nullptr && parameters->asArray() != nullptr)
             {
@@ -1701,11 +1708,16 @@ namespace rachis::shader_tool
                 suffix += '}';
             }
         }
-        suffix += "],\n    \"rachisStageInterface\": {\"inputs\": ";
-        detail::appendStageInterfaceJson(suffix, stageInterface->inputs);
-        suffix += ", \"outputs\": ";
-        detail::appendStageInterfaceJson(suffix, stageInterface->outputs);
-        suffix += "}\n";
+        suffix += ']';
+        if (stageInterface->reflected)
+        {
+            suffix += ",\n    \"rachisStageInterface\": {\"inputs\": ";
+            detail::appendStageInterfaceJson(suffix, stageInterface->inputs);
+            suffix += ", \"outputs\": ";
+            detail::appendStageInterfaceJson(suffix, stageInterface->outputs);
+            suffix += '}';
+        }
+        suffix += '\n';
 
         std::string enriched;
         enriched.reserve(rawMetalReflectionJson.size() + suffix.size() + 2);

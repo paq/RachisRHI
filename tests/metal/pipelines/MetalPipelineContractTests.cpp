@@ -249,7 +249,8 @@ TEST_CASE("Metal pipeline creation rejects malformed state and unsupported stage
         .colorTargets = colorTargets,
     });
     REQUIRE_FALSE(meshRejected);
-    CHECK(meshRejected.error().code == rachis::ErrorCode::unsupported);
+    CHECK(meshRejected.error().code ==
+          (capabilities->meshShaders ? rachis::ErrorCode::invalidArgument : rachis::ErrorCode::unsupported));
 }
 
 TEST_CASE("Metal shader modules check declared vertex inputs against the vertex function",

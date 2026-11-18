@@ -1018,7 +1018,8 @@ namespace rachis::metal
                    (desc.sampleMask & activeSampleMask) == 0 || (desc.alphaToCoverageEnabled && desc.sampleCount == 1);
         }
 
-        [[nodiscard]] Status metalValidateGraphicsShaderStages(const GraphicsPipelineDesc& desc)
+        [[nodiscard]] Status metalValidateGraphicsShaderStages(const GraphicsPipelineDesc& desc,
+                                                               const DeviceCapabilities& capabilities)
         {
             const bool hasTaskShader = desc.taskShader.isValid();
             const bool hasMeshShader = desc.meshShader.isValid();
@@ -1033,15 +1034,19 @@ namespace rachis::metal
                                                            "Mesh graphics requires a mesh module, an optional task "
                                                            "module, and no conventional input stages or state."));
             }
-            if (usesMeshPipeline)
+            if (usesMeshPipeline && !capabilities.meshShaders)
             {
                 return std::unexpected(
                     metalSelectionError(ErrorCode::unsupported, "The device does not support mesh shaders."));
             }
-            if (hasTaskShader)
+            if (hasTaskShader && !capabilities.taskShaders)
             {
                 return std::unexpected(
                     metalSelectionError(ErrorCode::unsupported, "The device does not support task shaders."));
+            }
+            if (usesMeshPipeline)
+            {
+                return {};
             }
             if (desc.geometryShader.isValid())
             {
@@ -1151,7 +1156,7 @@ namespace rachis::metal
             {
                 return cache;
             }
-            if (auto stages = metalValidateGraphicsShaderStages(desc); !stages)
+            if (auto stages = metalValidateGraphicsShaderStages(desc, capabilities); !stages)
             {
                 return stages;
             }
@@ -1818,10 +1823,12 @@ namespace rachis::metal
         [[nodiscard]] Status metalValidateStageArgumentCapacity(std::span<const PushConstantRange> pushConstantRanges,
                                                                 MetalPipelineLayoutRecord& record)
         {
-            constexpr std::array<ShaderStage, 3> checkedStages{
+            constexpr std::array<ShaderStage, 5> checkedStages{
                 ShaderStage::compute,
                 ShaderStage::vertex,
                 ShaderStage::pixel,
+                ShaderStage::task,
+                ShaderStage::mesh,
             };
             bool hasVariableVertexBuffer = false;
             for (const ShaderStage stage : checkedStages)
@@ -2461,15 +2468,59 @@ namespace rachis::metal
             std::shared_ptr<MetalPipelineLayoutRecord> layout;
             MetalShaderModuleRecord vertex{};
             MetalShaderModuleRecord pixel{};
+            MetalShaderModuleRecord task{};
+            MetalShaderModuleRecord mesh{};
             std::shared_ptr<MetalPipelineCacheRecord> cache;
             __strong id<MTLDevice> mtlDevice = nil;
             bool hasPixel = false;
+            bool hasTask = false;
+            bool usesMesh = false;
         };
+
+        [[nodiscard]] Status metalAcquireMeshShaders(MetalDeviceNative& native,
+                                                     const GraphicsPipelineDesc& desc,
+                                                     MetalGraphicsPipelineInputs& inputs)
+        {
+            auto* foundLayout = native.pipelineLayouts.find(desc.layout);
+            auto* foundMesh = native.shaderModules.find(desc.meshShader);
+            auto* foundTask = inputs.hasTask ? native.shaderModules.find(desc.taskShader) : nullptr;
+            auto* foundPixel = inputs.hasPixel ? native.shaderModules.find(desc.pixelShader) : nullptr;
+            if (foundLayout == nullptr || foundMesh == nullptr || (inputs.hasTask && foundTask == nullptr) ||
+                (inputs.hasPixel && foundPixel == nullptr))
+            {
+                return std::unexpected(
+                    metalSelectionError(ErrorCode::invalidArgument,
+                                        "A graphics pipeline references an invalid or stale layout or shader module."));
+            }
+            if (!metalIsCompiledShaderOfStage(*foundMesh, ShaderStage::mesh) ||
+                (inputs.hasTask && !metalIsCompiledShaderOfStage(*foundTask, ShaderStage::task)) ||
+                (inputs.hasPixel && !metalIsCompiledShaderOfStage(*foundPixel, ShaderStage::pixel)))
+            {
+                return std::unexpected(metalSelectionError(
+                    ErrorCode::invalidArgument,
+                    "A graphics pipeline requires correctly staged conventional or task/mesh shader modules."));
+            }
+            inputs.layout = *foundLayout;
+            inputs.mesh = *foundMesh;
+            if (inputs.hasTask)
+            {
+                inputs.task = *foundTask;
+            }
+            if (inputs.hasPixel)
+            {
+                inputs.pixel = *foundPixel;
+            }
+            return {};
+        }
 
         [[nodiscard]] Status metalAcquireGraphicsShaders(MetalDeviceNative& native,
                                                          const GraphicsPipelineDesc& desc,
                                                          MetalGraphicsPipelineInputs& inputs)
         {
+            if (inputs.usesMesh)
+            {
+                return metalAcquireMeshShaders(native, desc, inputs);
+            }
             auto* foundLayout = native.pipelineLayouts.find(desc.layout);
             auto* foundVertex = native.shaderModules.find(desc.vertexShader);
             if (foundLayout == nullptr || foundVertex == nullptr)
@@ -2512,6 +2563,8 @@ namespace rachis::metal
         {
             MetalGraphicsPipelineInputs inputs;
             inputs.hasPixel = desc.pixelShader.isValid();
+            inputs.usesMesh = desc.meshShader.isValid();
+            inputs.hasTask = desc.taskShader.isValid();
             std::scoped_lock const lock(deviceMutex);
             if (native == nullptr || native->compiler == nil)
             {
@@ -2546,9 +2599,39 @@ namespace rachis::metal
                 ShaderStage::vertex, vertex.stageInterface->outputs, pixel.stageInterface->inputs);
         }
 
+        [[nodiscard]] Status metalValidateMeshShaderInterfaces(const MetalGraphicsPipelineInputs& inputs)
+        {
+            if (inputs.hasTask)
+            {
+                if (auto taskInterface = metalValidatePipelineShaderInterface(inputs.task.snapshot, *inputs.layout);
+                    !taskInterface)
+                {
+                    return std::unexpected(std::move(taskInterface.error()));
+                }
+            }
+            if (auto meshInterface = metalValidatePipelineShaderInterface(inputs.mesh.snapshot, *inputs.layout);
+                !meshInterface)
+            {
+                return std::unexpected(std::move(meshInterface.error()));
+            }
+            if (inputs.hasPixel)
+            {
+                if (auto pixelInterface = metalValidatePipelineShaderInterface(inputs.pixel.snapshot, *inputs.layout);
+                    !pixelInterface)
+                {
+                    return std::unexpected(std::move(pixelInterface.error()));
+                }
+            }
+            return {};
+        }
+
         [[nodiscard]] Status metalValidateGraphicsShaderInterfaces(const MetalGraphicsPipelineInputs& inputs,
                                                                    const std::vector<std::uint32_t>& locations)
         {
+            if (inputs.usesMesh)
+            {
+                return metalValidateMeshShaderInterfaces(inputs);
+            }
             if (auto vertexInterface = metalValidatePipelineShaderInterface(inputs.vertex.snapshot, *inputs.layout);
                 !vertexInterface)
             {
@@ -2734,6 +2817,13 @@ namespace rachis::metal
             {
                 return std::unexpected(std::move(depthStencil.error()));
             }
+            if (inputs.usesMesh)
+            {
+                return MetalGraphicsAttachmentLayout{
+                    .colorTargets = std::move(*colorTargets),
+                    .vertexBufferBaseIndex = 0,
+                };
+            }
             auto vertexBufferBaseIndex =
                 metalVertexBufferBaseIndex(*inputs.layout, inputs.vertex.stageBindings, desc.vertexBuffers.size());
             if (!vertexBufferBaseIndex)
@@ -2746,13 +2836,13 @@ namespace rachis::metal
             };
         }
 
-        void metalConfigureColorAttachments(MTL4RenderPipelineDescriptor* pipelineDesc,
+        void metalConfigureColorAttachments(MTL4RenderPipelineColorAttachmentDescriptorArray* attachments,
                                             std::span<const ColorTargetState> colorTargets)
         {
             for (NSUInteger index = 0; index < colorTargets.size(); ++index)
             {
                 const auto& target = colorTargets[index];
-                auto* const attachment = pipelineDesc.colorAttachments[index];
+                auto* const attachment = attachments[index];
                 attachment.pixelFormat = metalPixelFormat(target.format);
                 attachment.blendingState = target.blend.enabled ? MTL4BlendStateEnabled : MTL4BlendStateDisabled;
                 attachment.sourceRGBBlendFactor = metalBlendFactor(target.blend.color.sourceFactor);
@@ -2765,11 +2855,66 @@ namespace rachis::metal
             }
         }
 
-        [[nodiscard]] MTL4RenderPipelineDescriptor* metalMakeRenderPipelineDescriptor(
+        [[nodiscard]] NSUInteger metalWorkgroupThreads(const ShaderInterfaceSnapshot& snapshot) noexcept
+        {
+            if (!snapshot.workgroupSize.has_value())
+            {
+                return 1;
+            }
+            const auto& size = *snapshot.workgroupSize;
+            return static_cast<NSUInteger>(size.x) * size.y * size.z;
+        }
+
+        [[nodiscard]] MTLSize metalWorkgroupMtlSize(const ShaderInterfaceSnapshot& snapshot) noexcept
+        {
+            if (!snapshot.workgroupSize.has_value())
+            {
+                return MTLSizeMake(1, 1, 1);
+            }
+            const auto& size = *snapshot.workgroupSize;
+            return MTLSizeMake(size.x, size.y, size.z);
+        }
+
+        [[nodiscard]] MTL4MeshRenderPipelineDescriptor* metalMakeMeshRenderPipelineDescriptor(
+            const GraphicsPipelineDesc& desc, const MetalGraphicsPipelineInputs& inputs)
+        {
+            MTL4MeshRenderPipelineDescriptor* const pipelineDesc = [MTL4MeshRenderPipelineDescriptor new];
+            if (inputs.hasTask)
+            {
+                pipelineDesc.objectFunctionDescriptor =
+                    metalLibraryFunctionDescriptor(inputs.task.library, inputs.task.entryPoint);
+                pipelineDesc.maxTotalThreadsPerObjectThreadgroup = metalWorkgroupThreads(inputs.task.snapshot);
+                pipelineDesc.maxTotalThreadgroupsPerMeshGrid = metalMaxMeshGridThreadgroups;
+            }
+            pipelineDesc.meshFunctionDescriptor =
+                metalLibraryFunctionDescriptor(inputs.mesh.library, inputs.mesh.entryPoint);
+            pipelineDesc.maxTotalThreadsPerMeshThreadgroup = metalWorkgroupThreads(inputs.mesh.snapshot);
+            if (inputs.hasPixel)
+            {
+                pipelineDesc.fragmentFunctionDescriptor =
+                    metalLibraryFunctionDescriptor(inputs.pixel.library, inputs.pixel.entryPoint);
+            }
+            pipelineDesc.rasterSampleCount = desc.sampleCount;
+            pipelineDesc.alphaToCoverageState =
+                desc.alphaToCoverageEnabled ? MTL4AlphaToCoverageStateEnabled : MTL4AlphaToCoverageStateDisabled;
+            pipelineDesc.rasterizationEnabled = desc.rasterizedStream.has_value();
+            if (!desc.label.empty())
+            {
+                pipelineDesc.label = metalNsString(desc.label);
+            }
+            metalConfigureColorAttachments(pipelineDesc.colorAttachments, desc.colorTargets);
+            return pipelineDesc;
+        }
+
+        [[nodiscard]] MTL4PipelineDescriptor* metalMakeRenderPipelineDescriptor(
             const GraphicsPipelineDesc& desc,
             const MetalGraphicsPipelineInputs& inputs,
             std::uint32_t vertexBufferBaseIndex)
         {
+            if (inputs.usesMesh)
+            {
+                return metalMakeMeshRenderPipelineDescriptor(desc, inputs);
+            }
             MTL4RenderPipelineDescriptor* const pipelineDesc = [MTL4RenderPipelineDescriptor new];
             pipelineDesc.vertexFunctionDescriptor =
                 metalLibraryFunctionDescriptor(inputs.vertex.library, inputs.vertex.entryPoint);
@@ -2788,7 +2933,7 @@ namespace rachis::metal
             {
                 pipelineDesc.label = metalNsString(desc.label);
             }
-            metalConfigureColorAttachments(pipelineDesc, desc.colorTargets);
+            metalConfigureColorAttachments(pipelineDesc.colorAttachments, desc.colorTargets);
             return pipelineDesc;
         }
 
@@ -2797,7 +2942,20 @@ namespace rachis::metal
                                                                               std::uint32_t vertexBufferBaseIndex)
         {
             MetalPipelineFingerprintWriter writer;
-            writer.writeShader(inputs.vertex);
+            writer.write(inputs.usesMesh);
+            if (inputs.usesMesh)
+            {
+                writer.write(inputs.hasTask);
+                if (inputs.hasTask)
+                {
+                    writer.writeShader(inputs.task);
+                }
+                writer.writeShader(inputs.mesh);
+            }
+            else
+            {
+                writer.writeShader(inputs.vertex);
+            }
             writer.write(inputs.hasPixel);
             if (inputs.hasPixel)
             {
@@ -2846,7 +3004,7 @@ namespace rachis::metal
             MetalPipelineCacheRecord& cache,
             const MetalPipelineCacheIdentity& identity,
             const std::vector<std::byte>& fingerprint,
-            MTL4RenderPipelineDescriptor* pipelineDesc)
+            MTL4PipelineDescriptor* pipelineDesc)
         {
             std::scoped_lock const cacheLock(cache.mutex);
             const auto found = cache.live.find(identity);
@@ -2890,7 +3048,7 @@ namespace rachis::metal
         }
 
         [[nodiscard]] Result<id<MTLRenderPipelineState>> metalCompileGraphicsPipeline(
-            MTL4RenderPipelineDescriptor* pipelineDesc,
+            MTL4PipelineDescriptor* pipelineDesc,
             const std::shared_ptr<MetalPipelineCacheRecord>& cache,
             const MetalPipelineCacheIdentity& identity,
             const std::vector<std::byte>& fingerprint,
@@ -2995,7 +3153,22 @@ namespace rachis::metal
             record->setRequired = metalRequiredBindingSets(*record->layout);
             record->graphics = pso;
             record->depthStencil = depthStencil;
-            record->vertexStageBindings = inputs.vertex.stageBindings;
+            record->mesh = inputs.usesMesh;
+            if (inputs.usesMesh)
+            {
+                record->hasObjectShader = inputs.hasTask;
+                if (inputs.hasTask)
+                {
+                    record->objectStageBindings = inputs.task.stageBindings;
+                    record->objectThreadgroupSize = metalWorkgroupMtlSize(inputs.task.snapshot);
+                }
+                record->meshStageBindings = inputs.mesh.stageBindings;
+                record->meshThreadgroupSize = metalWorkgroupMtlSize(inputs.mesh.snapshot);
+            }
+            else
+            {
+                record->vertexStageBindings = inputs.vertex.stageBindings;
+            }
             record->hasPixelShader = inputs.hasPixel;
             if (inputs.hasPixel)
             {
@@ -3050,7 +3223,7 @@ namespace rachis::metal
             {
                 return std::unexpected(std::move(depthStencil.error()));
             }
-            MTL4RenderPipelineDescriptor* const pipelineDesc =
+            MTL4PipelineDescriptor* const pipelineDesc =
                 metalMakeRenderPipelineDescriptor(desc, *inputs, attachments->vertexBufferBaseIndex);
             const MetalPipelineCacheIdentity identity{.key = desc.cacheKey, .kind = MetalPipelineCacheKind::graphics};
             const auto& cache = inputs->cache;

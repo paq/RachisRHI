@@ -244,6 +244,14 @@ namespace rachis::metal
             {
                 return ShaderStage::pixel;
             }
+            if ([stageName isEqualToString:@"mesh"])
+            {
+                return ShaderStage::mesh;
+            }
+            if ([stageName isEqualToString:@"amplification"])
+            {
+                return ShaderStage::task;
+            }
             return ShaderStage::none;
         }
 
@@ -657,7 +665,8 @@ namespace rachis::metal
                 return std::unexpected(
                     manifestError("The reflected Metal entry point stage does not match the request."));
             }
-            if (layout.stage == ShaderStage::compute)
+            if (layout.stage == ShaderStage::compute || layout.stage == ShaderStage::task ||
+                layout.stage == ShaderStage::mesh)
             {
                 auto workgroupSize = reflectedWorkgroupSize(entry);
                 if (!workgroupSize)

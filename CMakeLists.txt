@@ -1318,8 +1318,23 @@ if(RACHIS_ENABLE_METAL AND rachis_build_tests)
     rachis_rhi_slang_metallib(MipmapAfterRendering.vs.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MipmapAfterRendering.hlsl" fullscreenVertex)
     rachis_rhi_slang_metallib(MipmapAfterRendering.slow.ps.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MipmapAfterRendering.hlsl" slowPixel)
     rachis_rhi_slang_metallib(MipmapAfterRendering.blend.ps.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MipmapAfterRendering.hlsl" blendPixel)
+    rachis_rhi_slang_metallib(MetalMeshShader.as.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalMeshShader.slang" taskMain)
+    rachis_rhi_slang_metallib(MetalMeshShader.ms.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalMeshShader.slang" meshMain)
+    rachis_rhi_slang_metallib(MetalMeshShader.no-task.ms.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalMeshShader.slang" meshNoTask)
+    rachis_rhi_slang_metallib(MetalMeshShader.ps.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalMeshShader.slang" meshPixel)
+    rachis_rhi_slang_metallib(MetalMeshShader.missing.ps.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalMeshShader.slang" meshPixelMissing)
     add_custom_target(RachisRHITestMetalShaders ALL
         DEPENDS
+            "${rachis_rhi_metallib_dir}/MetalMeshShader.as.metallib"
+            "${rachis_rhi_metallib_dir}/MetalMeshShader.as.pnms"
+            "${rachis_rhi_metallib_dir}/MetalMeshShader.ms.metallib"
+            "${rachis_rhi_metallib_dir}/MetalMeshShader.ms.pnms"
+            "${rachis_rhi_metallib_dir}/MetalMeshShader.no-task.ms.metallib"
+            "${rachis_rhi_metallib_dir}/MetalMeshShader.no-task.ms.pnms"
+            "${rachis_rhi_metallib_dir}/MetalMeshShader.ps.metallib"
+            "${rachis_rhi_metallib_dir}/MetalMeshShader.ps.pnms"
+            "${rachis_rhi_metallib_dir}/MetalMeshShader.missing.ps.metallib"
+            "${rachis_rhi_metallib_dir}/MetalMeshShader.missing.ps.pnms"
             "${rachis_rhi_metallib_dir}/BootstrapTriangle.vs.metallib"
             "${rachis_rhi_metallib_dir}/BootstrapTriangle.vs.pnms"
             "${rachis_rhi_metallib_dir}/BootstrapTriangle.ps.metallib"
@@ -2836,6 +2851,7 @@ if(rachis_build_tests)
             tests/metal/raytracing/MetalRayTracingContractTests.cpp
             tests/metal/rendering/MetalHeadlessParityContractTests.cpp
             tests/metal/rendering/MetalLayeredRenderingContractTests.cpp
+            tests/metal/rendering/MetalMeshShaderContractTests.cpp
             tests/metal/rendering/MetalRasterContractTests.cpp
             tests/metal/rendering/MetalUnsupportedRasterFeatureContractTests.cpp
             tests/metal/resources/MetalBufferContractTests.cpp

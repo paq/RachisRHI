@@ -87,6 +87,11 @@ namespace rachis::metal
     inline constexpr std::uint32_t metalMaxBufferArguments = 31;
     inline constexpr std::uint32_t metalMaxTextureArguments = 128;
     inline constexpr std::uint32_t metalMaxSamplerArguments = 16;
+    inline constexpr std::uint32_t metalMaxMeshPayloadBytes = 16384 - 32;
+    inline constexpr std::uint32_t metalMaxMeshOutputVertices = 256;
+    inline constexpr std::uint32_t metalMaxMeshOutputPrimitives = 512;
+    inline constexpr std::uint32_t metalMaxMeshOutputMemoryBytes = 16384;
+    inline constexpr std::uint32_t metalMaxMeshGridThreadgroups = 1048575;
 
     inline constexpr std::string_view kMetalDeviceLabel = "RHI.Metal";
     inline constexpr std::string_view kMetalQueueLabel = "RHI.Metal.Graphics";
@@ -206,9 +211,11 @@ namespace rachis::metal
         compute,
         vertex,
         fragment,
+        object,
+        mesh,
     };
 
-    inline constexpr std::size_t kMetalArgumentTableStageCount = 3;
+    inline constexpr std::size_t kMetalArgumentTableStageCount = 5;
 
     struct MetalStageArgumentTable final
     {
@@ -538,7 +545,13 @@ namespace rachis::metal
         MetalResolvedStageBindings computeStageBindings{};
         MetalResolvedStageBindings vertexStageBindings{};
         MetalResolvedStageBindings pixelStageBindings{};
+        MetalResolvedStageBindings objectStageBindings{};
+        MetalResolvedStageBindings meshStageBindings{};
         bool hasPixelShader = false;
+        bool mesh = false;
+        bool hasObjectShader = false;
+        MTLSize objectThreadgroupSize{1, 1, 1};
+        MTLSize meshThreadgroupSize{1, 1, 1};
         std::uint32_t pushConstantBytes = 0;
         bool reservePushConstantBuffer = false;
         std::optional<MetalGraphicsPipelineState> graphicsState;

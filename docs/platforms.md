@@ -16,6 +16,7 @@ This page describes the host platforms RachisRHI targets, optional feature avail
 - [Scissors on Metal](#scissors-on-metal)
 - [Shared resources](#shared-resources)
 - [1D textures on Metal](#1d-textures-on-metal)
+- [Mesh shaders on Metal](#mesh-shaders-on-metal)
 - [Storage texture formats on Metal](#storage-texture-formats-on-metal)
 - [Variable-count binding arrays](#variable-count-binding-arrays)
 - [Update-after-bind binding arrays](#update-after-bind-binding-arrays)
@@ -46,7 +47,7 @@ The table below shows which backends *can* report each feature (subject to adapt
 | `DeviceCapabilities` field | Direct3D 12 | Vulkan | Metal |
 | --- | --- | --- | --- |
 | `rayTracing`, `rayQuery` | Yes | Yes | No |
-| `meshShaders`, `taskShaders` | Yes | Yes | No |
+| `meshShaders`, `taskShaders` | Yes | Yes | Apple9 GPUs and later ([Mesh shaders on Metal](#mesh-shaders-on-metal)) |
 | `shaderDrawIndex` ([draw index in indirect calls](using.md#draw-index-in-indirect-calls)) | Yes | Yes, with `shaderDrawParameters` | No |
 | `geometryShaders`, `tessellationShaders` | Yes | Yes | No |
 | `variableRateShading`, `variableRateShadingTier2` | Yes | Yes | No |
@@ -192,6 +193,14 @@ Metal restricts 1D textures and 1D texture arrays in two ways:
 
 > [!TIP]
 > Direct3D 12 and Vulkan (including MoltenVK) allow mipmapped and renderable 1D textures. For portable mipmapped or renderable 1D textures across all backends, use a **2D texture with `height = 1`**.
+
+## Mesh shaders on Metal
+
+Metal reports `meshShaders` and `taskShaders` on Apple9 GPUs (M3, A17 Pro) and later, the first family whose mesh draws can read their counts from a buffer. Task shaders run as Metal object shaders.
+
+- **Limits:** `DeviceCapabilities::meshShader` reports a task payload of `16,352` bytes (Metal's 16 KB less what Metal can reserve), 256 output vertices and 512 output primitives per mesh workgroup, and `1,048,575` mesh workgroups per dispatch. A task workgroup can launch at most `1,048,575` mesh workgroups in total, a lower bound than Direct3D 12's.
+- **Writing outputs:** `slangc` compiles Metal mesh shaders only when each output vertex and primitive is written as a whole struct. Fill a local struct and assign it (`vertices[i] = vertex;`) instead of writing members (`vertices[i].position = ...`). This form works on every backend.
+- **Stage linkage:** Metal's pipeline compiler checks that the pixel shader's inputs match the mesh shader's outputs. A mismatch still fails `createGraphicsPipeline` with `ErrorCode::validationError`, but the message comes from Metal.
 
 ## Storage texture formats on Metal
 
