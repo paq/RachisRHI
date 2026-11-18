@@ -1893,6 +1893,27 @@ namespace rachis::d3d12
             return resources_.copyBufferRegions(queues_, commandBuffer, source, destination, regions);
         }
 
+        [[nodiscard]] Status fillBuffer(detail::BackendCommandBuffer& commandBuffer,
+                                        BufferHandle buffer,
+                                        std::uint64_t offset,
+                                        std::uint64_t size,
+                                        std::uint32_t value) override
+        {
+            return resources_.fillBuffer(queues_, bindings_, commandBuffer, buffer, offset, size, value);
+        }
+
+        [[nodiscard]] Status clearStorageTexture(detail::BackendCommandBuffer& commandBuffer,
+                                                 TextureViewHandle view,
+                                                 const StorageTextureClearValue& value) override
+        {
+            auto native = views_.nativeTextureView(view);
+            if (!native)
+            {
+                return std::unexpected(std::move(native.error()));
+            }
+            return resources_.clearStorageTexture(queues_, bindings_, commandBuffer, *native, value);
+        }
+
         [[nodiscard]] Status bufferBarrier(detail::BackendCommandBuffer& commandBuffer,
                                            const BufferBarrier& barrier) override
         {

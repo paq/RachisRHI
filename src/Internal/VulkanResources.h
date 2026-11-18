@@ -375,6 +375,16 @@ namespace rachis::vulkan
                                                 TextureHandle destination,
                                                 std::span<const TextureCopyRegion> regions,
                                                 std::vector<std::shared_ptr<void>>* retained = nullptr);
+        [[nodiscard]] Status fillBuffer(VkCommandBuffer command,
+                                        BufferHandle buffer,
+                                        std::uint64_t offset,
+                                        std::uint64_t size,
+                                        std::uint32_t value,
+                                        std::vector<std::shared_ptr<void>>* retained = nullptr);
+        [[nodiscard]] Status clearStorageTexture(VkCommandBuffer command,
+                                                 TextureViewHandle view,
+                                                 const StorageTextureClearValue& value,
+                                                 std::vector<std::shared_ptr<void>>* retained = nullptr);
 
         struct NativeTexture final
         {
@@ -567,6 +577,12 @@ namespace rachis::vulkan
                                                   std::uint64_t offset,
                                                   std::uint64_t size,
                                                   bool flush);
+        void recordFillBufferLocked(VkCommandBuffer command,
+                                    const BufferRecord& record,
+                                    std::uint64_t offset,
+                                    std::uint64_t size,
+                                    std::uint32_t value,
+                                    std::vector<std::shared_ptr<void>>* retained);
         [[nodiscard]] BufferRecord* findBuffer(BufferHandle buffer) noexcept;
         [[nodiscard]] const BufferRecord* findBuffer(BufferHandle buffer) const noexcept;
         [[nodiscard]] Result<std::uint32_t> findMemoryType(std::uint32_t typeBits,

@@ -3139,6 +3139,8 @@ TEST_CASE("Vulkan barriers drop pipeline stages the device has not enabled and r
         .usage = rachis::TextureUsage::sampled | rachis::TextureUsage::storage,
     };
 
+    constexpr VkPipelineStageFlags2 computeNativeStages =
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT;
     constexpr VkPipelineStageFlags2 coreNativeStages = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
                                                        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
                                                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
@@ -3218,10 +3220,14 @@ TEST_CASE("Vulkan barriers drop pipeline stages the device has not enabled and r
                                   nullptr)
                 .has_value());
     REQUIRE(mock.memoryBarriers.size() == 1);
-    CHECK(mock.memoryBarriers[0].srcStageMask == VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+    CHECK(mock.memoryBarriers[0].srcStageMask == computeNativeStages);
+    CHECK(
+        mock.memoryBarriers[0].srcAccessMask ==
+        (VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT));
     CHECK(mock.memoryBarriers[0].dstStageMask == coreNativeStages);
+    CHECK(mock.memoryBarriers[0].dstAccessMask == VK_ACCESS_2_SHADER_READ_BIT);
     REQUIRE(mock.imageBarriers.size() == 1);
-    CHECK(mock.imageBarriers[0].srcStageMask == VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+    CHECK(mock.imageBarriers[0].srcStageMask == computeNativeStages);
     CHECK(mock.imageBarriers[0].dstStageMask == coreNativeStages);
 
     for (const auto& barrier : optionalOnly)
@@ -3264,11 +3270,10 @@ TEST_CASE("Vulkan barriers drop pipeline stages the device has not enabled and r
                 .has_value());
     REQUIRE(mock.memoryBarriers.size() == 1);
     CHECK(mock.memoryBarriers[0].srcStageMask ==
-          (VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR));
+          (computeNativeStages | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR));
     CHECK(mock.memoryBarriers[0].dstStageMask == everyNativeStage);
     REQUIRE(mock.imageBarriers.size() == 1);
-    CHECK(mock.imageBarriers[0].srcStageMask ==
-          (VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT));
+    CHECK(mock.imageBarriers[0].srcStageMask == (computeNativeStages | VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT));
     CHECK(mock.imageBarriers[0].dstStageMask == everyNativeStage);
     REQUIRE(
         fullResources.resourceBarriers(command, rachis::QueueType::graphics, {.globalBarriers = optionalOnly}, nullptr)

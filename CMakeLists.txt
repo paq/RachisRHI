@@ -1387,6 +1387,7 @@ add_library(RachisRHID3D12 STATIC
     src/D3D12/D3D12Device.cpp
     src/D3D12/D3D12Diagnostics.cpp
     src/D3D12/D3D12Descriptor.cpp
+    src/D3D12/D3D12FillAndClear.cpp
     src/D3D12/D3D12Mipmap.cpp
     src/D3D12/D3D12Pipeline.cpp
     src/D3D12/D3D12Query.cpp
@@ -2254,6 +2255,7 @@ if(rachis_build_tests)
         tests/d3d12/resources/BlockCompressedFormatContractTests.cpp
         tests/d3d12/resources/BufferContractTests.cpp
         tests/d3d12/resources/BufferCopyBatchContractTests.cpp
+        tests/d3d12/resources/FillAndClearContractTests.cpp
         tests/d3d12/resources/MinMipSamplerFeedbackContractTests.cpp
         tests/d3d12/resources/MipRegionUsedSamplerFeedbackContractTests.cpp
         tests/d3d12/resources/MipmapContractTests.cpp
@@ -2335,6 +2337,7 @@ if(rachis_build_tests)
         tests/vulkan/rendering/VulkanVariableRateShadingContractTests.cpp
         tests/vulkan/resources/VulkanBufferContractTests.cpp
         tests/vulkan/resources/VulkanCopiesContractTests.cpp
+        tests/vulkan/resources/VulkanFillAndClearContractTests.cpp
         tests/vulkan/resources/VulkanImageUtilityContractTests.cpp
         tests/vulkan/resources/VulkanMipmapSrgbContractTests.cpp
         tests/vulkan/resources/VulkanTextureContractTests.cpp
@@ -2614,6 +2617,7 @@ if(rachis_build_tests)
             tests/vulkan/rendering/VulkanVariableRateShadingContractTests.cpp
             tests/vulkan/resources/VulkanBufferContractTests.cpp
             tests/vulkan/resources/VulkanCopiesContractTests.cpp
+            tests/vulkan/resources/VulkanFillAndClearContractTests.cpp
             tests/vulkan/resources/VulkanImageUtilityContractTests.cpp
             tests/vulkan/resources/VulkanMipmapSrgbContractTests.cpp
             tests/vulkan/resources/VulkanTextureContractTests.cpp

@@ -1381,6 +1381,25 @@ namespace rachis::vulkan
             resources_.copyBufferRegions((*locked)->native(), source, destination, regions, retainSink(**locked)));
     }
 
+    Status VulkanDevice::fillBuffer(detail::BackendCommandBuffer& commandBuffer,
+                                    BufferHandle buffer,
+                                    std::uint64_t offset,
+                                    std::uint64_t size,
+                                    std::uint32_t value)
+    {
+        if (auto blocked = requireActive(); !blocked)
+        {
+            return blocked;
+        }
+        auto locked = lockLiveVulkanCommand(
+            commandBuffer, deviceToken_, "A buffer fill requires a live Vulkan command-buffer lease.");
+        if (!locked)
+        {
+            return std::unexpected(std::move(locked.error()));
+        }
+        return observe(resources_.fillBuffer((*locked)->native(), buffer, offset, size, value, retainSink(**locked)));
+    }
+
     Result<TextureTransferLayout> VulkanDevice::queryTextureTransferLayout(TextureHandle texture,
                                                                            const BufferTextureCopyRegion& region) const
     {
@@ -1470,6 +1489,23 @@ namespace rachis::vulkan
         }
         return observe(
             resources_.copyTextureRegions((*locked)->native(), source, destination, regions, retainSink(**locked)));
+    }
+
+    Status VulkanDevice::clearStorageTexture(detail::BackendCommandBuffer& commandBuffer,
+                                             TextureViewHandle view,
+                                             const StorageTextureClearValue& value)
+    {
+        if (auto blocked = requireActive(); !blocked)
+        {
+            return blocked;
+        }
+        auto locked = lockLiveVulkanCommand(
+            commandBuffer, deviceToken_, "A storage-texture clear requires a live Vulkan command-buffer lease.");
+        if (!locked)
+        {
+            return std::unexpected(std::move(locked.error()));
+        }
+        return observe(resources_.clearStorageTexture((*locked)->native(), view, value, retainSink(**locked)));
     }
 
     Status VulkanDevice::resolveTexture(detail::BackendCommandBuffer& commandBuffer, const TextureResolve& resolve)

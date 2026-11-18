@@ -668,6 +668,7 @@ namespace rachis::d3d12
         predication = 1U << 12U,
         buildRaytracingAccelerationStructure = 1U << 14U,
         copyRaytracingAccelerationStructure = 1U << 15U,
+        clearUnorderedAccessView = 1U << 16U,
     };
 
     [[nodiscard]] constexpr EnhancedBarrierSync operator|(EnhancedBarrierSync left, EnhancedBarrierSync right) noexcept
@@ -759,6 +760,17 @@ namespace rachis::d3d12
         if (hasAny(stages, PipelineStage::accelerationStructureCopy))
         {
             result |= EnhancedBarrierSync::copyRaytracingAccelerationStructure;
+        }
+        return result;
+    }
+
+    [[nodiscard]] constexpr EnhancedBarrierSync translateEnhancedSync(PipelineStage stages, Access access) noexcept
+    {
+        auto result = translateEnhancedSync(stages);
+        if (result != EnhancedBarrierSync::all && hasAny(stages, PipelineStage::computeShader) &&
+            hasAny(access, Access::unorderedAccess))
+        {
+            result |= EnhancedBarrierSync::clearUnorderedAccessView;
         }
         return result;
     }
@@ -986,7 +998,7 @@ namespace rachis::d3d12
         EnhancedTextureAliasPlan plan{};
         plan.steps[0] = EnhancedTextureAliasStep{
             .target = EnhancedTextureAliasTarget::before,
-            .syncBefore = translateEnhancedSync(activation.stagesBefore),
+            .syncBefore = translateEnhancedSync(activation.stagesBefore, activation.accessBefore),
             .syncAfter = translateEnhancedSync(activation.stagesAfter),
             .accessBefore = translateEnhancedAccess(activation.accessBefore),
             .accessAfter = EnhancedBarrierAccess::noAccess,
@@ -1019,7 +1031,7 @@ namespace rachis::d3d12
             plan.steps[2] = EnhancedTextureAliasStep{
                 .target = EnhancedTextureAliasTarget::after,
                 .syncBefore = initializationSync,
-                .syncAfter = translateEnhancedSync(activation.stagesAfter),
+                .syncAfter = translateEnhancedSync(activation.stagesAfter, activation.accessAfter),
                 .accessBefore = initializationAccess,
                 .accessAfter = translateEnhancedAccess(activation.accessAfter),
                 .layoutBefore = initializationLayout,
@@ -1034,7 +1046,7 @@ namespace rachis::d3d12
         plan.steps[1] = EnhancedTextureAliasStep{
             .target = EnhancedTextureAliasTarget::after,
             .syncBefore = translateEnhancedSync(activation.stagesBefore),
-            .syncAfter = translateEnhancedSync(activation.stagesAfter),
+            .syncAfter = translateEnhancedSync(activation.stagesAfter, activation.accessAfter),
             .accessBefore = EnhancedBarrierAccess::noAccess,
             .accessAfter = translateEnhancedAccess(activation.accessAfter),
             .layoutBefore = EnhancedBarrierLayout::undefined,

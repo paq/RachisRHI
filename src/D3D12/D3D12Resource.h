@@ -23,6 +23,7 @@ namespace rachis::d3d12
 
     class BindingManager;
     class PipelineManager;
+    struct NativeTextureView;
 
     inline constexpr std::size_t memorySegmentGroupCount = 2;
 
@@ -186,6 +187,18 @@ namespace rachis::d3d12
                                                BufferHandle source,
                                                BufferHandle destination,
                                                std::span<const BufferCopyRegion> regions);
+        [[nodiscard]] Status fillBuffer(QueueManager& queues,
+                                        BindingManager& bindings,
+                                        detail::BackendCommandBuffer& commandBuffer,
+                                        BufferHandle buffer,
+                                        std::uint64_t offset,
+                                        std::uint64_t size,
+                                        std::uint32_t value);
+        [[nodiscard]] Status clearStorageTexture(QueueManager& queues,
+                                                 BindingManager& bindings,
+                                                 detail::BackendCommandBuffer& commandBuffer,
+                                                 const NativeTextureView& view,
+                                                 const StorageTextureClearValue& value);
         [[nodiscard]] Status bufferBarrier(QueueManager& queues,
                                            detail::BackendCommandBuffer& commandBuffer,
                                            const BufferBarrier& barrier);

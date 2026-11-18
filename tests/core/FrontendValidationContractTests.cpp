@@ -4,6 +4,7 @@
 #include "Internal/BackendDevice.h"
 #include "Internal/CommandBufferAccess.h"
 #include "Internal/DeviceAccess.h"
+#include "Internal/FillAndClearValidation.h"
 #include "Internal/PortableValidation.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -390,6 +391,19 @@ namespace
                                                BufferHandle,
                                                BufferHandle,
                                                std::span<const BufferCopyRegion>) override
+        {
+            ++backendInvocations;
+            return {};
+        }
+        [[nodiscard]] Status fillBuffer(
+            BackendCommandBuffer&, BufferHandle, std::uint64_t, std::uint64_t, std::uint32_t) override
+        {
+            ++backendInvocations;
+            return {};
+        }
+        [[nodiscard]] Status clearStorageTexture(BackendCommandBuffer&,
+                                                 TextureViewHandle,
+                                                 const rachis::StorageTextureClearValue&) override
         {
             ++backendInvocations;
             return {};
@@ -1362,6 +1376,155 @@ TEST_CASE("Device frontend validates viewports, scissors, blend constants, push 
     rachis::detail::CommandBufferAccess::get(cb)->queryState().reset();
 
     CHECK(raw->backendInvocations == 0);
+}
+
+TEST_CASE("Device frontend restricts buffer fills and storage-texture clears to compute-capable queues outside "
+          "rendering and validates ranges and clear values",
+          "[size:small][rhi][core][fill][clear]")
+{
+    using rachis::StorageTextureClearType;
+    using rachis::StorageTextureClearValue;
+    auto backend = std::make_unique<TrackingBackendDevice>();
+    auto* raw = backend.get();
+    auto device = rachis::detail::DeviceAccess::make(std::move(backend));
+    const StorageTextureClearValue uintValue{.type = StorageTextureClearType::uint32, .uint32 = {1, 2, 3, 4}};
+
+    auto copyCb = makeCommandBuffer(raw->token, QueueType::copy);
+    CHECK(device.fillBuffer(copyCb, {}, 0, 16, 0).error().code == ErrorCode::invalidState);
+    CHECK(device.clearStorageTexture(copyCb, {}, uintValue).error().code == ErrorCode::invalidState);
+
+    auto cb = makeCommandBuffer(raw->token);
+    auto* nativeCb = rachis::detail::CommandBufferAccess::get(cb);
+    REQUIRE(nativeCb != nullptr);
+    nativeCb->graphicsState().renderingOwner = std::make_shared<int>(1);
+    CHECK(device.fillBuffer(cb, {}, 0, 16, 0).error().code == ErrorCode::invalidState);
+    CHECK(device.clearStorageTexture(cb, {}, uintValue).error().code == ErrorCode::invalidState);
+    nativeCb->graphicsState().renderingOwner.reset();
+
+    CHECK(device.fillBuffer(cb, {}, 2, 16, 0).error().code == ErrorCode::invalidArgument);
+    CHECK(device.fillBuffer(cb, {}, 0, 0, 0).error().code == ErrorCode::invalidArgument);
+    CHECK(device.fillBuffer(cb, {}, 0, 6, 0).error().code == ErrorCode::invalidArgument);
+    CHECK(device.fillBuffer(cb, {}, std::numeric_limits<std::uint64_t>::max() - 3U, 8, 0).error().code ==
+          ErrorCode::invalidArgument);
+
+    auto notFinite = StorageTextureClearValue{
+        .type = StorageTextureClearType::float32,
+        .float32 = {0.0F, std::numeric_limits<float>::infinity(), 0.0F, 0.0F},
+    };
+    CHECK(device.clearStorageTexture(cb, {}, notFinite).error().code == ErrorCode::invalidArgument);
+    auto unknownType = uintValue;
+    unknownType.type = static_cast<StorageTextureClearType>(3);
+    CHECK(device.clearStorageTexture(cb, {}, unknownType).error().code == ErrorCode::invalidArgument);
+    CHECK(raw->backendInvocations == 0);
+
+    auto ignoredNaN = uintValue;
+    ignoredNaN.float32[0] = std::numeric_limits<float>::quiet_NaN();
+    CHECK(device.clearStorageTexture(cb, {}, ignoredNaN).has_value());
+    CHECK(device.fillBuffer(cb, {}, 4, rachis::wholeResource, 0xFFFFFFFFU).has_value());
+    CHECK(device.fillBuffer(cb, {}, std::numeric_limits<std::uint64_t>::max() - 7U, 4, 0).has_value());
+    auto computeCb = makeCommandBuffer(raw->token, QueueType::compute);
+    CHECK(device.fillBuffer(computeCb, {}, 0, 4, 0).has_value());
+    CHECK(device.clearStorageTexture(computeCb, {}, uintValue).has_value());
+    CHECK(raw->backendInvocations == 5);
+
+    raw->state = DeviceOperationalState::lost;
+    CHECK(device.fillBuffer(copyCb, {}, 0, 16, 0).error().code == ErrorCode::deviceLost);
+    CHECK(device.clearStorageTexture(cb, {}, notFinite).error().code == ErrorCode::deviceLost);
+    CHECK(raw->backendInvocations == 5);
+}
+
+TEST_CASE("Shared fill and clear rules resolve buffer ranges, usages, formats, and integer clear ranges",
+          "[size:small][rhi][core][fill][clear]")
+{
+    using rachis::BufferUsage;
+    using rachis::StorageTextureClearType;
+    using rachis::StorageTextureClearValue;
+    using rachis::TextureUsage;
+    using rachis::TextureViewUsage;
+    const BufferDesc fillable{.size = 64, .usage = BufferUsage::storage | BufferUsage::copyDestination};
+    CHECK(rachis::detail::resolveBufferFillRange(fillable, 0, rachis::wholeResource).value() == 64U);
+    CHECK(rachis::detail::resolveBufferFillRange(fillable, 60, rachis::wholeResource).value() == 4U);
+    CHECK(rachis::detail::resolveBufferFillRange(fillable, 8, 16).value() == 16U);
+    CHECK(rachis::detail::resolveBufferFillRange(fillable, 64, rachis::wholeResource).error().code ==
+          ErrorCode::invalidArgument);
+    CHECK(rachis::detail::resolveBufferFillRange(fillable, 60, 8).error().code == ErrorCode::invalidArgument);
+    CHECK(rachis::detail::resolveBufferFillRange(
+              BufferDesc{.size = 66, .usage = fillable.usage}, 0, rachis::wholeResource)
+              .error()
+              .code == ErrorCode::invalidArgument);
+    CHECK(rachis::detail::resolveBufferFillRange(BufferDesc{.size = 64, .usage = BufferUsage::storage}, 0, 64)
+              .error()
+              .code == ErrorCode::invalidArgument);
+    CHECK(rachis::detail::resolveBufferFillRange(BufferDesc{.size = 64, .usage = BufferUsage::copyDestination}, 0, 64)
+              .error()
+              .code == ErrorCode::invalidArgument);
+
+    const TextureDesc storage{
+        .format = Format::rgba8Uint,
+        .usage = TextureUsage::storage | TextureUsage::copyDestination,
+    };
+    const StorageTextureClearValue uintValue{.type = StorageTextureClearType::uint32, .uint32 = {255, 0, 7, 1}};
+    const auto accepted =
+        rachis::detail::validateStorageTextureClear(storage, TextureViewUsage::storage, Format::unknown, uintValue);
+    REQUIRE(accepted.has_value());
+    CHECK(accepted->type == StorageTextureClearType::uint32);
+    CHECK(accepted->channelCount == 4U);
+    CHECK(accepted->channelBits == 8U);
+    CHECK(rachis::detail::validateStorageTextureClear(storage, TextureViewUsage::sampled, Format::unknown, uintValue)
+              .error()
+              .code == ErrorCode::invalidArgument);
+    auto withoutCopyDestination = storage;
+    withoutCopyDestination.usage = TextureUsage::storage;
+    CHECK(rachis::detail::validateStorageTextureClear(
+              withoutCopyDestination, TextureViewUsage::storage, Format::unknown, uintValue)
+              .error()
+              .code == ErrorCode::invalidArgument);
+    auto multisampled = storage;
+    multisampled.sampleCount = 4;
+    CHECK(
+        rachis::detail::validateStorageTextureClear(multisampled, TextureViewUsage::storage, Format::unknown, uintValue)
+            .error()
+            .code == ErrorCode::invalidArgument);
+    auto tooWide = uintValue;
+    tooWide.uint32[1] = 256;
+    CHECK(rachis::detail::validateStorageTextureClear(storage, TextureViewUsage::storage, Format::unknown, tooWide)
+              .error()
+              .code == ErrorCode::invalidArgument);
+    const StorageTextureClearValue floatValue{.type = StorageTextureClearType::float32, .float32 = {1.0F}};
+    CHECK(rachis::detail::validateStorageTextureClear(storage, TextureViewUsage::storage, Format::unknown, floatValue)
+              .error()
+              .code == ErrorCode::invalidArgument);
+
+    auto srgb = storage;
+    srgb.format = Format::rgba8UnormSrgb;
+    CHECK(rachis::detail::validateStorageTextureClear(srgb, TextureViewUsage::storage, Format::rgba8Unorm, floatValue)
+              .error()
+              .code == ErrorCode::unsupported);
+    for (const auto format : {Format::d32Float, Format::bc7RgbaUnorm, Format::r64Uint})
+    {
+        auto unsupported = storage;
+        unsupported.format = format;
+        CHECK(rachis::detail::validateStorageTextureClear(
+                  unsupported, TextureViewUsage::storage, Format::unknown, uintValue)
+                  .error()
+                  .code == ErrorCode::unsupported);
+    }
+
+    auto signedTexture = storage;
+    signedTexture.format = Format::rg16Sint;
+    StorageTextureClearValue sintValue{.type = StorageTextureClearType::sint32, .sint32 = {-32768, 32767, 99999, 0}};
+    CHECK(rachis::detail::validateStorageTextureClear(
+              signedTexture, TextureViewUsage::storage, Format::unknown, sintValue)
+              .has_value());
+    sintValue.sint32[0] = -32769;
+    CHECK(rachis::detail::validateStorageTextureClear(
+              signedTexture, TextureViewUsage::storage, Format::unknown, sintValue)
+              .error()
+              .code == ErrorCode::invalidArgument);
+    signedTexture.format = Format::r32Sint;
+    CHECK(rachis::detail::validateStorageTextureClear(
+              signedTexture, TextureViewUsage::storage, Format::unknown, sintValue)
+              .has_value());
 }
 
 TEST_CASE("Device frontend validates binding layouts and pools while preserving capability-gated unsupported types",

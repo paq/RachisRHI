@@ -345,6 +345,26 @@ TEST_CASE("D3D12 enhanced barriers sync pre-rasterization stages with vertex sha
             (EnhancedBarrierSync::vertexShading | EnhancedBarrierSync::pixelShading));
 }
 
+TEST_CASE("D3D12 enhanced barriers sync compute-stage unordered access with unordered-access-view clears",
+          "[size:small][rhi][d3d12][barrier][clear]")
+{
+    using rachis::Access;
+    REQUIRE(translateEnhancedSync(PipelineStage::computeShader, Access::unorderedAccess) ==
+            (EnhancedBarrierSync::computeShading | EnhancedBarrierSync::clearUnorderedAccessView));
+    REQUIRE(translateEnhancedSync(PipelineStage::computeShader | PipelineStage::pixelShader,
+                                  Access::unorderedAccess | Access::shaderResource) ==
+            (EnhancedBarrierSync::computeShading | EnhancedBarrierSync::pixelShading |
+             EnhancedBarrierSync::clearUnorderedAccessView));
+    REQUIRE(translateEnhancedSync(PipelineStage::computeShader, Access::shaderResource) ==
+            EnhancedBarrierSync::computeShading);
+    REQUIRE(translateEnhancedSync(PipelineStage::computeShader, Access::none) == EnhancedBarrierSync::computeShading);
+    REQUIRE(translateEnhancedSync(PipelineStage::computeShader) == EnhancedBarrierSync::computeShading);
+    REQUIRE(translateEnhancedSync(PipelineStage::pixelShader, Access::unorderedAccess) ==
+            EnhancedBarrierSync::pixelShading);
+    REQUIRE(translateEnhancedSync(PipelineStage::copy, Access::copyDestination) == EnhancedBarrierSync::copy);
+    REQUIRE(translateEnhancedSync(PipelineStage::all, Access::unorderedAccess) == EnhancedBarrierSync::all);
+}
+
 TEST_CASE("D3D12 enhanced barriers map each texture layout to one native layout on every queue that accepts it",
           "[size:small][rhi][d3d12][barrier]")
 {

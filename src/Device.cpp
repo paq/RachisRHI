@@ -2,6 +2,7 @@
 
 #include "Internal/BackendFactory.h"
 #include "Internal/DeviceIdentity.h"
+#include "Internal/FillAndClearValidation.h"
 #include "Internal/PortableValidation.h"
 #include "Internal/VertexInputValidation.h"
 
@@ -996,6 +997,36 @@ namespace rachis
         });
     }
 
+    Status Device::fillBuffer(CommandBuffer& commandBuffer,
+                              BufferHandle buffer,
+                              std::uint64_t offset,
+                              std::uint64_t size,
+                              std::uint32_t value)
+    {
+        return guardBadAlloc([&]() -> Status {
+            if (auto valid = validateOwnedCommandBuffer(backend_.get(),
+                                                        commandBuffer.backend_.get(),
+                                                        "Buffer fills require a valid device and command buffer.");
+                !valid)
+            {
+                return valid;
+            }
+            if (auto ready = validateRecordingState(
+                    *commandBuffer.backend_,
+                    detail::requireComputeCapableOutsideRendering,
+                    "fillBuffer requires a graphics or compute command buffer outside a rendering scope.");
+                !ready)
+            {
+                return std::unexpected(detail::preferDeviceLossError(*backend_, std::move(ready.error())));
+            }
+            if (auto valid = detail::validateBufferFillRequest(offset, size); !valid)
+            {
+                return std::unexpected(detail::preferDeviceLossError(*backend_, std::move(valid.error())));
+            }
+            return backend_->fillBuffer(*commandBuffer.backend_, buffer, offset, size, value);
+        });
+    }
+
     Status Device::globalBarrier(CommandBuffer& commandBuffer, const GlobalBarrier& barrier)
     {
         return guardBadAlloc([&]() -> Status {
@@ -1764,6 +1795,35 @@ namespace rachis
                 return std::unexpected(detail::preferDeviceLossError(*backend_, std::move(valid.error())));
             }
             return backend_->copyTextureRegions(*commandBuffer.backend_, source, destination, regions);
+        });
+    }
+
+    Status Device::clearStorageTexture(CommandBuffer& commandBuffer,
+                                       TextureViewHandle view,
+                                       const StorageTextureClearValue& value)
+    {
+        return guardBadAlloc([&]() -> Status {
+            if (auto valid =
+                    validateOwnedCommandBuffer(backend_.get(),
+                                               commandBuffer.backend_.get(),
+                                               "Storage-texture clears require a valid device and command buffer.");
+                !valid)
+            {
+                return valid;
+            }
+            if (auto ready = validateRecordingState(
+                    *commandBuffer.backend_,
+                    detail::requireComputeCapableOutsideRendering,
+                    "clearStorageTexture requires a graphics or compute command buffer outside a rendering scope.");
+                !ready)
+            {
+                return std::unexpected(detail::preferDeviceLossError(*backend_, std::move(ready.error())));
+            }
+            if (auto valid = detail::validateStorageTextureClearValue(value); !valid)
+            {
+                return std::unexpected(detail::preferDeviceLossError(*backend_, std::move(valid.error())));
+            }
+            return backend_->clearStorageTexture(*commandBuffer.backend_, view, value);
         });
     }
 

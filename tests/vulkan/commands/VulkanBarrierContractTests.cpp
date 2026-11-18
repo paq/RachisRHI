@@ -185,8 +185,9 @@ TEST_CASE("Vulkan barriers wait on all earlier commands on portability-subset de
     CHECK(captured[1].srcStageMask ==
           (widened ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT));
     CHECK(captured[1].dstStageMask == copyStages);
-    CHECK(captured[2].srcStageMask ==
-          (widened ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT));
+    CHECK(captured[2].srcStageMask == (widened
+                                           ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT
+                                           : (VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT)));
     CHECK(captured[2].dstStageMask == copyStages);
 
     auto submitted = device.submit(std::move(*command));

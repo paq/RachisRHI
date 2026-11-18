@@ -591,6 +591,11 @@ namespace rachis::vulkan
             {
                 flags |= VK_PIPELINE_STAGE_2_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR;
             }
+            if (hasAny(access, Access::unorderedAccess) && hasAny(stages, PipelineStage::computeShader) &&
+                !hasAny(stages, PipelineStage::all))
+            {
+                flags |= VK_PIPELINE_STAGE_2_CLEAR_BIT;
+            }
             return flags;
         }
 
@@ -677,6 +682,17 @@ namespace rachis::vulkan
             if (hasAny(access, Access::streamOutputWrite))
             {
                 flags |= VK_ACCESS_2_TRANSFORM_FEEDBACK_WRITE_BIT_EXT;
+            }
+            return flags;
+        }
+
+        [[nodiscard]] VkAccessFlags2 nativeAccessForStages(PipelineStage stages, Access access) noexcept
+        {
+            auto flags = nativeAccess(access);
+            if (hasAny(access, Access::unorderedAccess) &&
+                hasAny(stages, PipelineStage::all | PipelineStage::computeShader))
+            {
+                flags |= VK_ACCESS_2_TRANSFER_WRITE_BIT;
             }
             return flags;
         }
@@ -1029,9 +1045,9 @@ namespace rachis::vulkan
                     .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                     .pNext = {},
                     .srcStageMask = nativeStagesForAccess(barrier.stagesBefore & support.stages, barrier.accessBefore),
-                    .srcAccessMask = nativeAccess(barrier.accessBefore),
+                    .srcAccessMask = nativeAccessForStages(barrier.stagesBefore & support.stages, barrier.accessBefore),
                     .dstStageMask = nativeStagesForAccess(barrier.stagesAfter & support.stages, barrier.accessAfter),
-                    .dstAccessMask = nativeAccess(barrier.accessAfter),
+                    .dstAccessMask = nativeAccessForStages(barrier.stagesAfter & support.stages, barrier.accessAfter),
                 });
             }
             return globals;
@@ -1073,9 +1089,9 @@ namespace rachis::vulkan
                 .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
                 .pNext = {},
                 .srcStageMask = nativeStagesForAccess(barrier.stagesBefore & enabledStages, barrier.accessBefore),
-                .srcAccessMask = nativeAccess(barrier.accessBefore),
+                .srcAccessMask = nativeAccessForStages(barrier.stagesBefore & enabledStages, barrier.accessBefore),
                 .dstStageMask = nativeStagesForAccess(barrier.stagesAfter & enabledStages, barrier.accessAfter),
-                .dstAccessMask = nativeAccess(barrier.accessAfter),
+                .dstAccessMask = nativeAccessForStages(barrier.stagesAfter & enabledStages, barrier.accessAfter),
                 .srcQueueFamilyIndex = families.source,
                 .dstQueueFamilyIndex = families.destination,
                 .buffer = buffer,
@@ -1173,9 +1189,9 @@ namespace rachis::vulkan
                 .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
                 .pNext = {},
                 .srcStageMask = nativeStagesForAccess(barrier.stagesBefore & enabledStages, barrier.accessBefore),
-                .srcAccessMask = nativeAccess(barrier.accessBefore),
+                .srcAccessMask = nativeAccessForStages(barrier.stagesBefore & enabledStages, barrier.accessBefore),
                 .dstStageMask = nativeStagesForAccess(barrier.stagesAfter & enabledStages, barrier.accessAfter),
-                .dstAccessMask = nativeAccess(barrier.accessAfter),
+                .dstAccessMask = nativeAccessForStages(barrier.stagesAfter & enabledStages, barrier.accessAfter),
                 .oldLayout = nativeLayout(barrier.layoutBefore),
                 .newLayout = nativeLayout(barrier.layoutAfter),
                 .srcQueueFamilyIndex = families.source,
@@ -1260,7 +1276,7 @@ namespace rachis::vulkan
                 .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                 .pNext = {},
                 .srcStageMask = nativeStagesForAccess(stagesBefore, accessBefore),
-                .srcAccessMask = nativeAccess(accessBefore),
+                .srcAccessMask = nativeAccessForStages(stagesBefore, accessBefore),
                 .dstStageMask = nativeStages(stagesAfter),
                 .dstAccessMask = VK_ACCESS_2_NONE,
             };
@@ -1277,7 +1293,7 @@ namespace rachis::vulkan
                 .srcStageMask = nativeStages(activation.stagesBefore & enabledStages),
                 .srcAccessMask = VK_ACCESS_2_NONE,
                 .dstStageMask = nativeStagesForAccess(activation.stagesAfter & enabledStages, activation.accessAfter),
-                .dstAccessMask = nativeAccess(activation.accessAfter),
+                .dstAccessMask = nativeAccessForStages(activation.stagesAfter & enabledStages, activation.accessAfter),
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .buffer = buffer,
@@ -1352,7 +1368,7 @@ namespace rachis::vulkan
                 .srcStageMask = nativeStages(activation.stagesBefore & enabledStages),
                 .srcAccessMask = VK_ACCESS_2_NONE,
                 .dstStageMask = nativeStagesForAccess(activation.stagesAfter & enabledStages, activation.accessAfter),
-                .dstAccessMask = nativeAccess(activation.accessAfter),
+                .dstAccessMask = nativeAccessForStages(activation.stagesAfter & enabledStages, activation.accessAfter),
                 .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
                 .newLayout = nativeLayout(activation.layoutAfter),
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,

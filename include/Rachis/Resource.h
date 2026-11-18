@@ -741,6 +741,21 @@ namespace rachis
         std::uint64_t size = 0;
     };
 
+    enum class StorageTextureClearType : std::uint8_t
+    {
+        float32,
+        uint32,
+        sint32,
+    };
+
+    struct StorageTextureClearValue final
+    {
+        StorageTextureClearType type = StorageTextureClearType::float32;
+        std::array<float, 4> float32{};
+        std::array<std::uint32_t, 4> uint32{};
+        std::array<std::int32_t, 4> sint32{};
+    };
+
     enum class PipelineStage : std::uint32_t
     {
         none = 0,

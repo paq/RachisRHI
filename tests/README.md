@@ -26,7 +26,7 @@ The RachisRHI test suite is organized by test scope (`core`, `portable`, backend
 | `c_abi/` | C11 interface in `rachis.h`, including pure C smoke test | Device for enabled backends |
 | `package/` | Installed CMake package & `add_subdirectory` embedding (`consumer/`, `subdirectories/`, `shadernames/`, `includes/`, `buildpaths/`, `config/`, [`examples/`](../examples), `CheckEmbeddedProject.cmake`) | Built package and device for examples |
 | `shaders/` | HLSL shader sources compiled for tests | — |
-| `support/` | Shared test helpers: device descriptors, window hosts, fault injection, and a stand-in `slangc` | — |
+| `support/` | Shared test helpers: device descriptors, window hosts, fault injection, contract bodies that several backends run (`FillAndClearContract.h` drives the `fillBuffer` and `clearStorageTexture` contracts in `d3d12/resources/` and `vulkan/resources/`), and a stand-in `slangc` | — |
 
 ## Feature areas
 

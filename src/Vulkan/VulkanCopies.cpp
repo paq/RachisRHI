@@ -1,3 +1,4 @@
+#include "Internal/FillAndClearValidation.h"
 #include "Internal/VulkanBufferBarriers.h"
 #include "Internal/VulkanDiagnostics.h"
 #include "Internal/VulkanResources.h"
@@ -6,6 +7,7 @@
 #include <array>
 #include <concepts>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -1277,6 +1279,163 @@ namespace rachis::vulkan
         retainKeepAlive(retained, sourceRecord->keepAlive);
         retainKeepAlive(retained, destinationRecord->keepAlive);
         recordImageCopies(*table_, command, sourceRecord->image, destinationRecord->image, *batch);
+        return {};
+    }
+
+    Status VulkanResourceAllocator::fillBuffer(VkCommandBuffer command,
+                                               BufferHandle buffer,
+                                               std::uint64_t offset,
+                                               std::uint64_t size,
+                                               std::uint32_t value,
+                                               std::vector<std::shared_ptr<void>>* retained)
+    {
+        const std::scoped_lock lock(mutex_);
+        if (table_ == nullptr || table_->vkCmdFillBuffer == nullptr || command == VK_NULL_HANDLE)
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidState,
+                0,
+                "Vulkan buffer fills are unavailable because the device table is incomplete.",
+            });
+        }
+        const auto* record = findBuffer(buffer);
+        if (record == nullptr || !record->alive || record->buffer == VK_NULL_HANDLE)
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidArgument,
+                0,
+                "The fillBuffer buffer handle is invalid or stale.",
+            });
+        }
+        auto range = detail::resolveBufferFillRange(record->desc, offset, size);
+        if (!range)
+        {
+            return std::unexpected(std::move(range.error()));
+        }
+        recordFillBufferLocked(command, *record, offset, *range, value, retained);
+        return {};
+    }
+
+    Status VulkanResourceAllocator::clearStorageTexture(VkCommandBuffer command,
+                                                        TextureViewHandle viewHandle,
+                                                        const StorageTextureClearValue& value,
+                                                        std::vector<std::shared_ptr<void>>* retained)
+    {
+        const std::scoped_lock lock(mutex_);
+        if (table_ == nullptr || table_->vkCmdClearColorImage == nullptr || command == VK_NULL_HANDLE)
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidState,
+                0,
+                "Vulkan storage-texture clears are unavailable because the device table is incomplete.",
+            });
+        }
+        const auto* view = views_.find(viewHandle);
+        if (view == nullptr || !view->alive || view->view == VK_NULL_HANDLE)
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidArgument,
+                0,
+                "The storage-texture clear view handle is invalid or stale.",
+            });
+        }
+        auto* texture = textures_.find(view->texture);
+        if (texture == nullptr || !texture->alive || texture->image == VK_NULL_HANDLE)
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidArgument,
+                0,
+                "The storage-texture clear view does not reference a live texture.",
+            });
+        }
+        auto format =
+            detail::validateStorageTextureClear(texture->desc, view->desc.usage, view->resolved.format, value);
+        if (!format)
+        {
+            return std::unexpected(std::move(format.error()));
+        }
+
+        const bool volume = texture->desc.dimension == TextureDimension::texture3D;
+        const VkImageSubresourceRange range{
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = view->desc.firstMipLevel,
+            .levelCount = 1,
+            .baseArrayLayer = volume ? 0U : view->desc.firstArrayLayer,
+            .layerCount = volume ? 1U : view->resolved.layerCount,
+        };
+        const auto* state = commandLayoutState(command);
+        for (std::uint32_t layer = range.baseArrayLayer; layer < range.baseArrayLayer + range.layerCount; ++layer)
+        {
+            const TextureSubresource subresource{.mipLevel = range.baseMipLevel, .arrayLayer = layer};
+            if (texture->submittedLayouts != nullptr)
+            {
+                const auto cell = static_cast<std::size_t>(layer) * texture->desc.mipLevels + range.baseMipLevel;
+                const auto known = commandPublicLayout(state, LayoutCell{texture->submittedLayouts.get(), cell});
+                if (known.has_value() && *known != TextureLayout::unorderedAccess)
+                {
+                    return std::unexpected(Error{
+                        ErrorCode::invalidState,
+                        0,
+                        "clearStorageTexture requires the unorderedAccess layout, but this command buffer leaves a "
+                        "cleared subresource in another layout.",
+                    });
+                }
+            }
+            if (recordedLayout(command, *texture, subresource) != VK_IMAGE_LAYOUT_GENERAL)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidState,
+                    0,
+                    "clearStorageTexture requires the cleared subresources to be in the unorderedAccess layout.",
+                });
+            }
+        }
+        const std::array swapchainLeases{texture->swapchainLease};
+        if (auto referenced = retainSwapchainImagesLocked(command, swapchainLeases); !referenced)
+        {
+            return referenced;
+        }
+
+        ensureTrackedLayouts(*texture);
+        auto& commandState = commandLayouts_[command];
+        for (std::uint32_t layer = range.baseArrayLayer; layer < range.baseArrayLayer + range.layerCount; ++layer)
+        {
+            const TextureSubresource subresource{.mipLevel = range.baseMipLevel, .arrayLayer = layer};
+            const auto cell = static_cast<std::size_t>(layer) * texture->desc.mipLevels + range.baseMipLevel;
+            if (cell < texture->submittedLayouts->size() &&
+                !commandPublicLayout(&commandState, LayoutCell{texture->submittedLayouts.get(), cell}).has_value())
+            {
+                commandState.entries.push_back(LayoutEntryRequirement{
+                    .submittedPublic = texture->submittedPublicLayouts,
+                    .index = cell,
+                    .layout = TextureLayout::unorderedAccess,
+                    .subresource = subresource,
+                    .entryLayoutUnknown = texture->shared,
+                });
+            }
+            recordTransferRequirementLocked(command,
+                                            *texture,
+                                            subresource,
+                                            VK_IMAGE_LAYOUT_GENERAL,
+                                            validation_detail::SubresourceTransferUse::copyDestination);
+        }
+        retainKeepAlive(retained, view->keepAlive);
+        retainKeepAlive(retained, texture->keepAlive);
+
+        VkClearColorValue clear{};
+        switch (format->type)
+        {
+        case StorageTextureClearType::float32:
+            std::ranges::copy(value.float32, std::begin(clear.float32));
+            break;
+        case StorageTextureClearType::uint32:
+            std::ranges::copy(value.uint32, std::begin(clear.uint32));
+            break;
+        case StorageTextureClearType::sint32:
+            std::ranges::copy(value.sint32, std::begin(clear.int32));
+            break;
+        }
+        table_->vkCmdClearColorImage(command, texture->image, VK_IMAGE_LAYOUT_GENERAL, &clear, 1, &range);
         return {};
     }
 

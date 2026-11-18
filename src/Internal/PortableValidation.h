@@ -402,6 +402,22 @@ namespace rachis::detail
         return {};
     }
 
+    [[nodiscard]] inline Status requireComputeCapableOutsideRendering(const BackendCommandBuffer& commandBuffer,
+                                                                      std::string_view message)
+    {
+        const auto queueType = commandBuffer.queueType();
+        if ((queueType != QueueType::graphics && queueType != QueueType::compute) ||
+            commandBuffer.graphicsState().renderingOwner != nullptr)
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidState,
+                0,
+                std::string(message),
+            });
+        }
+        return {};
+    }
+
     [[nodiscard]] inline Status validateRenderingEnd(const BackendCommandBuffer& commandBuffer)
     {
         if (commandBuffer.graphicsState().renderingOwner == nullptr)

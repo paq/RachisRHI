@@ -77,12 +77,16 @@ namespace rachis::d3d12
             {
                 result |= D3D12_BARRIER_SYNC_COPY_RAYTRACING_ACCELERATION_STRUCTURE;
             }
+            if (hasAny(sync, EnhancedBarrierSync::clearUnorderedAccessView))
+            {
+                result |= D3D12_BARRIER_SYNC_CLEAR_UNORDERED_ACCESS_VIEW;
+            }
             return result;
         }
 
-        [[nodiscard]] D3D12_BARRIER_SYNC nativeSync(PipelineStage stages) noexcept
+        [[nodiscard]] D3D12_BARRIER_SYNC nativeSync(PipelineStage stages, Access access) noexcept
         {
-            return toNativeBarrierSync(translateEnhancedSync(stages));
+            return toNativeBarrierSync(translateEnhancedSync(stages, access));
         }
 
         [[nodiscard]] D3D12_BARRIER_ACCESS toNativeBarrierAccess(EnhancedBarrierAccess access) noexcept
@@ -416,7 +420,7 @@ namespace rachis::d3d12
             const auto subresources = toNativeSubresourceRange(range);
             return std::array{
                 D3D12_TEXTURE_BARRIER{
-                    .SyncBefore = nativeSync(barrier.stagesBefore),
+                    .SyncBefore = nativeSync(barrier.stagesBefore, barrier.accessBefore),
                     .SyncAfter = initializationSync,
                     .AccessBefore = nativeAccess(barrier.accessBefore),
                     .AccessAfter = initializationAccess,
@@ -428,7 +432,7 @@ namespace rachis::d3d12
                 },
                 D3D12_TEXTURE_BARRIER{
                     .SyncBefore = initializationSync,
-                    .SyncAfter = nativeSync(barrier.stagesAfter),
+                    .SyncAfter = nativeSync(barrier.stagesAfter, barrier.accessAfter),
                     .AccessBefore = initializationAccess,
                     .AccessAfter = nativeAccess(barrier.accessAfter),
                     .LayoutBefore = initializationLayout,
@@ -993,8 +997,8 @@ namespace rachis::d3d12
         [[nodiscard]] D3D12_GLOBAL_BARRIER enhancedGlobalBarrier(const GlobalBarrier& barrier) noexcept
         {
             return D3D12_GLOBAL_BARRIER{
-                .SyncBefore = nativeSync(barrier.stagesBefore),
-                .SyncAfter = nativeSync(barrier.stagesAfter),
+                .SyncBefore = nativeSync(barrier.stagesBefore, barrier.accessBefore),
+                .SyncAfter = nativeSync(barrier.stagesAfter, barrier.accessAfter),
                 .AccessBefore = nativeAccess(barrier.accessBefore),
                 .AccessAfter = nativeAccess(barrier.accessAfter),
             };
@@ -1003,8 +1007,8 @@ namespace rachis::d3d12
         [[nodiscard]] D3D12_BUFFER_BARRIER enhancedBufferBarrier(const PreparedBufferBarrier& prepared)
         {
             return D3D12_BUFFER_BARRIER{
-                .SyncBefore = nativeSync(prepared.barrier.stagesBefore),
-                .SyncAfter = nativeSync(prepared.barrier.stagesAfter),
+                .SyncBefore = nativeSync(prepared.barrier.stagesBefore, prepared.barrier.accessBefore),
+                .SyncAfter = nativeSync(prepared.barrier.stagesAfter, prepared.barrier.accessAfter),
                 .AccessBefore = nativeAccess(prepared.barrier.accessBefore),
                 .AccessAfter = nativeAccess(prepared.barrier.accessAfter),
                 .pResource = prepared.resource->resource.Get(),
@@ -1027,8 +1031,8 @@ namespace rachis::d3d12
                                                                    QueueType queueType)
         {
             return D3D12_TEXTURE_BARRIER{
-                .SyncBefore = nativeSync(barrier.stagesBefore),
-                .SyncAfter = nativeSync(barrier.stagesAfter),
+                .SyncBefore = nativeSync(barrier.stagesBefore, barrier.accessBefore),
+                .SyncAfter = nativeSync(barrier.stagesAfter, barrier.accessAfter),
                 .AccessBefore = nativeAccess(barrier.accessBefore),
                 .AccessAfter = nativeAccess(barrier.accessAfter),
                 .LayoutBefore = nativeLayout(barrier.layoutBefore, queueType),
@@ -1044,8 +1048,8 @@ namespace rachis::d3d12
             const PreparedSamplerFeedbackBarrier& prepared, QueueType queueType)
         {
             return D3D12_TEXTURE_BARRIER{
-                .SyncBefore = nativeSync(prepared.barrier.stagesBefore),
-                .SyncAfter = nativeSync(prepared.barrier.stagesAfter),
+                .SyncBefore = nativeSync(prepared.barrier.stagesBefore, prepared.barrier.accessBefore),
+                .SyncAfter = nativeSync(prepared.barrier.stagesAfter, prepared.barrier.accessAfter),
                 .AccessBefore = nativeAccess(prepared.barrier.accessBefore),
                 .AccessAfter = nativeAccess(prepared.barrier.accessAfter),
                 .LayoutBefore = nativeLayout(prepared.barrier.layoutBefore, queueType),
@@ -1799,8 +1803,8 @@ namespace rachis::d3d12
                                          const BufferAliasActivation& activation)
         {
             const D3D12_BUFFER_BARRIER deactivation{
-                .SyncBefore = nativeSync(activation.stagesBefore),
-                .SyncAfter = nativeSync(activation.stagesAfter),
+                .SyncBefore = nativeSync(activation.stagesBefore, activation.accessBefore),
+                .SyncAfter = nativeSync(activation.stagesAfter, Access::none),
                 .AccessBefore = nativeAccess(activation.accessBefore),
                 .AccessAfter = D3D12_BARRIER_ACCESS_NO_ACCESS,
                 .pResource = prepared.before->resource.Get(),
@@ -1815,8 +1819,8 @@ namespace rachis::d3d12
             commandList.Barrier(1, &group);
 
             const D3D12_BUFFER_BARRIER activationBarrier{
-                .SyncBefore = nativeSync(activation.stagesBefore),
-                .SyncAfter = nativeSync(activation.stagesAfter),
+                .SyncBefore = nativeSync(activation.stagesBefore, Access::none),
+                .SyncAfter = nativeSync(activation.stagesAfter, activation.accessAfter),
                 .AccessBefore = D3D12_BARRIER_ACCESS_NO_ACCESS,
                 .AccessAfter = nativeAccess(activation.accessAfter),
                 .pResource = prepared.after->resource.Get(),
@@ -1946,6 +1950,79 @@ namespace rachis::d3d12
         }
 
     } // namespace
+
+    Result<TextureLayoutUse> resource_detail::prepareTextureLayoutUse(QueueManager& queues,
+                                                                      detail::BackendCommandBuffer& commandBuffer,
+                                                                      const TextureRecord& texture,
+                                                                      const TextureSubresourceRange& subresources,
+                                                                      TextureLayout layout,
+                                                                      std::string_view operation)
+    {
+        auto range = nativeTextureRange(texture, subresources);
+        if (!range)
+        {
+            return std::unexpected(std::move(range.error()));
+        }
+        if (texture.legacyStates == nullptr)
+        {
+            return TextureLayoutUse{.layout = layout};
+        }
+        auto recording = queues.legacyTextureStates(commandBuffer);
+        if (!recording)
+        {
+            return std::unexpected(std::move(recording.error()));
+        }
+        try
+        {
+            TextureLayoutUse prepared{
+                .recording = *recording,
+                .layout = layout,
+            };
+            prepared.subresources.reserve(subresourceCount(*range));
+            forEachTextureSubresource(
+                texture, *range, [&](std::uint32_t subresource) { prepared.subresources.push_back(subresource); });
+            if (const auto* use = (*recording)->find(texture.legacyStates.get()); use != nullptr)
+            {
+                for (const auto subresource : prepared.subresources)
+                {
+                    const auto left = use->layoutLeft(subresource);
+                    if (left.has_value() && *left != layout)
+                    {
+                        return std::unexpected(Error{
+                            ErrorCode::invalidState,
+                            0,
+                            std::string(operation) + " requires the " + std::string(textureLayoutName(layout)) +
+                                " layout, but this command buffer leaves subresource " + std::to_string(subresource) +
+                                " in " + std::string(textureLayoutName(*left)) + ".",
+                        });
+                    }
+                }
+            }
+            prepared.use = (*recording)->use(texture.legacyStates);
+            return prepared;
+        }
+        catch (const std::bad_alloc&)
+        {
+            return std::unexpected(Error{
+                ErrorCode::outOfMemory,
+                0,
+                "Failed to track the texture layout of a recorded command.",
+            });
+        }
+    }
+
+    void resource_detail::commitTextureLayoutUse(const TextureLayoutUse& use) noexcept
+    {
+        if (use.recording == nullptr)
+        {
+            return;
+        }
+        auto& tracked = (*use.recording)[use.use];
+        for (const auto subresource : use.subresources)
+        {
+            tracked.recordLayout(subresource, use.layout, use.layout);
+        }
+    }
 
     struct NativeTextureBarrierSequence::Impl final
     {

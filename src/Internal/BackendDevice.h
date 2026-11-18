@@ -152,6 +152,11 @@ namespace rachis::detail
                                                        BufferHandle source,
                                                        BufferHandle destination,
                                                        std::span<const BufferCopyRegion> regions) = 0;
+        [[nodiscard]] virtual Status fillBuffer(
+            BackendCommandBuffer&, BufferHandle, std::uint64_t, std::uint64_t, std::uint32_t)
+        {
+            return std::unexpected(unsupportedOperation("fillBuffer"));
+        }
         [[nodiscard]] virtual Status bufferBarrier(BackendCommandBuffer& commandBuffer,
                                                    const BufferBarrier& barrier) = 0;
         [[nodiscard]] virtual Status samplerFeedbackBarrier(BackendCommandBuffer&, const SamplerFeedbackBarrier&)
@@ -339,6 +344,12 @@ namespace rachis::detail
                                                         TextureHandle source,
                                                         TextureHandle destination,
                                                         std::span<const TextureCopyRegion> regions) = 0;
+        [[nodiscard]] virtual Status clearStorageTexture(BackendCommandBuffer&,
+                                                         TextureViewHandle,
+                                                         const StorageTextureClearValue&)
+        {
+            return std::unexpected(unsupportedOperation("clearStorageTexture"));
+        }
         [[nodiscard]] virtual Status resolveTexture(BackendCommandBuffer& commandBuffer,
                                                     const TextureResolve& resolve) = 0;
         [[nodiscard]] virtual Status generateMipmaps(BackendCommandBuffer& commandBuffer,

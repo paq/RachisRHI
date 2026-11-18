@@ -683,6 +683,23 @@ namespace rachis::d3d12
                                                        Origin3D origin,
                                                        Extent3D extent) noexcept;
 
+        struct TextureLayoutUse final
+        {
+            LegacyTextureStateRecording* recording = nullptr;
+            std::size_t use = 0;
+            std::vector<std::uint32_t> subresources;
+            TextureLayout layout = TextureLayout::undefined;
+        };
+
+        [[nodiscard]] Result<TextureLayoutUse> prepareTextureLayoutUse(QueueManager& queues,
+                                                                       detail::BackendCommandBuffer& commandBuffer,
+                                                                       const TextureRecord& texture,
+                                                                       const TextureSubresourceRange& subresources,
+                                                                       TextureLayout layout,
+                                                                       std::string_view operation);
+
+        void commitTextureLayoutUse(const TextureLayoutUse& use) noexcept;
+
         [[nodiscard]] Status requireFormatSupport(ID3D12Device& device,
                                                   DXGI_FORMAT format,
                                                   D3D12_FORMAT_SUPPORT1 requiredSupport1,

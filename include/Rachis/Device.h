@@ -502,6 +502,11 @@ namespace rachis
                                         BufferHandle source,
                                         BufferHandle destination,
                                         std::span<const BufferCopyRegion> regions);
+        [[nodiscard]] Status fillBuffer(CommandBuffer& commandBuffer,
+                                        BufferHandle buffer,
+                                        std::uint64_t offset,
+                                        std::uint64_t size,
+                                        std::uint32_t value);
         [[nodiscard]] Status globalBarrier(CommandBuffer& commandBuffer, const GlobalBarrier& barrier);
         [[nodiscard]] Status bufferBarrier(CommandBuffer& commandBuffer, const BufferBarrier& barrier);
         [[nodiscard]] Status samplerFeedbackBarrier(CommandBuffer& commandBuffer,
@@ -591,6 +596,9 @@ namespace rachis
                                          TextureHandle source,
                                          TextureHandle destination,
                                          std::span<const TextureCopyRegion> regions);
+        [[nodiscard]] Status clearStorageTexture(CommandBuffer& commandBuffer,
+                                                 TextureViewHandle view,
+                                                 const StorageTextureClearValue& value);
         [[nodiscard]] Status resolveTexture(CommandBuffer& commandBuffer, const TextureResolve& resolve);
         [[nodiscard]] Status generateMipmaps(CommandBuffer& commandBuffer, const TextureMipmapGeneration& generation);
         [[nodiscard]] Status textureBarrier(CommandBuffer& commandBuffer, const TextureBarrier& barrier);

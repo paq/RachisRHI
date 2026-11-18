@@ -164,6 +164,11 @@ namespace rachis::vulkan
                                                BufferHandle source,
                                                BufferHandle destination,
                                                std::span<const BufferCopyRegion> regions) override;
+        [[nodiscard]] Status fillBuffer(detail::BackendCommandBuffer& commandBuffer,
+                                        BufferHandle buffer,
+                                        std::uint64_t offset,
+                                        std::uint64_t size,
+                                        std::uint32_t value) override;
         [[nodiscard]] Result<TextureTransferLayout> queryTextureTransferLayout(
             TextureHandle texture, const BufferTextureCopyRegion& region) const override;
         [[nodiscard]] Status copyBufferToTextureRegions(detail::BackendCommandBuffer& commandBuffer,
@@ -178,6 +183,9 @@ namespace rachis::vulkan
                                                 TextureHandle source,
                                                 TextureHandle destination,
                                                 std::span<const TextureCopyRegion> regions) override;
+        [[nodiscard]] Status clearStorageTexture(detail::BackendCommandBuffer& commandBuffer,
+                                                 TextureViewHandle view,
+                                                 const StorageTextureClearValue& value) override;
         [[nodiscard]] Status resolveTexture(detail::BackendCommandBuffer& commandBuffer,
                                             const TextureResolve& resolve) override;
         [[nodiscard]] Status generateMipmaps(detail::BackendCommandBuffer& commandBuffer,

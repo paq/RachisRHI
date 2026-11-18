@@ -5,7 +5,7 @@
 - **Setup & basics:** [CMake targets](#cmake-targets) · [Windows runtime DLLs](#windows-runtime-dlls) · [Headers](#headers) · [Creating a device](#creating-a-device) · [Errors](#errors)
 - **Shaders & pipelines:** [Shaders](#shaders) ([Optional shader stages](#optional-shader-stages), [Stage inputs and outputs](#stage-inputs-and-outputs)) · [Vertex input](#vertex-input) · [Graphics pipeline limits on Metal](#graphics-pipeline-limits-on-metal) · [Point lists](#point-lists) · [Multiview rendering](#multiview-rendering)
 - **Presentation:** [Surfaces](#surfaces)
-- **Resources & lifetimes:** [Handles and lifetime](#handles-and-lifetime) · [Texture layouts](#texture-layouts) · [Readback buffers](#readback-buffers) · [Acceleration structures](#acceleration-structures) · [Sharing resources](#sharing-resources)
+- **Resources & lifetimes:** [Handles and lifetime](#handles-and-lifetime) · [Texture layouts](#texture-layouts) · [Buffer fills and storage-texture clears](#buffer-fills-and-storage-texture-clears) · [Readback buffers](#readback-buffers) · [Acceleration structures](#acceleration-structures) · [Sharing resources](#sharing-resources)
 - **Bindings & barriers:** [Samplers](#samplers) · [Binding pools](#binding-pools) · [Variable-count binding arrays](#variable-count-binding-arrays) · [Direct3D 12 without enhanced barriers](#direct3d-12-without-enhanced-barriers)
 - **Execution & operations:** [Threads](#threads) · [Queries](#queries) · [Device loss](#device-loss) · [Diagnostics](#diagnostics) · [Examples](#examples)
 
@@ -364,6 +364,36 @@ Texture layout tracking is **always active**, even when `ValidationLevel::disabl
   - Shared textures imported into another device have unknown external entry layout—only intra-command-buffer transitions are checked until the caller re-establishes known state.
   - `generateMipmaps` transitions the base mip from `baseLayout` and leaves all touched mips in `finalLayout`.
   - `activateTextureAlias` sets all activated subresources to `layoutAfter`.
+
+---
+
+## Buffer fills and storage-texture clears
+
+`fillBuffer` and `clearStorageTexture` write a constant value on the GPU, in command-buffer order. Use them to reset count buffers, counters, and visibility masks each frame, instead of a compute dispatch or a copy from a buffer of zeros:
+
+```cpp
+device.fillBuffer(command, countBuffer, 0, rachis::wholeResource, 0);
+device.clearStorageTexture(command, storageView,
+                           {.type = rachis::StorageTextureClearType::uint32, .uint32 = {0, 0, 0, 0}});
+```
+
+Rules for both commands:
+
+- **Queues and rendering scopes:** Record them on a graphics or compute command buffer, outside `beginRendering` / `endRendering`. A copy command buffer or an open rendering scope fails with `ErrorCode::invalidState`.
+- **Barriers:** Each command counts as an unordered-access write in the compute stage on every backend. On the side of a barrier that refers to the fill or clear, name `PipelineStage::computeShader` with `Access::unorderedAccess`. For example, before a counted draw reads a filled count buffer, record a buffer barrier from `computeShader` / `unorderedAccess` to `indirect` / `indirectArgument`. Two fills or clears that write the same bytes or texels need a barrier between them, like any two writes.
+
+`fillBuffer(commandBuffer, buffer, offset, size, value)` writes the 32-bit `value` to every 4-byte word in `[offset, offset + size)`:
+
+- `size` may be `wholeResource`, which fills the rest of the buffer.
+- `offset` and the size must be multiples of 4, the size must not be 0, and the range must lie inside the buffer (`ErrorCode::invalidArgument` otherwise). With `wholeResource`, the rest of the buffer must also be a multiple of 4 bytes.
+- The buffer needs `BufferUsage::storage` and `BufferUsage::copyDestination` (`ErrorCode::invalidArgument` otherwise).
+
+`clearStorageTexture(commandBuffer, view, value)` clears every subresource the storage view covers: its mip level, every layer of an array view, and every depth slice of a 3D view.
+
+- **View and texture:** The view must be a `TextureViewUsage::storage` view in the texture's own format. The texture needs `TextureUsage::storage` and `TextureUsage::copyDestination` and one sample (`ErrorCode::invalidArgument` otherwise). A view in another format than the texture fails with `ErrorCode::unsupported`.
+- **Formats:** Uncompressed color formats with 8-, 16-, or 32-bit channels. `r64Uint`, depth, and block-compressed formats fail with `ErrorCode::unsupported`.
+- **Value:** `StorageTextureClearValue::type` selects the field that is used: `float32` for float and normalized formats, `uint32` for unsigned-integer formats, and `sint32` for signed-integer formats. A type that does not match the view format, a float that is not finite, or an integer that does not fit in the channel fails with `ErrorCode::invalidArgument`. Values for channels the format does not have are ignored. Float values are converted to the format the same way a shader write converts them.
+- **Layout:** The cleared subresources must be in `TextureLayout::unorderedAccess`, and the clear leaves them there. A clear in another layout fails with `ErrorCode::invalidState`, either when it is recorded or at `submit`.
 
 ---
 

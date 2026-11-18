@@ -2567,11 +2567,21 @@ namespace rachis::vulkan
                 "Buffer fill is unavailable because the Vulkan device table is incomplete.",
             });
         }
-        retainNative(retained, record->keepAlive);
-        table_->vkCmdFillBuffer(command, record->buffer, 0, record->desc.size, value);
+        recordFillBufferLocked(command, *record, 0, record->desc.size, value, retained);
         return {};
     }
 #endif
+
+    void VulkanResourceAllocator::recordFillBufferLocked(VkCommandBuffer command,
+                                                         const BufferRecord& record,
+                                                         std::uint64_t offset,
+                                                         std::uint64_t size,
+                                                         std::uint32_t value,
+                                                         std::vector<std::shared_ptr<void>>* retained)
+    {
+        retainNative(retained, record.keepAlive);
+        table_->vkCmdFillBuffer(command, record.buffer, offset, size, value);
+    }
 
     Status VulkanResourceAllocator::validateBufferDesc(const BufferDesc& desc) const
     {
