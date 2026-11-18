@@ -106,7 +106,8 @@ namespace rachis::vulkan
                         const DeviceCapabilities& capabilities,
                         const VulkanInstanceTable* instanceTable = nullptr,
                         VulkanBufferBindingLimits bufferLimits = {},
-                        VulkanDescriptorLimits descriptorLimits = {}) noexcept;
+                        VulkanDescriptorLimits descriptorLimits = {},
+                        VulkanDescriptorLimits updateAfterBindLimits = {}) noexcept;
         void setAccelerationManager(VulkanAccelerationManager* acceleration) noexcept;
         void shutdown() noexcept;
 
@@ -151,6 +152,7 @@ namespace rachis::vulkan
             std::uint32_t dynamicBufferCount = 0;
             std::optional<std::uint32_t> variableBinding;
             std::uint32_t variableDescriptorCapacity = 0;
+            bool updateAfterBind = false;
             std::string label;
             std::shared_ptr<LayoutKeepAlive> keepAlive;
         };
@@ -180,6 +182,7 @@ namespace rachis::vulkan
             BindingPoolVersionLease& operator=(BindingPoolVersionLease&&) = delete;
             std::shared_ptr<BindingPoolState> state;
             std::array<std::uint32_t, bindingTypeCount> counts{};
+            VkDescriptorPool nativePool = VK_NULL_HANDLE;
             VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
             bool armed = false;
             ~BindingPoolVersionLease();
@@ -196,6 +199,9 @@ namespace rachis::vulkan
             VkDevice device = VK_NULL_HANDLE;
             const VolkDeviceTable* table = nullptr;
             VkDescriptorPool pool = VK_NULL_HANDLE;
+            VkDescriptorPool updateAfterBindPool = VK_NULL_HANDLE;
+            std::vector<VkDescriptorPoolSize> nativeSizes;
+            std::uint32_t nativeMaxSets = 0;
             std::uint32_t maxBindingSets = 0;
             std::uint32_t liveBindingSets = 0;
             std::array<std::uint32_t, bindingTypeCount> descriptorCapacity{};
@@ -276,7 +282,10 @@ namespace rachis::vulkan
             const BindingLayoutRecord& record) const;
         [[nodiscard]] Status createNativeDescriptorPool(BindingPoolState& state,
                                                         std::span<const VkDescriptorPoolSize> poolSizes,
-                                                        std::uint32_t maxSets) const;
+                                                        std::uint32_t maxSets,
+                                                        VkDescriptorPoolCreateFlags extraFlags,
+                                                        VkDescriptorPool& target) const;
+        [[nodiscard]] Result<VkDescriptorPool> nativePoolLocked(BindingPoolState& pool, bool updateAfterBind) const;
         [[nodiscard]] Result<LayoutAndPool> findLayoutAndPool(BindingLayoutHandle layout, BindingPoolHandle pool) const;
         [[nodiscard]] static std::shared_ptr<BindingSetVersion> makeUnallocatedVersion(
             std::shared_ptr<BindingLayoutRecord> layout,
@@ -299,6 +308,10 @@ namespace rachis::vulkan
                                                        const std::shared_ptr<BindingSetRecord>& current,
                                                        std::shared_ptr<BindingSetVersion> version,
                                                        std::span<const BindingWrite> writes);
+        [[nodiscard]] Status publishInPlaceUpdate(BindingSetHandle set,
+                                                  const std::shared_ptr<BindingSetRecord>& current,
+                                                  std::vector<BindingSlot> slots,
+                                                  std::span<const BindingWrite> writes);
         [[nodiscard]] Result<std::vector<std::shared_ptr<BindingLayoutRecord>>> findPipelineSetLayouts(
             std::span<const BindingLayoutHandle> bindingLayouts) const;
         [[nodiscard]] Result<std::shared_ptr<PipelineLayoutKeepAlive>> createNativePipelineLayout(
@@ -309,6 +322,7 @@ namespace rachis::vulkan
         const VulkanInstanceTable* instanceTable_ = nullptr;
         bool partiallyBoundSupported_ = false;
         bool variableDescriptorCountSupported_ = false;
+        bool updateAfterBindSupported_ = false;
         bool accelerationStructures_ = false;
         ShaderStage enabledShaderStages_ = coreShaderStages;
         VulkanAccelerationManager* accelerationManager_ = nullptr;
@@ -316,6 +330,7 @@ namespace rachis::vulkan
         std::uint32_t maxVariableSamplerDescriptors_ = 0;
         VulkanBufferBindingLimits bufferLimits_{};
         VulkanDescriptorLimits descriptorLimits_{};
+        VulkanDescriptorLimits updateAfterBindLimits_{};
         mutable std::shared_mutex mutex_{};
         BindingUpdateStatistics statistics_{};
         detail::HandleTable<std::shared_ptr<BindingLayoutRecord>, BindingLayoutHandle> layouts_{};

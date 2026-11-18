@@ -686,6 +686,16 @@ namespace rachis::d3d12
                    D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
         }
 
+        [[nodiscard]] constexpr D3D12_DESCRIPTOR_RANGE_FLAGS resourceRangeFlags(
+            const BindingLayoutEntry& entry) noexcept
+        {
+            if (hasAny(entry.flags, BindingFlag::updateAfterBind))
+            {
+                return D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE | D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+            }
+            return resourceRangeFlags();
+        }
+
         [[nodiscard]] constexpr DXGI_FORMAT nativeFormat(Format value) noexcept
         {
             return format::view(value);
@@ -1328,7 +1338,8 @@ namespace rachis::d3d12
                 }
                 else if (!isDynamic)
                 {
-                    ranges.resources[setIndex].add(entry, setIndex, entry.descriptorOffset, resourceRangeFlags());
+                    ranges.resources[setIndex].add(
+                        entry, setIndex, entry.descriptorOffset, resourceRangeFlags(entry.entry));
                 }
                 else
                 {

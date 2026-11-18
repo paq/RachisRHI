@@ -1,0 +1,468 @@
+#include "Rachis/Device.h"
+#include "RhiTestSupport.h"
+
+#ifdef _WINDOWS_
+#error Public Rachis headers must not include Windows.h.
+#endif
+
+#ifdef VK_VERSION_1_0
+#error Public Rachis headers must not include Vulkan headers.
+#endif
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <span>
+#include <string>
+#include <utility>
+#include <vector>
+
+#ifdef RACHIS_SPIRV_DIR
+namespace
+{
+
+    constexpr std::uint32_t inputCount = 100'000;
+    constexpr std::uint64_t sliceSize = 256;
+    constexpr std::array<std::uint32_t, 4> sliceValues{100, 200, 300, 400};
+    constexpr std::uint64_t resultRangeSize = 256;
+    constexpr std::uint64_t resultBufferSize = 2 * resultRangeSize;
+
+    struct Selection final
+    {
+        std::uint32_t element = 0;
+        std::uint32_t slot = 0;
+    };
+
+    [[nodiscard]] std::vector<std::byte> loadShader()
+    {
+        std::ifstream stream(std::filesystem::path(RACHIS_SPIRV_DIR) / "UpdateAfterBindBinding.spv",
+                             std::ios::binary | std::ios::ate);
+        const auto end = stream.tellg();
+        if (end <= 0)
+        {
+            return {};
+        }
+        std::vector<std::byte> result(static_cast<std::size_t>(end));
+        stream.seekg(0, std::ios::beg);
+        stream.read(reinterpret_cast<char*>(result.data()), end);
+        return stream ? result : std::vector<std::byte>{};
+    }
+
+    [[nodiscard]] rachis::BufferBinding slice(rachis::BufferHandle values, std::size_t index)
+    {
+        return rachis::BufferBinding{values, index * sliceSize, sliceSize, sizeof(std::uint32_t)};
+    }
+
+    struct ResourceStatisticsDelta final
+    {
+        std::uint64_t prepared = 0;
+        std::uint64_t tablePublishes = 0;
+        std::uint64_t published = 0;
+    };
+
+    [[nodiscard]] ResourceStatisticsDelta resourceDelta(const rachis::BindingUpdateStatistics& before,
+                                                        const rachis::BindingUpdateStatistics& after)
+    {
+        return ResourceStatisticsDelta{
+            .prepared = after.resourceDescriptorsPrepared - before.resourceDescriptorsPrepared,
+            .tablePublishes = after.resourceTablePublishCount - before.resourceTablePublishCount,
+            .published = after.resourceDescriptorsPublished - before.resourceDescriptorsPublished,
+        };
+    }
+
+    class LargeArrayFixture final
+    {
+    public:
+        LargeArrayFixture(rachis::Device& device, rachis::BindingFlag arrayFlags) : device_(device)
+        {
+            const auto bytecode = loadShader();
+            REQUIRE_FALSE(bytecode.empty());
+            const std::array requirements{
+                rachis::ShaderBindingRequirement{0, 0, rachis::ShaderResourceType::storageBuffer, 1},
+                rachis::ShaderBindingRequirement{0, 1, rachis::ShaderResourceType::readOnlyStorageBuffer, inputCount},
+            };
+            const std::array pushConstants{rachis::ShaderPushConstantRequirement{0, sizeof(Selection)}};
+            auto shader = device_.createShaderModule({
+                .stage = rachis::ShaderStage::compute,
+                .bytecode = bytecode,
+                .entryPoint = "main",
+                .label = "Vulkan large binding array shader",
+                .shaderInterface = rachis::test::computeShaderInterface({1, 1, 1}, requirements, pushConstants),
+            });
+            REQUIRE(shader.has_value());
+            shader_ = *shader;
+
+            createBuffers();
+
+            const std::array entries{
+                rachis::BindingLayoutEntry{0, rachis::BindingType::storageBuffer, rachis::ShaderStage::compute, 1},
+                rachis::BindingLayoutEntry{1,
+                                           rachis::BindingType::readOnlyStorageBuffer,
+                                           rachis::ShaderStage::compute,
+                                           inputCount,
+                                           arrayFlags},
+            };
+            auto layout =
+                device_.createBindingLayout({.entries = entries, .label = "Vulkan large binding array layout"});
+            const std::string layoutFailure = layout ? std::string{} : layout.error().message;
+            CAPTURE(layoutFailure);
+            REQUIRE(layout.has_value());
+            layout_ = *layout;
+
+            const std::array sizes{
+                rachis::BindingPoolSize{rachis::BindingType::storageBuffer, 4},
+                rachis::BindingPoolSize{rachis::BindingType::readOnlyStorageBuffer, 3 * inputCount},
+            };
+            auto pool =
+                device_.createBindingPool({.maxBindingSets = 1, .sizes = sizes, .label = "Vulkan large array pool"});
+            REQUIRE(pool.has_value());
+            pool_ = *pool;
+
+            const std::array writes{
+                rachis::BindingWrite{0, 0, rachis::BufferBinding{results_, 0, resultRangeSize, sizeof(std::uint32_t)}},
+                rachis::BindingWrite{1, 0, slice(values_, 0)},
+                rachis::BindingWrite{1, 1, slice(values_, 1)},
+            };
+            auto set = device_.createBindingSet({
+                .layout = layout_,
+                .writes = writes,
+                .label = "Vulkan large binding array set",
+                .pool = pool_,
+            });
+            const std::string setFailure = set ? std::string{} : set.error().message;
+            CAPTURE(setFailure);
+            REQUIRE(set.has_value());
+            set_ = *set;
+
+            const std::array layouts{layout_};
+            const std::array ranges{rachis::PushConstantRange{rachis::ShaderStage::compute, 0, sizeof(Selection)}};
+            auto pipelineLayout =
+                device_.createPipelineLayout({.bindingLayouts = layouts, .pushConstantRanges = ranges});
+            const std::string pipelineLayoutFailure = pipelineLayout ? std::string{} : pipelineLayout.error().message;
+            CAPTURE(pipelineLayoutFailure);
+            REQUIRE(pipelineLayout.has_value());
+            pipelineLayout_ = *pipelineLayout;
+            auto pipeline = device_.createComputePipeline({.layout = pipelineLayout_, .computeShader = shader_});
+            const std::string pipelineFailure = pipeline ? std::string{} : pipeline.error().message;
+            CAPTURE(pipelineFailure);
+            REQUIRE(pipeline.has_value());
+            pipeline_ = *pipeline;
+        }
+
+        ~LargeArrayFixture()
+        {
+            static_cast<void>(device_.waitIdle());
+            static_cast<void>(device_.destroyPipeline(pipeline_));
+            static_cast<void>(device_.destroyPipelineLayout(pipelineLayout_));
+            static_cast<void>(device_.destroyBindingSet(set_));
+            static_cast<void>(device_.destroyBindingPool(pool_));
+            static_cast<void>(device_.destroyBindingLayout(layout_));
+            static_cast<void>(device_.destroyShaderModule(shader_));
+            static_cast<void>(device_.destroyBuffer(values_));
+            static_cast<void>(device_.destroyBuffer(results_));
+            static_cast<void>(device_.destroyBuffer(readback_));
+        }
+
+        LargeArrayFixture(const LargeArrayFixture&) = delete;
+        LargeArrayFixture& operator=(const LargeArrayFixture&) = delete;
+        LargeArrayFixture(LargeArrayFixture&&) = delete;
+        LargeArrayFixture& operator=(LargeArrayFixture&&) = delete;
+
+        [[nodiscard]] rachis::BindingSetHandle set() const noexcept
+        {
+            return set_;
+        }
+
+        [[nodiscard]] rachis::BufferHandle values() const noexcept
+        {
+            return values_;
+        }
+
+        [[nodiscard]] rachis::BufferHandle results() const noexcept
+        {
+            return results_;
+        }
+
+        [[nodiscard]] rachis::CommandBuffer record(std::span<const Selection> selections)
+        {
+            auto command = rachis::test::acquireCommandBuffer(device_, rachis::QueueType::compute);
+            REQUIRE(command.has_value());
+            REQUIRE(device_
+                        .bufferBarrier(*command,
+                                       {
+                                           .buffer = results_,
+                                           .stagesBefore = rachis::PipelineStage::all,
+                                           .stagesAfter = rachis::PipelineStage::computeShader,
+                                           .accessBefore = rachis::Access::common,
+                                           .accessAfter = rachis::Access::unorderedAccess,
+                                       })
+                        .has_value());
+            REQUIRE(device_.bindComputePipeline(*command, pipeline_).has_value());
+            REQUIRE(device_.bindComputeBindingSet(*command, 0, set_).has_value());
+            for (std::size_t index = 0; index < selections.size(); ++index)
+            {
+                if (index != 0)
+                {
+                    REQUIRE(device_
+                                .bufferBarrier(*command,
+                                               {
+                                                   .buffer = results_,
+                                                   .stagesBefore = rachis::PipelineStage::computeShader,
+                                                   .stagesAfter = rachis::PipelineStage::computeShader,
+                                                   .accessBefore = rachis::Access::unorderedAccess,
+                                                   .accessAfter = rachis::Access::unorderedAccess,
+                                               })
+                                .has_value());
+                }
+                REQUIRE(device_.setComputePushConstants(*command, 0, std::as_bytes(std::span(&selections[index], 1)))
+                            .has_value());
+                REQUIRE(device_.dispatch(*command, 1).has_value());
+            }
+            return std::move(*command);
+        }
+
+        void recordReadback(rachis::CommandBuffer& command)
+        {
+            REQUIRE(device_
+                        .bufferBarrier(command,
+                                       {
+                                           .buffer = results_,
+                                           .stagesBefore = rachis::PipelineStage::computeShader,
+                                           .stagesAfter = rachis::PipelineStage::copy,
+                                           .accessBefore = rachis::Access::unorderedAccess,
+                                           .accessAfter = rachis::Access::copySource,
+                                       })
+                        .has_value());
+            REQUIRE(device_.copyBuffer(command, {results_, 0, readback_, 0, resultBufferSize}).has_value());
+        }
+
+        [[nodiscard]] std::uint32_t result(std::uint64_t offset)
+        {
+            auto mapped = device_.mapBuffer(readback_);
+            REQUIRE(mapped.has_value());
+            std::uint32_t value = 0;
+            std::memcpy(&value, mapped->data + offset, sizeof(value));
+            REQUIRE(device_.unmapBuffer(readback_).has_value());
+            return value;
+        }
+
+    private:
+        void createBuffers()
+        {
+            auto values = device_.createBuffer({
+                .size = sliceValues.size() * sliceSize,
+                .usage = rachis::BufferUsage::storage | rachis::BufferUsage::copyDestination,
+                .label = "Vulkan large array values",
+            });
+            auto staging = device_.createBuffer({
+                .size = sliceValues.size() * sliceSize,
+                .usage = rachis::BufferUsage::copySource,
+                .memoryType = rachis::MemoryType::upload,
+                .label = "Vulkan large array value staging",
+            });
+            auto results = device_.createBuffer({
+                .size = resultBufferSize,
+                .usage = rachis::BufferUsage::storage | rachis::BufferUsage::copySource,
+                .label = "Vulkan large array results",
+            });
+            auto readback = device_.createBuffer({
+                .size = resultBufferSize,
+                .usage = rachis::BufferUsage::copyDestination,
+                .memoryType = rachis::MemoryType::readback,
+                .label = "Vulkan large array readback",
+            });
+            REQUIRE(values.has_value());
+            REQUIRE(staging.has_value());
+            REQUIRE(results.has_value());
+            REQUIRE(readback.has_value());
+            values_ = *values;
+            results_ = *results;
+            readback_ = *readback;
+
+            for (std::size_t index = 0; index < sliceValues.size(); ++index)
+            {
+                REQUIRE(
+                    device_.writeBuffer(*staging, index * sliceSize, std::as_bytes(std::span(&sliceValues[index], 1)))
+                        .has_value());
+            }
+            auto command = rachis::test::acquireCommandBuffer(device_, rachis::QueueType::compute);
+            REQUIRE(command.has_value());
+            REQUIRE(
+                device_.copyBuffer(*command, {*staging, 0, values_, 0, sliceValues.size() * sliceSize}).has_value());
+            REQUIRE(device_
+                        .bufferBarrier(*command,
+                                       {
+                                           .buffer = values_,
+                                           .stagesBefore = rachis::PipelineStage::copy,
+                                           .stagesAfter = rachis::PipelineStage::computeShader,
+                                           .accessBefore = rachis::Access::copyDestination,
+                                           .accessAfter = rachis::Access::shaderResource,
+                                       })
+                        .has_value());
+            auto submitted = device_.submit(std::move(*command));
+            REQUIRE(submitted.has_value());
+            REQUIRE(device_.wait(*submitted).has_value());
+            REQUIRE(device_.destroyBuffer(*staging).has_value());
+        }
+
+        rachis::Device& device_;
+        rachis::ShaderModuleHandle shader_{};
+        rachis::BufferHandle values_{};
+        rachis::BufferHandle results_{};
+        rachis::BufferHandle readback_{};
+        rachis::BindingLayoutHandle layout_{};
+        rachis::BindingPoolHandle pool_{};
+        rachis::BindingSetHandle set_{};
+        rachis::PipelineLayoutHandle pipelineLayout_{};
+        rachis::PipelineHandle pipeline_{};
+    };
+
+    [[nodiscard]] rachis::Status update(rachis::Device& device,
+                                        rachis::BindingSetHandle set,
+                                        std::uint32_t binding,
+                                        std::uint32_t element,
+                                        const rachis::BindingResource& resource)
+    {
+        const std::array writes{rachis::BindingWrite{binding, element, resource}};
+        return device.updateBindingSet(set, writes);
+    }
+
+    void checkCleanDiagnostics(const rachis::Device& device)
+    {
+        const auto diagnostics = device.diagnosticCounts();
+        CHECK(diagnostics.warnings == 0);
+        CHECK(diagnostics.errors == 0);
+        CHECK(diagnostics.corruptions == 0);
+    }
+
+} // namespace
+
+TEST_CASE("Vulkan binding set updates republish a large array in full on every update",
+          "[size:medium][requires:HardwareVulkan][rhi][vulkan][binding][compute]")
+{
+    auto created = rachis::createDevice(rachis::test::vulkanDeviceDesc());
+    if (rachis::test::skipWithoutCreatedDevice(created))
+    {
+        return;
+    }
+    auto device = std::move(*created);
+    LargeArrayFixture fixture(device, rachis::BindingFlag::partiallyBound);
+
+    const std::array firstSelections{Selection{.element = 0, .slot = 0}};
+    auto first = fixture.record(firstSelections);
+    auto firstSubmitted = device.submit(std::move(first));
+    REQUIRE(firstSubmitted.has_value());
+
+    const auto beforeInFlight = device.bindingUpdateStatistics();
+    REQUIRE(update(device, fixture.set(), 1, 1, slice(fixture.values(), 2)).has_value());
+    const auto inFlight = resourceDelta(beforeInFlight, device.bindingUpdateStatistics());
+    CHECK(inFlight.prepared == 1);
+    CHECK(inFlight.tablePublishes == 1);
+    CHECK(inFlight.published == inputCount + 1);
+
+    const std::array secondSelections{Selection{.element = 1, .slot = 1}};
+    auto second = fixture.record(secondSelections);
+    fixture.recordReadback(second);
+    auto secondSubmitted = device.submit(std::move(second));
+    REQUIRE(secondSubmitted.has_value());
+    REQUIRE(device.wait(*secondSubmitted).has_value());
+    REQUIRE(device.wait(*firstSubmitted).has_value());
+    device.collectGarbage();
+    CHECK(fixture.result(0) == sliceValues[0]);
+    CHECK(fixture.result(sizeof(std::uint32_t)) == sliceValues[2]);
+
+    const auto beforeIdle = device.bindingUpdateStatistics();
+    REQUIRE(update(device, fixture.set(), 1, 1, slice(fixture.values(), 1)).has_value());
+    const auto idle = resourceDelta(beforeIdle, device.bindingUpdateStatistics());
+    CHECK(idle.prepared == 1);
+    CHECK(idle.tablePublishes == 1);
+    CHECK(idle.published == inputCount + 1);
+
+    checkCleanDiagnostics(device);
+}
+
+TEST_CASE("Vulkan update-after-bind entries of a large array change in place while work that does not read them is in "
+          "flight",
+          "[size:medium][requires:HardwareVulkan][rhi][vulkan][binding][compute]")
+{
+    auto created = rachis::createDevice(rachis::test::vulkanDeviceDesc());
+    if (rachis::test::skipWithoutCreatedDevice(created))
+    {
+        return;
+    }
+    auto device = std::move(*created);
+#ifdef _WIN32
+    REQUIRE(rachis::test::requireCapabilities(device).updateAfterBindBindingArrays);
+#else
+    if (!rachis::test::requireCapabilities(device).updateAfterBindBindingArrays)
+    {
+        SKIP("The Vulkan device lacks the update-after-bind descriptor-indexing features.");
+    }
+#endif
+    LargeArrayFixture fixture(device, rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind);
+
+    const std::array firstSelections{Selection{.element = 0, .slot = 0}};
+    auto first = fixture.record(firstSelections);
+    auto firstSubmitted = device.submit(std::move(first));
+    REQUIRE(firstSubmitted.has_value());
+    const std::array secondSelections{Selection{.element = 1, .slot = 1}};
+    auto second = fixture.record(secondSelections);
+
+    const auto beforeInPlace = device.bindingUpdateStatistics();
+    REQUIRE(update(device, fixture.set(), 1, 1, slice(fixture.values(), 2)).has_value());
+    const auto inPlace = resourceDelta(beforeInPlace, device.bindingUpdateStatistics());
+    CHECK(inPlace.prepared == 1);
+    CHECK(inPlace.tablePublishes == 1);
+    CHECK(inPlace.published == 1);
+
+    const std::array thirdSelections{Selection{.element = 1, .slot = 2}};
+    auto third = fixture.record(thirdSelections);
+    auto secondSubmitted = device.submit(std::move(second));
+    REQUIRE(secondSubmitted.has_value());
+    auto thirdSubmitted = device.submit(std::move(third));
+    REQUIRE(thirdSubmitted.has_value());
+
+    const auto beforeVersioned = device.bindingUpdateStatistics();
+    REQUIRE(update(device,
+                   fixture.set(),
+                   0,
+                   0,
+                   rachis::BufferBinding{fixture.results(), resultRangeSize, resultRangeSize, sizeof(std::uint32_t)})
+                .has_value());
+    const auto versioned = resourceDelta(beforeVersioned, device.bindingUpdateStatistics());
+    CHECK(versioned.prepared == 1);
+    CHECK(versioned.tablePublishes == 1);
+    CHECK(versioned.published == inputCount + 1);
+
+    const auto beforeNewVersion = device.bindingUpdateStatistics();
+    REQUIRE(update(device, fixture.set(), 1, 2, slice(fixture.values(), 3)).has_value());
+    const auto newVersion = resourceDelta(beforeNewVersion, device.bindingUpdateStatistics());
+    CHECK(newVersion.prepared == 1);
+    CHECK(newVersion.tablePublishes == 1);
+    CHECK(newVersion.published == 1);
+
+    const std::array fourthSelections{Selection{.element = 2, .slot = 0}, Selection{.element = 1, .slot = 1}};
+    auto fourth = fixture.record(fourthSelections);
+    fixture.recordReadback(fourth);
+    auto fourthSubmitted = device.submit(std::move(fourth));
+    REQUIRE(fourthSubmitted.has_value());
+    for (const auto point : {*firstSubmitted, *secondSubmitted, *thirdSubmitted, *fourthSubmitted})
+    {
+        REQUIRE(device.wait(point).has_value());
+    }
+
+    CHECK(fixture.result(0) == sliceValues[0]);
+    CHECK(fixture.result(sizeof(std::uint32_t)) == sliceValues[2]);
+    CHECK(fixture.result(2 * sizeof(std::uint32_t)) == sliceValues[2]);
+    CHECK(fixture.result(resultRangeSize) == sliceValues[3]);
+    CHECK(fixture.result(resultRangeSize + sizeof(std::uint32_t)) == sliceValues[2]);
+
+    checkCleanDiagnostics(device);
+}
+#endif

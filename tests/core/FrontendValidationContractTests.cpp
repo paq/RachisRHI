@@ -1718,6 +1718,81 @@ TEST_CASE("Device frontend validates binding layouts and pools while preserving 
 #endif
 }
 
+TEST_CASE("Device frontend admits update-after-bind entries only for array types without dynamic buffers",
+          "[size:small][rhi][core]")
+{
+    auto backend = std::make_unique<TrackingBackendDevice>();
+    auto* raw = backend.get();
+    raw->caps.updateAfterBindBindingArrays = true;
+    auto device = rachis::detail::DeviceAccess::make(std::move(backend));
+
+    const auto updateAfterBindEntry = [](std::uint32_t binding, BindingType type) {
+        return BindingLayoutEntry{
+            .binding = binding,
+            .type = type,
+            .count = 16,
+            .flags = BindingFlag::partiallyBound | BindingFlag::updateAfterBind,
+        };
+    };
+
+    for (const auto type : {BindingType::uniformBuffer,
+                            BindingType::sampler,
+                            BindingType::dynamicUniformBuffer,
+                            BindingType::dynamicReadOnlyStorageBuffer,
+                            BindingType::dynamicStorageBuffer,
+                            BindingType::accelerationStructure,
+                            BindingType::minMipFeedback,
+                            BindingType::mipRegionUsedFeedback})
+    {
+        CAPTURE(static_cast<int>(type));
+        const std::array entries{updateAfterBindEntry(0, type)};
+        const auto layout = device.createBindingLayout(BindingLayoutDesc{.entries = entries});
+        REQUIRE_FALSE(layout.has_value());
+        CHECK(layout.error().code == ErrorCode::invalidArgument);
+    }
+
+    const std::array withDynamicBuffer{
+        BindingLayoutEntry{.binding = 0, .type = BindingType::dynamicUniformBuffer},
+        updateAfterBindEntry(1, BindingType::sampledTexture),
+    };
+    const auto mixed = device.createBindingLayout(BindingLayoutDesc{.entries = withDynamicBuffer});
+    REQUIRE_FALSE(mixed.has_value());
+    CHECK(mixed.error().code == ErrorCode::invalidArgument);
+    CHECK(raw->backendInvocations == 0);
+
+    for (const auto type : {BindingType::sampledTexture,
+                            BindingType::storageTexture,
+                            BindingType::readOnlyStorageBuffer,
+                            BindingType::storageBuffer})
+    {
+        CAPTURE(static_cast<int>(type));
+        const std::array entries{
+            BindingLayoutEntry{.binding = 0, .type = BindingType::uniformBuffer},
+            updateAfterBindEntry(1, type),
+        };
+        CHECK(device.createBindingLayout(BindingLayoutDesc{.entries = entries}).has_value());
+    }
+    const std::array variable{BindingLayoutEntry{
+        .binding = 0,
+        .type = BindingType::sampledTexture,
+        .count = rachis::unboundedBindingCount,
+        .flags = BindingFlag::variableDescriptorCount | BindingFlag::updateAfterBind,
+    }};
+    CHECK(device.createBindingLayout(BindingLayoutDesc{.entries = variable}).has_value());
+    CHECK(raw->backendInvocations == 5);
+
+    raw->caps.updateAfterBindBindingArrays = false;
+    const std::array supported{updateAfterBindEntry(0, BindingType::sampledTexture)};
+    const auto unsupported = device.createBindingLayout(BindingLayoutDesc{.entries = supported});
+    REQUIRE_FALSE(unsupported.has_value());
+    CHECK(unsupported.error().code == ErrorCode::unsupported);
+    const std::array invalidType{updateAfterBindEntry(0, BindingType::sampler)};
+    const auto invalidBeforeUnsupported = device.createBindingLayout(BindingLayoutDesc{.entries = invalidType});
+    REQUIRE_FALSE(invalidBeforeUnsupported.has_value());
+    CHECK(invalidBeforeUnsupported.error().code == ErrorCode::invalidArgument);
+    CHECK(raw->backendInvocations == 5);
+}
+
 TEST_CASE("Device frontend rejects vertex layouts that break format alignment before backend calls",
           "[size:small][rhi][core]")
 {

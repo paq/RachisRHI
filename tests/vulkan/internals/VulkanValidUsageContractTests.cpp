@@ -3686,6 +3686,7 @@ namespace
         std::uint32_t maxSets = 0;
         std::vector<VkDescriptorPoolSize> sizes;
         std::uint32_t liveSets = 0;
+        VkDescriptorPoolCreateFlags flags = 0;
     };
 
     struct RecordedImageDescriptorWrite final
@@ -3699,7 +3700,10 @@ namespace
         std::uintptr_t nextHandle = 0x9000;
         std::vector<MockDescriptorPool> pools;
         std::vector<std::vector<VkDescriptorSetLayoutBinding>> setLayouts;
+        std::vector<VkDescriptorSetLayoutCreateFlags> setLayoutFlags;
+        std::vector<std::vector<VkDescriptorBindingFlags>> setLayoutBindingFlags;
         std::vector<RecordedImageDescriptorWrite> imageWrites;
+        std::size_t descriptorWriteCount = 0;
         std::size_t pipelineLayoutCount = 0;
         std::vector<std::vector<VkPushConstantRange>> pipelineLayoutPushConstants;
         VkResult nextAllocateResult = VK_SUCCESS;
@@ -3724,6 +3728,7 @@ namespace
             .maxSets = pCreateInfo->maxSets,
             .sizes = {},
             .liveSets = 0,
+            .flags = pCreateInfo->flags,
         };
         for (std::uint32_t index = 0; index < pCreateInfo->poolSizeCount; ++index)
         {
@@ -3749,6 +3754,15 @@ namespace
             bindings.push_back(pCreateInfo->pBindings[index]);
         }
         gDescriptorMock->setLayouts.push_back(std::move(bindings));
+        gDescriptorMock->setLayoutFlags.push_back(pCreateInfo->flags);
+        std::vector<VkDescriptorBindingFlags> bindingFlags;
+        if (const auto* flagsInfo = static_cast<const VkDescriptorSetLayoutBindingFlagsCreateInfo*>(pCreateInfo->pNext);
+            flagsInfo != nullptr &&
+            flagsInfo->sType == VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO)
+        {
+            bindingFlags.assign(flagsInfo->pBindingFlags, flagsInfo->pBindingFlags + flagsInfo->bindingCount);
+        }
+        gDescriptorMock->setLayoutBindingFlags.push_back(std::move(bindingFlags));
         *pSetLayout = fakeHandle<VkDescriptorSetLayout>(gDescriptorMock->nextHandle++);
         return VK_SUCCESS;
     }
@@ -3798,6 +3812,7 @@ namespace
                                                         std::uint32_t,
                                                         const VkCopyDescriptorSet*)
     {
+        gDescriptorMock->descriptorWriteCount += descriptorWriteCount;
         for (std::uint32_t index = 0; index < descriptorWriteCount; ++index)
         {
             const auto& write = pDescriptorWrites[index];
@@ -4545,6 +4560,225 @@ TEST_CASE("Vulkan publishes variable-count limits that sampler, storage-buffer a
     CHECK(withoutVariableCounts.limits.maxVariableResourceDescriptors == 0);
     CHECK(withoutVariableCounts.limits.maxVariableBufferDescriptors == 0);
     CHECK(withoutVariableCounts.limits.maxVariableSamplerDescriptors == 0);
+}
+TEST_CASE("Vulkan publishes update-after-bind binding arrays only with every required descriptor-indexing feature",
+          "[size:small][rhi][vulkan][vuid][bindings-mock]")
+{
+    rachis::vulkan::VulkanPhysicalDeviceRecord record{};
+    record.runtimeDescriptorArray = true;
+    record.descriptorBindingPartiallyBound = true;
+    record.shaderStorageBufferArrayNonUniformIndexing = true;
+    record.shaderSampledImageArrayNonUniformIndexing = true;
+    record.shaderStorageImageArrayNonUniformIndexing = true;
+    record.descriptorBindingUpdateUnusedWhilePending = true;
+    record.descriptorBindingSampledImageUpdateAfterBind = true;
+    record.descriptorBindingStorageImageUpdateAfterBind = true;
+    record.descriptorBindingStorageBufferUpdateAfterBind = true;
+    const rachis::vulkan::VulkanInstanceTable instanceTable{};
+    CHECK(rachis::vulkan::publishVulkanCapabilities(instanceTable, record, false).updateAfterBindBindingArrays);
+
+    const std::array requirements{
+        &rachis::vulkan::VulkanPhysicalDeviceRecord::descriptorBindingPartiallyBound,
+        &rachis::vulkan::VulkanPhysicalDeviceRecord::descriptorBindingUpdateUnusedWhilePending,
+        &rachis::vulkan::VulkanPhysicalDeviceRecord::descriptorBindingSampledImageUpdateAfterBind,
+        &rachis::vulkan::VulkanPhysicalDeviceRecord::descriptorBindingStorageImageUpdateAfterBind,
+        &rachis::vulkan::VulkanPhysicalDeviceRecord::descriptorBindingStorageBufferUpdateAfterBind,
+    };
+    for (std::size_t index = 0; index < requirements.size(); ++index)
+    {
+        CAPTURE(index);
+        auto missing = record;
+        missing.*requirements[index] = false;
+        CHECK_FALSE(
+            rachis::vulkan::publishVulkanCapabilities(instanceTable, missing, false).updateAfterBindBindingArrays);
+    }
+}
+
+TEST_CASE("Vulkan update-after-bind sets come from an update-after-bind pool and change in place while bound",
+          "[size:small][rhi][vulkan][vuid][bindings-mock]")
+{
+    MockDescriptorDispatch mock;
+    gDescriptorMock = &mock;
+    const auto table = makeMockDescriptorTable();
+    rachis::DeviceCapabilities caps{};
+    caps.partiallyBoundBindingArrays = true;
+    caps.updateAfterBindBindingArrays = true;
+    rachis::vulkan::VulkanResourceAllocator resources;
+    rachis::vulkan::VulkanBindingManager bindings;
+    bindings.initialize(fakeHandle<VkDevice>(0x44), &table, caps);
+
+    const std::array defaultEntries{
+        rachis::BindingLayoutEntry{0,
+                                   rachis::BindingType::sampledTexture,
+                                   rachis::ShaderStage::compute,
+                                   8,
+                                   rachis::BindingFlag::partiallyBound},
+    };
+    REQUIRE(bindings.createBindingLayout({.entries = defaultEntries}).has_value());
+    CHECK(mock.setLayoutFlags.back() == 0);
+    REQUIRE(mock.setLayoutBindingFlags.back().size() == 1);
+    CHECK(mock.setLayoutBindingFlags.back()[0] == VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT);
+
+    const std::array entries{
+        rachis::BindingLayoutEntry{0,
+                                   rachis::BindingType::storageBuffer,
+                                   rachis::ShaderStage::compute,
+                                   1,
+                                   rachis::BindingFlag::partiallyBound},
+        rachis::BindingLayoutEntry{1,
+                                   rachis::BindingType::sampledTexture,
+                                   rachis::ShaderStage::compute,
+                                   8,
+                                   rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind},
+    };
+    const auto layout = bindings.createBindingLayout({.entries = entries});
+    REQUIRE(layout.has_value());
+    CHECK(mock.setLayoutFlags.back() == VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT);
+    REQUIRE(mock.setLayoutBindingFlags.back().size() == 2);
+    CHECK(mock.setLayoutBindingFlags.back()[0] == VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT);
+    CHECK(mock.setLayoutBindingFlags.back()[1] ==
+          (VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT |
+           VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT));
+
+    const std::array sizes{
+        rachis::BindingPoolSize{rachis::BindingType::storageBuffer, 4},
+        rachis::BindingPoolSize{rachis::BindingType::sampledTexture, 32},
+    };
+    const auto pool = bindings.createBindingPool({.maxBindingSets = 2, .sizes = sizes});
+    REQUIRE(pool.has_value());
+    REQUIRE(mock.pools.size() == 1);
+    CHECK(mock.pools[0].flags == VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT);
+
+    const auto set = bindings.createBindingSet(resources, {.layout = *layout, .pool = *pool});
+    REQUIRE(set.has_value());
+    REQUIRE(mock.pools.size() == 2);
+    CHECK(mock.pools[1].flags ==
+          (VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT));
+    CHECK(mock.pools[1].maxSets == mock.pools[0].maxSets);
+    REQUIRE(mock.pools[1].sizes.size() == mock.pools[0].sizes.size());
+    for (std::size_t index = 0; index < mock.pools[0].sizes.size(); ++index)
+    {
+        CHECK(mock.pools[1].sizes[index].type == mock.pools[0].sizes[index].type);
+        CHECK(mock.pools[1].sizes[index].descriptorCount == mock.pools[0].sizes[index].descriptorCount);
+    }
+    CHECK(mock.pools[0].liveSets == 0);
+    CHECK(mock.pools[1].liveSets == 1);
+
+    auto bound = bindings.retainBindingSetForCommand(*set, true);
+    REQUIRE(bound.has_value());
+    const auto boundDescriptorSet = bound->descriptorSet;
+    const auto beforeInPlace = bindings.statistics();
+    const std::array clearUpdateAfterBind{
+        rachis::BindingWrite{.binding = 1, .arrayElement = 5, .resource = std::monostate{}},
+    };
+    REQUIRE(bindings.updateBindingSet(resources, *set, clearUpdateAfterBind).has_value());
+    const auto afterInPlace = bindings.statistics();
+    CHECK(afterInPlace.resourceDescriptorsPrepared - beforeInPlace.resourceDescriptorsPrepared == 1);
+    CHECK(afterInPlace.resourceTablePublishCount - beforeInPlace.resourceTablePublishCount == 1);
+    CHECK(afterInPlace.resourceDescriptorsPublished - beforeInPlace.resourceDescriptorsPublished == 1);
+    CHECK(mock.pools[1].liveSets == 1);
+    auto inPlace = bindings.nativeBindingSet(*set);
+    REQUIRE(inPlace.has_value());
+    CHECK(inPlace->descriptorSet == boundDescriptorSet);
+
+    const std::array clearFixed{rachis::BindingWrite{.binding = 0, .resource = std::monostate{}}};
+    REQUIRE(bindings.updateBindingSet(resources, *set, clearFixed).has_value());
+    const auto afterVersioned = bindings.statistics();
+    CHECK(afterVersioned.resourceDescriptorsPublished - afterInPlace.resourceDescriptorsPublished == 9);
+    CHECK(mock.pools[1].liveSets == 2);
+    auto versioned = bindings.nativeBindingSet(*set);
+    REQUIRE(versioned.has_value());
+    CHECK(versioned->descriptorSet != boundDescriptorSet);
+    bound->commandUse.reset();
+    bound->owner.reset();
+    inPlace->owner.reset();
+    CHECK(mock.pools[1].liveSets == 1);
+
+    const auto secondSet = bindings.createBindingSet(resources, {.layout = *layout, .pool = *pool});
+    REQUIRE(secondSet.has_value());
+    CHECK(mock.pools.size() == 2);
+    CHECK(mock.pools[1].liveSets == 2);
+    versioned->owner.reset();
+    REQUIRE(bindings.destroyBindingSet(*secondSet).has_value());
+    REQUIRE(bindings.destroyBindingSet(*set).has_value());
+    CHECK(mock.pools[1].liveSets == 0);
+
+    const std::array withDynamic{
+        rachis::BindingLayoutEntry{0, rachis::BindingType::dynamicUniformBuffer, rachis::ShaderStage::compute, 1},
+        entries[1],
+    };
+    const auto dynamicLayout = bindings.createBindingLayout({.entries = withDynamic});
+    REQUIRE_FALSE(dynamicLayout.has_value());
+    CHECK(dynamicLayout.error().code == rachis::ErrorCode::invalidArgument);
+    const std::array samplerEntries{rachis::BindingLayoutEntry{
+        0, rachis::BindingType::sampler, rachis::ShaderStage::compute, 4, rachis::BindingFlag::updateAfterBind}};
+    const auto samplerLayout = bindings.createBindingLayout({.entries = samplerEntries});
+    REQUIRE_FALSE(samplerLayout.has_value());
+    CHECK(samplerLayout.error().code == rachis::ErrorCode::invalidArgument);
+
+    rachis::vulkan::VulkanBindingManager withoutSupport;
+    caps.updateAfterBindBindingArrays = false;
+    withoutSupport.initialize(fakeHandle<VkDevice>(0x45), &table, caps);
+    const auto unsupported = withoutSupport.createBindingLayout({.entries = entries});
+    REQUIRE_FALSE(unsupported.has_value());
+    CHECK(unsupported.error().code == rachis::ErrorCode::unsupported);
+
+    withoutSupport.shutdown();
+    bindings.shutdown();
+    gDescriptorMock = nullptr;
+}
+
+TEST_CASE("Vulkan pipeline layouts hold update-after-bind sets to the update-after-bind descriptor limits",
+          "[size:small][rhi][vulkan][vuid][bindings-mock]")
+{
+    MockDescriptorDispatch mock;
+    gDescriptorMock = &mock;
+    const auto table = makeMockDescriptorTable();
+    rachis::DeviceCapabilities caps{};
+    caps.partiallyBoundBindingArrays = true;
+    caps.updateAfterBindBindingArrays = true;
+    const rachis::vulkan::VulkanDescriptorLimits regular{
+        .maxPerStageDescriptorSampledImages = 16,
+        .maxPerStageResources = 64,
+        .maxDescriptorSetSampledImages = 64,
+    };
+    const rachis::vulkan::VulkanDescriptorLimits updateAfterBind{
+        .maxPerStageDescriptorSampledImages = 96,
+        .maxPerStageResources = 1024,
+        .maxDescriptorSetSampledImages = 1024,
+    };
+    rachis::vulkan::VulkanBindingManager bindings;
+    bindings.initialize(fakeHandle<VkDevice>(0x46), &table, caps, nullptr, {}, regular, updateAfterBind);
+
+    const auto textures = [&](std::uint32_t count, rachis::BindingFlag flags) {
+        const std::array entries{rachis::BindingLayoutEntry{
+            0, rachis::BindingType::sampledTexture, rachis::ShaderStage::compute, count, flags}};
+        auto layout = bindings.createBindingLayout({.entries = entries});
+        REQUIRE(layout.has_value());
+        return *layout;
+    };
+    const auto pipelineLayout = [&](std::initializer_list<rachis::BindingLayoutHandle> layouts) {
+        const std::vector<rachis::BindingLayoutHandle> sets(layouts);
+        return bindings.createPipelineLayout({.bindingLayouts = sets});
+    };
+    const auto updateAfterBindFlags = rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind;
+
+    CHECK(pipelineLayout({textures(64, updateAfterBindFlags)}).has_value());
+    const auto overRegular = pipelineLayout({textures(32, rachis::BindingFlag::partiallyBound)});
+    REQUIRE_FALSE(overRegular.has_value());
+    CHECK(overRegular.error().code == rachis::ErrorCode::unsupported);
+    CHECK(pipelineLayout({textures(80, updateAfterBindFlags), textures(16, rachis::BindingFlag::none)}).has_value());
+    const auto overUpdateAfterBind =
+        pipelineLayout({textures(90, updateAfterBindFlags), textures(16, rachis::BindingFlag::none)});
+    REQUIRE_FALSE(overUpdateAfterBind.has_value());
+    CHECK(overUpdateAfterBind.error().code == rachis::ErrorCode::unsupported);
+    const auto overRegularBesideUpdateAfterBind =
+        pipelineLayout({textures(8, updateAfterBindFlags), textures(17, rachis::BindingFlag::none)});
+    REQUIRE_FALSE(overRegularBesideUpdateAfterBind.has_value());
+    CHECK(overRegularBesideUpdateAfterBind.error().code == rachis::ErrorCode::unsupported);
+
+    bindings.shutdown();
+    gDescriptorMock = nullptr;
 }
 
 namespace

@@ -1,6 +1,7 @@
 #include "Internal/VulkanBindings.h"
 
 #include "Common/BindingPoolAccounting.h"
+#include "Internal/PortableValidation.h"
 #include "Internal/VulkanAcceleration.h"
 #include "Internal/VulkanDiagnostics.h"
 #include "Internal/VulkanImageBarriers.h"
@@ -281,9 +282,9 @@ namespace rachis::vulkan
         const std::scoped_lock lock(state->mutex);
         if (state->device != VK_NULL_HANDLE && state->table != nullptr &&
             state->table->vkFreeDescriptorSets != nullptr && descriptorSet != VK_NULL_HANDLE &&
-            state->pool != VK_NULL_HANDLE)
+            nativePool != VK_NULL_HANDLE)
         {
-            state->table->vkFreeDescriptorSets(state->device, state->pool, 1, &descriptorSet);
+            state->table->vkFreeDescriptorSets(state->device, nativePool, 1, &descriptorSet);
             descriptorSet = VK_NULL_HANDLE;
         }
         if (!armed)
@@ -301,10 +302,17 @@ namespace rachis::vulkan
 
     VulkanBindingManager::BindingPoolState::~BindingPoolState()
     {
-        if (device != VK_NULL_HANDLE && table != nullptr && table->vkDestroyDescriptorPool != nullptr &&
-            pool != VK_NULL_HANDLE)
+        if (device == VK_NULL_HANDLE || table == nullptr || table->vkDestroyDescriptorPool == nullptr)
+        {
+            return;
+        }
+        if (pool != VK_NULL_HANDLE)
         {
             table->vkDestroyDescriptorPool(device, pool, nullptr);
+        }
+        if (updateAfterBindPool != VK_NULL_HANDLE)
+        {
+            table->vkDestroyDescriptorPool(device, updateAfterBindPool, nullptr);
         }
     }
 
@@ -327,16 +335,19 @@ namespace rachis::vulkan
                                           const DeviceCapabilities& capabilities,
                                           const VulkanInstanceTable* instanceTable,
                                           VulkanBufferBindingLimits bufferLimits,
-                                          VulkanDescriptorLimits descriptorLimits) noexcept
+                                          VulkanDescriptorLimits descriptorLimits,
+                                          VulkanDescriptorLimits updateAfterBindLimits) noexcept
     {
         device_ = device;
         table_ = table;
         instanceTable_ = instanceTable;
         partiallyBoundSupported_ = capabilities.partiallyBoundBindingArrays;
         variableDescriptorCountSupported_ = capabilities.variableDescriptorCountBindingArrays;
+        updateAfterBindSupported_ = capabilities.updateAfterBindBindingArrays;
         maxVariableResourceDescriptors_ = capabilities.limits.maxVariableResourceDescriptors;
         maxVariableSamplerDescriptors_ = capabilities.limits.maxVariableSamplerDescriptors;
         descriptorLimits_ = descriptorLimits;
+        updateAfterBindLimits_ = updateAfterBindLimits;
         accelerationStructures_ = capabilities.rayTracing || capabilities.rayQuery;
         enabledShaderStages_ = enabledShaderStages(capabilities);
         bufferLimits_ = VulkanBufferBindingLimits{
@@ -383,6 +394,7 @@ namespace rachis::vulkan
         {
             bool partiallyBound = false;
             bool variableDescriptorCount = false;
+            bool updateAfterBind = false;
             bool accelerationStructures = false;
             ShaderStage shaderStages = coreShaderStages;
         };
@@ -414,6 +426,14 @@ namespace rachis::vulkan
                     "Partially-bound binding arrays require descriptor indexing.",
                 });
             }
+            if (hasAny(entry.flags, BindingFlag::updateAfterBind) && !support.updateAfterBind)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::unsupported,
+                    0,
+                    "Update-after-bind binding arrays require the descriptor-indexing update-after-bind features.",
+                });
+            }
             if (entry.type == BindingType::accelerationStructure && !support.accelerationStructures)
             {
                 return std::unexpected(Error{
@@ -437,7 +457,8 @@ namespace rachis::vulkan
         {
             const auto flags = static_cast<std::uint8_t>(entry.flags);
             const auto allowedFlags = static_cast<std::uint8_t>(BindingFlag::partiallyBound) |
-                                      static_cast<std::uint8_t>(BindingFlag::variableDescriptorCount);
+                                      static_cast<std::uint8_t>(BindingFlag::variableDescriptorCount) |
+                                      static_cast<std::uint8_t>(BindingFlag::updateAfterBind);
             const bool variable = hasAny(entry.flags, BindingFlag::variableDescriptorCount);
             const bool unbounded = entry.count == unboundedBindingCount;
             const bool registerRangeOverflows =
@@ -472,7 +493,33 @@ namespace rachis::vulkan
                     "Dynamic buffer bindings cannot be partially bound or variable length.",
                 });
             }
+            if (hasAny(entry.flags, BindingFlag::updateAfterBind) && !detail::allowsUpdateAfterBind(entry.type))
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidArgument,
+                    0,
+                    "Update-after-bind applies only to sampled-texture, storage-texture, and storage-buffer bindings.",
+                });
+            }
             return {};
+        }
+
+        [[nodiscard]] Result<bool> validateUpdateAfterBindLayout(const std::vector<BindingLayoutEntry>& entries)
+        {
+            const bool updateAfterBind = std::ranges::any_of(entries, [](const BindingLayoutEntry& entry) {
+                return hasAny(entry.flags, BindingFlag::updateAfterBind);
+            });
+            const bool dynamicBuffers = std::ranges::any_of(
+                entries, [](const BindingLayoutEntry& entry) { return isDynamicBuffer(entry.type); });
+            if (updateAfterBind && dynamicBuffers)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidArgument,
+                    0,
+                    "A binding layout with an update-after-bind entry cannot contain dynamic buffer bindings.",
+                });
+            }
+            return updateAfterBind;
         }
 
         [[nodiscard]] Result<std::optional<std::uint32_t>> findVariableBinding(
@@ -596,6 +643,12 @@ namespace rachis::vulkan
             if (hasAny(flags, BindingFlag::variableDescriptorCount))
             {
                 native |= VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT;
+            }
+            if (hasAny(flags, BindingFlag::updateAfterBind))
+            {
+                native |= VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT |
+                          VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT |
+                          VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
             }
             return native;
         }
@@ -860,7 +913,9 @@ namespace rachis::vulkan
         const VkDescriptorSetLayoutCreateInfo createInfo{
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
             .pNext = native->flags.empty() ? nullptr : &flagsInfo,
-            .flags = {},
+            .flags = record.updateAfterBind
+                         ? VkDescriptorSetLayoutCreateFlags{VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT}
+                         : VkDescriptorSetLayoutCreateFlags{},
             .bindingCount = static_cast<std::uint32_t>(native->bindings.size()),
             .pBindings = native->bindings.empty() ? nullptr : native->bindings.data(),
         };
@@ -889,6 +944,7 @@ namespace rachis::vulkan
         const BindingLayoutSupport support{
             .partiallyBound = partiallyBoundSupported_,
             .variableDescriptorCount = variableDescriptorCountSupported_,
+            .updateAfterBind = updateAfterBindSupported_,
             .accelerationStructures = accelerationStructures_,
             .shaderStages = enabledShaderStages_,
         };
@@ -912,6 +968,12 @@ namespace rachis::vulkan
             return std::unexpected(std::move(variableBinding.error()));
         }
         record->variableBinding = *variableBinding;
+        auto updateAfterBind = validateUpdateAfterBindLayout(record->entries);
+        if (!updateAfterBind)
+        {
+            return std::unexpected(std::move(updateAfterBind.error()));
+        }
+        record->updateAfterBind = *updateAfterBind;
         auto counts = validateRegisterRangesAndCountDescriptors(record->entries);
         if (!counts)
         {
@@ -926,7 +988,10 @@ namespace rachis::vulkan
             const auto classCapacity = variable->type == BindingType::sampler ? maxVariableSamplerDescriptors_
                                                                               : maxVariableResourceDescriptors_;
             record->variableDescriptorCapacity =
-                variableDescriptorCapacity(record->entries, *variable, classCapacity, descriptorLimits_);
+                variableDescriptorCapacity(record->entries,
+                                           *variable,
+                                           classCapacity,
+                                           record->updateAfterBind ? updateAfterBindLimits_ : descriptorLimits_);
         }
 
         if (table_ == nullptr || table_->vkCreateDescriptorSetLayout == nullptr || device_ == VK_NULL_HANDLE)
@@ -1039,19 +1104,22 @@ namespace rachis::vulkan
 
     Status VulkanBindingManager::createNativeDescriptorPool(BindingPoolState& state,
                                                             std::span<const VkDescriptorPoolSize> poolSizes,
-                                                            std::uint32_t maxSets) const
+                                                            std::uint32_t maxSets,
+                                                            VkDescriptorPoolCreateFlags extraFlags,
+                                                            VkDescriptorPool& target) const
     {
         const VkDescriptorPoolCreateInfo createInfo{
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
             .pNext = {},
-            .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+            .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | extraFlags,
             .maxSets = maxSets,
             .poolSizeCount = static_cast<std::uint32_t>(poolSizes.size()),
             .pPoolSizes = poolSizes.empty() ? nullptr : poolSizes.data(),
         };
-        const auto created = table_->vkCreateDescriptorPool(device_, &createInfo, nullptr, &state.pool);
+        const auto created = table_->vkCreateDescriptorPool(device_, &createInfo, nullptr, &target);
         if (created != VK_SUCCESS)
         {
+            target = VK_NULL_HANDLE;
             return std::unexpected(makeVulkanError(vulkanResultErrorCode(created), created, "vkCreateDescriptorPool"));
         }
         if (!state.label.empty())
@@ -1059,10 +1127,31 @@ namespace rachis::vulkan
             setVulkanObjectName(instanceTable_,
                                 device_,
                                 VK_OBJECT_TYPE_DESCRIPTOR_POOL,
-                                reinterpret_cast<std::uint64_t>(state.pool),
+                                reinterpret_cast<std::uint64_t>(target),
                                 state.label.c_str());
         }
         return {};
+    }
+
+    Result<VkDescriptorPool> VulkanBindingManager::nativePoolLocked(BindingPoolState& pool, bool updateAfterBind) const
+    {
+        if (!updateAfterBind)
+        {
+            return pool.pool;
+        }
+        if (pool.updateAfterBindPool == VK_NULL_HANDLE)
+        {
+            auto created = createNativeDescriptorPool(pool,
+                                                      pool.nativeSizes,
+                                                      pool.nativeMaxSets,
+                                                      VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
+                                                      pool.updateAfterBindPool);
+            if (!created)
+            {
+                return std::unexpected(std::move(created.error()));
+            }
+        }
+        return pool.updateAfterBindPool;
     }
 
     Result<BindingPoolHandle> VulkanBindingManager::createBindingPool(const BindingPoolDesc& desc)
@@ -1104,14 +1193,13 @@ namespace rachis::vulkan
         state->maxBindingSets = desc.maxBindingSets;
         state->label = std::string(desc.label);
         state->descriptorCapacity = plan->descriptorCapacity;
-        auto created = createNativeDescriptorPool(
-            *state,
-            plan->nativeSizes,
-            nativeDescriptorSetCapacity(desc.maxBindingSets, plan->nativeDescriptorCapacity));
+        state->nativeMaxSets = nativeDescriptorSetCapacity(desc.maxBindingSets, plan->nativeDescriptorCapacity);
+        auto created = createNativeDescriptorPool(*state, plan->nativeSizes, state->nativeMaxSets, 0, state->pool);
         if (!created)
         {
             return std::unexpected(std::move(created.error()));
         }
+        state->nativeSizes = std::move(plan->nativeSizes);
         const std::scoped_lock lock(mutex_);
         return pools_.emplace(std::move(state));
     }
@@ -1468,6 +1556,85 @@ namespace rachis::vulkan
             return slots;
         }
 
+        class DescriptorWriteBatch final
+        {
+        public:
+            explicit DescriptorWriteBatch(std::size_t capacity)
+                : buffers_(capacity), images_(capacity), accelerationWrites_(capacity)
+            {
+                writes_.reserve(capacity);
+            }
+
+            void append(const BindingLayoutEntry& entry,
+                        std::uint32_t element,
+                        const VulkanBindingManager::BindingSlot& slot,
+                        std::size_t storageIndex,
+                        VkDescriptorSet set)
+            {
+                VkWriteDescriptorSet write{};
+                write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                write.dstSet = set;
+                write.dstBinding = entry.binding;
+                write.dstArrayElement = element;
+                write.descriptorCount = 1;
+                write.descriptorType = nativeDescriptorType(entry.type);
+
+                if (isBufferType(entry.type))
+                {
+                    buffers_[storageIndex] = VkDescriptorBufferInfo{
+                        .buffer = slot.buffer,
+                        .offset = std::get<BufferBinding>(slot.resource).offset,
+                        .range = slot.range,
+                    };
+                    write.pBufferInfo = &buffers_[storageIndex];
+                }
+                else if (entry.type == BindingType::sampledTexture || entry.type == BindingType::storageTexture)
+                {
+                    images_[storageIndex] = VkDescriptorImageInfo{
+                        .sampler = {},
+                        .imageView = slot.imageView,
+                        .imageLayout = shaderImageDescriptorLayout,
+                    };
+                    write.pImageInfo = &images_[storageIndex];
+                }
+                else if (entry.type == BindingType::accelerationStructure)
+                {
+                    accelerationWrites_[storageIndex] = VkWriteDescriptorSetAccelerationStructureKHR{
+                        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
+                        .pNext = {},
+                        .accelerationStructureCount = 1,
+                        .pAccelerationStructures = &slot.accelerationStructure,
+                    };
+                    write.pNext = &accelerationWrites_[storageIndex];
+                }
+                else
+                {
+                    images_[storageIndex] = VkDescriptorImageInfo{
+                        .sampler = slot.sampler,
+                        .imageView = {},
+                        .imageLayout = {},
+                    };
+                    write.pImageInfo = &images_[storageIndex];
+                }
+                writes_.push_back(write);
+            }
+
+            void submit(const VolkDeviceTable& table, VkDevice device) const
+            {
+                if (!writes_.empty())
+                {
+                    table.vkUpdateDescriptorSets(
+                        device, static_cast<std::uint32_t>(writes_.size()), writes_.data(), 0, nullptr);
+                }
+            }
+
+        private:
+            std::vector<VkDescriptorBufferInfo> buffers_;
+            std::vector<VkDescriptorImageInfo> images_;
+            std::vector<VkWriteDescriptorSetAccelerationStructureKHR> accelerationWrites_;
+            std::vector<VkWriteDescriptorSet> writes_;
+        };
+
         [[nodiscard]] Status writeDescriptorSet(const VolkDeviceTable& table,
                                                 VkDevice device,
                                                 const std::vector<BindingLayoutEntry>& entries,
@@ -1475,11 +1642,7 @@ namespace rachis::vulkan
                                                 std::uint32_t variableDescriptorCount,
                                                 VkDescriptorSet set)
         {
-            std::vector<VkDescriptorBufferInfo> buffers(slots.size());
-            std::vector<VkDescriptorImageInfo> images(slots.size());
-            std::vector<VkWriteDescriptorSetAccelerationStructureKHR> accelerationWrites(slots.size());
-            std::vector<VkWriteDescriptorSet> writes;
-            writes.reserve(slots.size());
+            DescriptorWriteBatch batch(slots.size());
             std::size_t slotIndex = 0;
             for (const auto& entry : entries)
             {
@@ -1491,60 +1654,44 @@ namespace rachis::vulkan
                     {
                         continue;
                     }
-                    VkWriteDescriptorSet write{};
-                    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                    write.dstSet = set;
-                    write.dstBinding = entry.binding;
-                    write.dstArrayElement = element;
-                    write.descriptorCount = 1;
-                    write.descriptorType = nativeDescriptorType(entry.type);
-
-                    if (isBufferType(entry.type))
-                    {
-                        buffers[slotIndex] = VkDescriptorBufferInfo{
-                            .buffer = slot.buffer,
-                            .offset = std::get<BufferBinding>(slot.resource).offset,
-                            .range = slot.range,
-                        };
-                        write.pBufferInfo = &buffers[slotIndex];
-                    }
-                    else if (entry.type == BindingType::sampledTexture || entry.type == BindingType::storageTexture)
-                    {
-                        images[slotIndex] = VkDescriptorImageInfo{
-                            .sampler = {},
-                            .imageView = slot.imageView,
-                            .imageLayout = shaderImageDescriptorLayout,
-                        };
-                        write.pImageInfo = &images[slotIndex];
-                    }
-                    else if (entry.type == BindingType::accelerationStructure)
-                    {
-                        accelerationWrites[slotIndex] = VkWriteDescriptorSetAccelerationStructureKHR{
-                            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
-                            .pNext = {},
-                            .accelerationStructureCount = 1,
-                            .pAccelerationStructures = &slot.accelerationStructure,
-                        };
-                        write.pNext = &accelerationWrites[slotIndex];
-                    }
-                    else
-                    {
-                        images[slotIndex] = VkDescriptorImageInfo{
-                            .sampler = slot.sampler,
-                            .imageView = {},
-                            .imageLayout = {},
-                        };
-                        write.pImageInfo = &images[slotIndex];
-                    }
-                    writes.push_back(write);
+                    batch.append(entry, element, slot, slotIndex, set);
                 }
             }
-            if (!writes.empty())
-            {
-                table.vkUpdateDescriptorSets(
-                    device, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
-            }
+            batch.submit(table, device);
             return {};
+        }
+
+        void writeDescriptorElements(const VolkDeviceTable& table,
+                                     VkDevice device,
+                                     const std::vector<BindingLayoutEntry>& entries,
+                                     const std::vector<VulkanBindingManager::BindingSlot>& slots,
+                                     std::uint32_t variableDescriptorCount,
+                                     std::span<const BindingWrite> writes,
+                                     VkDescriptorSet set)
+        {
+            DescriptorWriteBatch batch(writes.size());
+            for (std::size_t index = 0; index < writes.size(); ++index)
+            {
+                const auto& write = writes[index];
+                const auto* entry = findEntry(entries, write.binding);
+                const auto slotIndex = findSlotIndex(entries, variableDescriptorCount, write);
+                if (entry == nullptr || !slotIndex.has_value() ||
+                    std::holds_alternative<std::monostate>(slots[*slotIndex].resource))
+                {
+                    continue;
+                }
+                batch.append(*entry, write.arrayElement, slots[*slotIndex], index, set);
+            }
+            batch.submit(table, device);
+        }
+
+        [[nodiscard]] bool writesOnlyUpdateAfterBindEntries(const std::vector<BindingLayoutEntry>& entries,
+                                                            std::span<const BindingWrite> writes) noexcept
+        {
+            return std::ranges::all_of(writes, [&](const BindingWrite& write) {
+                const auto* entry = findEntry(entries, write.binding);
+                return entry != nullptr && hasAny(entry->flags, BindingFlag::updateAfterBind);
+            });
         }
 
         [[nodiscard]] Status validateVariableDescriptorCount(bool layoutHasVariableBinding,
@@ -1692,7 +1839,11 @@ namespace rachis::vulkan
 
     Status VulkanBindingManager::allocateNativeSetLocked(BindingSetVersion& version) const
     {
-        auto& pool = *version.pool;
+        auto nativePool = nativePoolLocked(*version.pool, version.layout->updateAfterBind);
+        if (!nativePool)
+        {
+            return std::unexpected(std::move(nativePool.error()));
+        }
         VkDescriptorSetVariableDescriptorCountAllocateInfo variableAllocate{
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO,
             .pNext = {},
@@ -1702,7 +1853,7 @@ namespace rachis::vulkan
         const VkDescriptorSetAllocateInfo allocateInfo{
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
             .pNext = version.layout->variableBinding.has_value() ? &variableAllocate : nullptr,
-            .descriptorPool = pool.pool,
+            .descriptorPool = *nativePool,
             .descriptorSetCount = 1,
             .pSetLayouts = &version.layout->keepAlive->setLayout,
         };
@@ -1714,6 +1865,7 @@ namespace rachis::vulkan
             return std::unexpected(
                 makeVulkanError(vulkanResultErrorCode(allocated), allocated, "vkAllocateDescriptorSets"));
         }
+        lease.nativePool = *nativePool;
         return {};
     }
 
@@ -1978,6 +2130,81 @@ namespace rachis::vulkan
         return {};
     }
 
+    Status VulkanBindingManager::publishInPlaceUpdate(BindingSetHandle set,
+                                                      const std::shared_ptr<BindingSetRecord>& current,
+                                                      std::vector<BindingSlot> slots,
+                                                      std::span<const BindingWrite> writes)
+    {
+        const auto& currentVersion = *current->version;
+        if (currentVersion.versionLease == nullptr || currentVersion.versionLease->descriptorSet == VK_NULL_HANDLE)
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidState,
+                0,
+                "The binding set has no native descriptor set to update in place.",
+            });
+        }
+        auto version = std::make_shared<BindingSetVersion>();
+        version->layout = currentVersion.layout;
+        version->pool = currentVersion.pool;
+        version->poolSet = currentVersion.poolSet;
+        version->versionLease = currentVersion.versionLease;
+        version->slots = std::move(slots);
+        version->dynamicBuffers = collectDynamicBuffers(version->slots);
+        version->variableDescriptorCount = currentVersion.variableDescriptorCount;
+
+        auto updated = std::make_shared<BindingSetRecord>();
+        updated->layout = current->layout;
+        updated->poolSet = current->poolSet;
+        updated->version = std::move(version);
+        updated->label = current->label;
+
+        const auto written = countWrittenDescriptorsByTable(current->layout->entries, writes);
+        std::shared_ptr<BindingSetRecord> retired;
+        {
+            const std::scoped_lock lock(mutex_);
+            auto* stored = sets_.find(set);
+            if (stored == nullptr)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidArgument,
+                    0,
+                    "The binding set was destroyed while an update was being prepared.",
+                });
+            }
+            if (*stored != current)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidState,
+                    0,
+                    "A concurrent binding set update published a newer version.",
+                });
+            }
+            {
+                const std::scoped_lock poolLock(currentVersion.pool->mutex);
+                if (!currentVersion.pool->logicalAlive)
+                {
+                    return std::unexpected(Error{
+                        ErrorCode::invalidState,
+                        0,
+                        "The binding pool was destroyed before the binding set update completed.",
+                    });
+                }
+            }
+            const auto& next = *updated->version;
+            writeDescriptorElements(*table_,
+                                    device_,
+                                    current->layout->entries,
+                                    next.slots,
+                                    next.variableDescriptorCount,
+                                    writes,
+                                    next.versionLease->descriptorSet);
+            recordPublishedDescriptors(statistics_, written, written);
+            retired = std::exchange(*stored, std::move(updated));
+        }
+        return {};
+    }
+
     Status VulkanBindingManager::updateBindingSet(VulkanResourceAllocator& resources,
                                                   BindingSetHandle set,
                                                   std::span<const BindingWrite> writes)
@@ -2018,6 +2245,10 @@ namespace rachis::vulkan
                 0,
                 "The Vulkan binding manager is not initialized.",
             });
+        }
+        if (current->layout->updateAfterBind && writesOnlyUpdateAfterBindEntries(current->layout->entries, writes))
+        {
+            return publishInPlaceUpdate(set, current, std::move(slots), writes);
         }
 
         auto version = makeUnallocatedVersion(current->layout,
@@ -2175,18 +2406,28 @@ namespace rachis::vulkan
             return std::unexpected(std::move(sets.error()));
         }
         DescriptorTotals totals{};
+        DescriptorTotals withoutUpdateAfterBind{};
+        bool anyUpdateAfterBind = false;
         for (const auto& set : *sets)
         {
+            anyUpdateAfterBind = anyUpdateAfterBind || set->updateAfterBind;
             for (const auto& entry : set->entries)
             {
-                addDescriptors(totals,
-                               entry,
-                               hasAny(entry.flags, BindingFlag::variableDescriptorCount)
-                                   ? set->variableDescriptorCapacity
-                                   : entry.count);
+                const auto count = hasAny(entry.flags, BindingFlag::variableDescriptorCount)
+                                       ? set->variableDescriptorCapacity
+                                       : entry.count;
+                addDescriptors(totals, entry, count);
+                if (!set->updateAfterBind)
+                {
+                    addDescriptors(withoutUpdateAfterBind, entry, count);
+                }
             }
         }
-        if (!withinDescriptorLimits(totals, descriptorLimits_))
+        const bool withinLimits = anyUpdateAfterBind
+                                      ? withinDescriptorLimits(withoutUpdateAfterBind, descriptorLimits_) &&
+                                            withinDescriptorLimits(totals, updateAfterBindLimits_)
+                                      : withinDescriptorLimits(totals, descriptorLimits_);
+        if (!withinLimits)
         {
             return std::unexpected(Error{
                 ErrorCode::unsupported,

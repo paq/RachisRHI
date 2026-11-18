@@ -2133,6 +2133,10 @@ namespace rachis
             {
                 return std::unexpected(detail::preferDeviceLossError(*backend_, std::move(valid.error())));
             }
+            if (auto supported = detail::validateBindingLayoutSupport(desc, backend_->capabilities()); !supported)
+            {
+                return std::unexpected(detail::preferDeviceLossError(*backend_, std::move(supported.error())));
+            }
             return backend_->createBindingLayout(desc);
         });
     }

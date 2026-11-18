@@ -537,14 +537,23 @@ namespace rachis::detail
         return {};
     }
 
+    [[nodiscard]] constexpr bool allowsUpdateAfterBind(BindingType type) noexcept
+    {
+        return type == BindingType::sampledTexture || type == BindingType::storageTexture ||
+               type == BindingType::readOnlyStorageBuffer || type == BindingType::storageBuffer;
+    }
+
     [[nodiscard]] inline Status validateBindingLayoutDesc(const BindingLayoutDesc& desc)
     {
         constexpr auto allowedVisibility = static_cast<std::uint16_t>(ShaderStage::all);
         constexpr auto allowedFlags = static_cast<std::uint8_t>(BindingFlag::partiallyBound) |
-                                      static_cast<std::uint8_t>(BindingFlag::variableDescriptorCount);
+                                      static_cast<std::uint8_t>(BindingFlag::variableDescriptorCount) |
+                                      static_cast<std::uint8_t>(BindingFlag::updateAfterBind);
 
         std::optional<std::uint32_t> variableBinding;
         std::uint32_t maxBinding = 0;
+        bool hasUpdateAfterBind = false;
+        bool hasDynamicBuffer = false;
 
         for (std::size_t index = 0; index < desc.entries.size(); ++index)
         {
@@ -594,6 +603,16 @@ namespace rachis::detail
                     "Dynamic buffer bindings cannot carry partially-bound or variable-descriptor-count flags.",
                 });
             }
+            if (hasAny(entry.flags, BindingFlag::updateAfterBind) && !allowsUpdateAfterBind(entry.type))
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidArgument,
+                    0,
+                    "Update-after-bind applies only to sampled-texture, storage-texture, and storage-buffer bindings.",
+                });
+            }
+            hasUpdateAfterBind = hasUpdateAfterBind || hasAny(entry.flags, BindingFlag::updateAfterBind);
+            hasDynamicBuffer = hasDynamicBuffer || isDynamicBuffer;
 
             for (std::size_t previous = 0; previous < index; ++previous)
             {
@@ -635,6 +654,32 @@ namespace rachis::detail
             });
         }
 
+        if (hasUpdateAfterBind && hasDynamicBuffer)
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidArgument,
+                0,
+                "A binding layout with an update-after-bind entry cannot contain dynamic buffer bindings.",
+            });
+        }
+
+        return {};
+    }
+
+    [[nodiscard]] inline Status validateBindingLayoutSupport(const BindingLayoutDesc& desc,
+                                                             const DeviceCapabilities& capabilities)
+    {
+        const bool hasUpdateAfterBind = std::ranges::any_of(desc.entries, [](const BindingLayoutEntry& entry) {
+            return hasAny(entry.flags, BindingFlag::updateAfterBind);
+        });
+        if (hasUpdateAfterBind && !capabilities.updateAfterBindBindingArrays)
+        {
+            return std::unexpected(Error{
+                ErrorCode::unsupported,
+                0,
+                "Update-after-bind binding entries require DeviceCapabilities::updateAfterBindBindingArrays.",
+            });
+        }
         return {};
     }
 

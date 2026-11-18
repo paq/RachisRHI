@@ -294,6 +294,24 @@ namespace rachis::vulkan
                 .maxDescriptorSetStorageImages = nativeLimits.maxDescriptorSetStorageImages,
                 .maxDescriptorSetAccelerationStructures = record_.maxDescriptorSetAccelerationStructures,
             };
+            const VulkanDescriptorLimits updateAfterBindLimits{
+                .maxPerStageDescriptorSamplers = record_.maxPerStageDescriptorUpdateAfterBindSamplers,
+                .maxPerStageDescriptorUniformBuffers = record_.maxPerStageDescriptorUpdateAfterBindUniformBuffers,
+                .maxPerStageDescriptorStorageBuffers = record_.maxPerStageDescriptorUpdateAfterBindStorageBuffers,
+                .maxPerStageDescriptorSampledImages = record_.maxPerStageDescriptorUpdateAfterBindSampledImages,
+                .maxPerStageDescriptorStorageImages = record_.maxPerStageDescriptorUpdateAfterBindStorageImages,
+                .maxPerStageDescriptorAccelerationStructures =
+                    record_.maxPerStageDescriptorUpdateAfterBindAccelerationStructures,
+                .maxPerStageResources = record_.maxPerStageUpdateAfterBindResources,
+                .maxDescriptorSetSamplers = record_.maxDescriptorSetUpdateAfterBindSamplers,
+                .maxDescriptorSetUniformBuffers = record_.maxDescriptorSetUpdateAfterBindUniformBuffers,
+                .maxDescriptorSetUniformBuffersDynamic = record_.maxDescriptorSetUpdateAfterBindUniformBuffersDynamic,
+                .maxDescriptorSetStorageBuffers = record_.maxDescriptorSetUpdateAfterBindStorageBuffers,
+                .maxDescriptorSetStorageBuffersDynamic = record_.maxDescriptorSetUpdateAfterBindStorageBuffersDynamic,
+                .maxDescriptorSetSampledImages = record_.maxDescriptorSetUpdateAfterBindSampledImages,
+                .maxDescriptorSetStorageImages = record_.maxDescriptorSetUpdateAfterBindStorageImages,
+                .maxDescriptorSetAccelerationStructures = record_.maxDescriptorSetUpdateAfterBindAccelerationStructures,
+            };
             const std::uint32_t maxDrawIndirectCount = nativeLimits.maxDrawIndirectCount != 0
                                                            ? nativeLimits.maxDrawIndirectCount
                                                            : (record_.multiDrawIndirect ? 65535U : 1U);
@@ -305,7 +323,13 @@ namespace rachis::vulkan
                                 queues_.maintenance4Enabled,
                                 queues_.shaderFeaturesEnabled,
                                 isolatesDynamicBuffers);
-            bindings_.initialize(device_, &table_, capabilities_, &instance_.table, bufferLimits, descriptorLimits);
+            bindings_.initialize(device_,
+                                 &table_,
+                                 capabilities_,
+                                 &instance_.table,
+                                 bufferLimits,
+                                 descriptorLimits,
+                                 updateAfterBindLimits);
             pipelines_.initialize(device_,
                                   &table_,
                                   record_.physical,

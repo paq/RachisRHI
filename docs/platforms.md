@@ -18,6 +18,7 @@ This page describes the host platforms RachisRHI targets, optional feature avail
 - [1D textures on Metal](#1d-textures-on-metal)
 - [Storage texture formats on Metal](#storage-texture-formats-on-metal)
 - [Variable-count binding arrays](#variable-count-binding-arrays)
+- [Update-after-bind binding arrays](#update-after-bind-binding-arrays)
 - [Vulkan on macOS](#vulkan-on-macos)
 
 ## Supported hosts
@@ -54,6 +55,7 @@ The table below shows which backends *can* report each feature (subject to adapt
 | `conditionalExecution` | Yes | Yes, with `VK_EXT_conditional_rendering` | No |
 | `multiDispatchIndirect` | Yes | Yes | No |
 | `dispatchIndirectCount` | Yes | Yes, with the `bufferDeviceAddress` and `shaderInt64` features | No |
+| `updateAfterBindBindingArrays` | Yes | Yes | No |
 
 On Vulkan, `multiDispatchIndirect` and `dispatchIndirectCount` are emulated; see [Indirect dispatch batches on Vulkan](#indirect-dispatch-batches-on-vulkan).
 
@@ -207,6 +209,21 @@ Rules and caveats:
 - **Metal argument tables:** Each Metal shader stage has `31` buffer, `128` texture, and `16` sampler slots (`createBindingSet` rejects larger arrays with `ErrorCode::invalidArgument`). A binding at slot `b` holds at most `limit - b` entries. A stage's `31` buffer slots are shared across all buffer bindings visible to that stage across all sets, one slot for push constants (if visible to that stage), and vertex buffers in the vertex stage.
 - **Size buffer arrays correctly:** On D3D12, buffers and other resources share the `868,928`-descriptor heap range (`maxBindingPoolResourceDescriptors`), whereas on Vulkan and Metal `maxVariableBufferDescriptors` can be much smaller than `maxVariableResourceDescriptors`. Sizing a buffer array from `maxVariableResourceDescriptors` causes `createBindingSet` to fail with `ErrorCode::invalidArgument` on Metal or on Vulkan devices with tighter uniform-buffer limits. **Always size buffer arrays from `maxVariableBufferDescriptors`.**
 - The C ABI exposes neither variable-count binding arrays nor device limits.
+
+## Update-after-bind binding arrays
+
+A binding layout entry with `BindingFlag::updateAfterBind` changes its elements in place (see [Update-after-bind binding arrays](using.md#update-after-bind-binding-arrays)). `DeviceCapabilities::updateAfterBindBindingArrays` reports whether the device supports it:
+
+| Backend | Reported when | Limits that apply |
+| --- | --- | --- |
+| Direct3D 12 | Always | The usual shader-visible heap budget (`maxBindingPoolResourceDescriptors`). Descriptor ranges of these entries are volatile in the root signature, so the GPU reads each descriptor when a shader uses it. |
+| Vulkan | The device supports `descriptorBindingPartiallyBound`, `descriptorBindingUpdateUnusedWhilePending`, and `descriptorBindingSampledImageUpdateAfterBind`, `descriptorBindingStorageImageUpdateAfterBind`, and `descriptorBindingStorageBufferUpdateAfterBind` | See below |
+| Metal | Never | — |
+
+On Vulkan:
+- **Pipeline layouts:** When a pipeline layout holds a set with an update-after-bind entry, the descriptors of all its sets must fit the device's update-after-bind limits (`maxPerStageDescriptorUpdateAfterBind*`, `maxPerStageUpdateAfterBindResources`, and `maxDescriptorSetUpdateAfterBind*`), and the sets without such an entry must still fit the regular limits. `createPipelineLayout` fails with `ErrorCode::unsupported` otherwise.
+- **Variable-count arrays:** An update-after-bind variable-count entry gets its capacity from the update-after-bind limits, capped by the `DeviceLimits` maximums in [Variable-count binding arrays](#variable-count-binding-arrays).
+- **Binding pools:** The first set with an update-after-bind entry in a binding pool adds a second native descriptor pool, created with `VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT` and sized like the first. Its descriptors count against the device's `maxUpdateAfterBindDescriptorsInAllPools`.
 
 ## Vulkan on macOS
 

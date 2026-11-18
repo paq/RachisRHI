@@ -78,6 +78,7 @@ namespace rachis
         none = 0,
         partiallyBound = 1U << 0U,
         variableDescriptorCount = 1U << 1U,
+        updateAfterBind = 1U << 2U,
     };
 
     [[nodiscard]] constexpr BindingFlag operator|(BindingFlag left, BindingFlag right) noexcept

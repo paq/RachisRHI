@@ -366,6 +366,7 @@ namespace rachis
         std::uint32_t shadingRateImageTileSize = 0;
         bool partiallyBoundBindingArrays = false;
         bool variableDescriptorCountBindingArrays = false;
+        bool updateAfterBindBindingArrays = false;
         bool wireframeRasterization = false;
 
         bool dynamicDepthBias = false;

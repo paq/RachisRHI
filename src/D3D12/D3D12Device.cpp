@@ -624,6 +624,7 @@ namespace rachis::d3d12
             capabilities.streamOutputStatisticsQueries = true;
             capabilities.conditionalExecution = true;
             capabilities.partiallyBoundBindingArrays = true;
+            capabilities.updateAfterBindBindingArrays = true;
             capabilities.persistentMapping = true;
             capabilities.mappedMemory = {
                 .hostCoherent = true,

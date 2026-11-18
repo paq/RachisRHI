@@ -1262,6 +1262,35 @@ namespace rachis::vulkan
                                              std::string_view(driver.driverName).contains("Dozen");
         }
 
+        void recordUpdateAfterBindLimits(VulkanPhysicalDeviceRecord& record,
+                                         const VkPhysicalDeviceVulkan12Properties& properties) noexcept
+        {
+            record.maxPerStageDescriptorUpdateAfterBindSamplers =
+                properties.maxPerStageDescriptorUpdateAfterBindSamplers;
+            record.maxPerStageDescriptorUpdateAfterBindUniformBuffers =
+                properties.maxPerStageDescriptorUpdateAfterBindUniformBuffers;
+            record.maxPerStageDescriptorUpdateAfterBindStorageBuffers =
+                properties.maxPerStageDescriptorUpdateAfterBindStorageBuffers;
+            record.maxPerStageDescriptorUpdateAfterBindSampledImages =
+                properties.maxPerStageDescriptorUpdateAfterBindSampledImages;
+            record.maxPerStageDescriptorUpdateAfterBindStorageImages =
+                properties.maxPerStageDescriptorUpdateAfterBindStorageImages;
+            record.maxPerStageUpdateAfterBindResources = properties.maxPerStageUpdateAfterBindResources;
+            record.maxDescriptorSetUpdateAfterBindSamplers = properties.maxDescriptorSetUpdateAfterBindSamplers;
+            record.maxDescriptorSetUpdateAfterBindUniformBuffers =
+                properties.maxDescriptorSetUpdateAfterBindUniformBuffers;
+            record.maxDescriptorSetUpdateAfterBindUniformBuffersDynamic =
+                properties.maxDescriptorSetUpdateAfterBindUniformBuffersDynamic;
+            record.maxDescriptorSetUpdateAfterBindStorageBuffers =
+                properties.maxDescriptorSetUpdateAfterBindStorageBuffers;
+            record.maxDescriptorSetUpdateAfterBindStorageBuffersDynamic =
+                properties.maxDescriptorSetUpdateAfterBindStorageBuffersDynamic;
+            record.maxDescriptorSetUpdateAfterBindSampledImages =
+                properties.maxDescriptorSetUpdateAfterBindSampledImages;
+            record.maxDescriptorSetUpdateAfterBindStorageImages =
+                properties.maxDescriptorSetUpdateAfterBindStorageImages;
+        }
+
         void recordCoreFeatures(VulkanPhysicalDeviceRecord& record, const PhysicalDeviceFeatureChain& features) noexcept
         {
             record.report.dynamicRendering = features.v13.dynamicRendering == VK_TRUE;
@@ -1277,6 +1306,14 @@ namespace rachis::vulkan
             record.descriptorBindingPartiallyBound = features.v12.descriptorBindingPartiallyBound == VK_TRUE;
             record.descriptorBindingVariableDescriptorCount =
                 features.v12.descriptorBindingVariableDescriptorCount == VK_TRUE;
+            record.descriptorBindingUpdateUnusedWhilePending =
+                features.v12.descriptorBindingUpdateUnusedWhilePending == VK_TRUE;
+            record.descriptorBindingSampledImageUpdateAfterBind =
+                features.v12.descriptorBindingSampledImageUpdateAfterBind == VK_TRUE;
+            record.descriptorBindingStorageImageUpdateAfterBind =
+                features.v12.descriptorBindingStorageImageUpdateAfterBind == VK_TRUE;
+            record.descriptorBindingStorageBufferUpdateAfterBind =
+                features.v12.descriptorBindingStorageBufferUpdateAfterBind == VK_TRUE;
             record.shaderStorageBufferArrayNonUniformIndexing =
                 features.v12.shaderStorageBufferArrayNonUniformIndexing == VK_TRUE;
             record.shaderSampledImageArrayNonUniformIndexing =
@@ -1588,6 +1625,10 @@ namespace rachis::vulkan
                     : properties.minAccelerationStructureScratchOffsetAlignment;
             record.maxPerStageDescriptorAccelerationStructures = properties.maxPerStageDescriptorAccelerationStructures;
             record.maxDescriptorSetAccelerationStructures = properties.maxDescriptorSetAccelerationStructures;
+            record.maxPerStageDescriptorUpdateAfterBindAccelerationStructures =
+                properties.maxPerStageDescriptorUpdateAfterBindAccelerationStructures;
+            record.maxDescriptorSetUpdateAfterBindAccelerationStructures =
+                properties.maxDescriptorSetUpdateAfterBindAccelerationStructures;
             record.rayTracingLimits.maxGeometriesPerBottomLevel = static_cast<std::uint32_t>(
                 std::min<std::uint64_t>(properties.maxGeometryCount, std::numeric_limits<std::uint32_t>::max()));
             record.rayTracingLimits.maxInstancesPerTopLevel = static_cast<std::uint32_t>(
@@ -2000,6 +2041,7 @@ namespace rachis::vulkan
             record.stencilResolveModes = properties.v12.supportedStencilResolveModes;
             record.independentResolveNone = properties.v12.independentResolveNone == VK_TRUE;
             record.independentResolve = properties.v12.independentResolve == VK_TRUE;
+            recordUpdateAfterBindLimits(record, properties.v12);
             recordCoreFeatures(record, features);
             record.maxMultiviewViewCount = record.multiview ? properties.v11.maxMultiviewViewCount : 0;
             recordOptionalExtensionSupport(record, device, features);
@@ -2657,6 +2699,14 @@ namespace rachis::vulkan
             chain.v12.runtimeDescriptorArray = available.v12.runtimeDescriptorArray;
             chain.v12.descriptorBindingPartiallyBound = available.v12.descriptorBindingPartiallyBound;
             chain.v12.descriptorBindingVariableDescriptorCount = available.v12.descriptorBindingVariableDescriptorCount;
+            chain.v12.descriptorBindingUpdateUnusedWhilePending =
+                available.v12.descriptorBindingUpdateUnusedWhilePending;
+            chain.v12.descriptorBindingSampledImageUpdateAfterBind =
+                available.v12.descriptorBindingSampledImageUpdateAfterBind;
+            chain.v12.descriptorBindingStorageImageUpdateAfterBind =
+                available.v12.descriptorBindingStorageImageUpdateAfterBind;
+            chain.v12.descriptorBindingStorageBufferUpdateAfterBind =
+                available.v12.descriptorBindingStorageBufferUpdateAfterBind;
             chain.v12.shaderUniformBufferArrayNonUniformIndexing =
                 available.v12.shaderUniformBufferArrayNonUniformIndexing;
             chain.v12.shaderSampledImageArrayNonUniformIndexing =
@@ -2970,6 +3020,11 @@ namespace rachis::vulkan
                 descriptorIndexingContract && record.descriptorBindingPartiallyBound;
             capabilities.variableDescriptorCountBindingArrays =
                 descriptorIndexingContract && record.descriptorBindingVariableDescriptorCount;
+            capabilities.updateAfterBindBindingArrays = capabilities.partiallyBoundBindingArrays &&
+                                                        record.descriptorBindingUpdateUnusedWhilePending &&
+                                                        record.descriptorBindingSampledImageUpdateAfterBind &&
+                                                        record.descriptorBindingStorageImageUpdateAfterBind &&
+                                                        record.descriptorBindingStorageBufferUpdateAfterBind;
             if (capabilities.variableDescriptorCountBindingArrays)
             {
                 const auto& limits = record.properties.limits;

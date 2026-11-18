@@ -2,6 +2,7 @@
 
 #include "Common/HandleTable.h"
 #include "D3D12/D3D12RuntimePolicies.h"
+#include "Internal/PortableValidation.h"
 
 #include <wrl/client.h>
 
@@ -225,7 +226,8 @@ namespace rachis::d3d12
             const auto allowedVisibility = static_cast<std::uint16_t>(ShaderStage::all);
             const auto flags = static_cast<std::uint8_t>(entry.flags);
             const auto allowedFlags = static_cast<std::uint8_t>(BindingFlag::partiallyBound) |
-                                      static_cast<std::uint8_t>(BindingFlag::variableDescriptorCount);
+                                      static_cast<std::uint8_t>(BindingFlag::variableDescriptorCount) |
+                                      static_cast<std::uint8_t>(BindingFlag::updateAfterBind);
             const bool variable = hasAny(entry.flags, BindingFlag::variableDescriptorCount);
             const bool unbounded = entry.count == unboundedBindingCount;
             const bool registerRangeOverflows =
@@ -299,6 +301,32 @@ namespace rachis::d3d12
                     ErrorCode::invalidArgument,
                     0,
                     "Dynamic buffer bindings cannot be partially bound or variable length.",
+                });
+            }
+            if (hasAny(entry.flags, BindingFlag::updateAfterBind) && !detail::allowsUpdateAfterBind(entry.type))
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidArgument,
+                    0,
+                    "Update-after-bind applies only to sampled-texture, storage-texture, and storage-buffer bindings.",
+                });
+            }
+            return {};
+        }
+
+        [[nodiscard]] Status validateUpdateAfterBindLayout(const BindingLayoutDesc& desc)
+        {
+            const bool updateAfterBind = std::ranges::any_of(desc.entries, [](const BindingLayoutEntry& entry) {
+                return hasAny(entry.flags, BindingFlag::updateAfterBind);
+            });
+            const bool dynamicBuffers = std::ranges::any_of(
+                desc.entries, [](const BindingLayoutEntry& entry) { return isDynamicBuffer(entry.type); });
+            if (updateAfterBind && dynamicBuffers)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidArgument,
+                    0,
+                    "A binding layout with an update-after-bind entry cannot contain dynamic buffer bindings.",
                 });
             }
             return {};
@@ -510,6 +538,11 @@ namespace rachis::d3d12
                     .entry = entry,
                     .rangeType = rangeType(entry.type),
                 });
+            }
+            auto validUpdateAfterBind = validateUpdateAfterBindLayout(desc);
+            if (!validUpdateAfterBind)
+            {
+                return std::unexpected(std::move(validUpdateAfterBind.error()));
             }
 
             std::ranges::sort(record->entries, {}, [](const auto& entry) { return entry.entry.binding; });
@@ -2161,6 +2194,22 @@ namespace rachis::d3d12
             return {};
         }
 
+        [[nodiscard]] bool writesOnlyUpdateAfterBindEntries(const BindingLayoutRecord& layout,
+                                                            std::span<const BindingWrite> writes) noexcept
+        {
+            return std::ranges::all_of(writes, [&](const BindingWrite& write) {
+                const auto* entry = findEntry(layout, write.binding);
+                return entry != nullptr && hasAny(entry->entry.flags, BindingFlag::updateAfterBind);
+            });
+        }
+
+        [[nodiscard]] bool rewritesLiveResourceTable(const BindingSetRecord& current,
+                                                     const StagedBindingSetDescriptors& staged) noexcept
+        {
+            return current.resources != nullptr && staged.resources.has_value() && !staged.samplers.has_value() &&
+                   current.resources->count() == staged.resources->handles.size();
+        }
+
     } // namespace
 
     struct DynamicDescriptorArena::Impl final
@@ -2300,6 +2349,38 @@ namespace rachis::d3d12
             {
                 candidate->poolVersion = std::move(nextPoolVersion);
             }
+            retired = std::exchange(*stored, std::move(candidate));
+            return {};
+        }
+
+        [[nodiscard]] Status publishInPlaceUpdate(BindingSetHandle handle,
+                                                  const std::shared_ptr<BindingSetRecord>& current,
+                                                  std::shared_ptr<BindingSetRecord>&& candidate,
+                                                  const StagedBindingSetDescriptors& staged)
+        {
+            std::shared_ptr<BindingSetRecord> retired;
+            const std::scoped_lock lock(mutex);
+            auto* stored = sets.find(handle);
+            if (stored == nullptr)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidArgument,
+                    0,
+                    "The binding set was destroyed while an update was being prepared.",
+                });
+            }
+            if (*stored != current)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidState,
+                    0,
+                    "A concurrent binding set update published a newer version.",
+                });
+            }
+            copyPreparedDescriptors(
+                *device, *current->resources, *staged.resources, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            countResourceTablePublish(counters, *staged.resources, staged.resources->preparedIndices.size());
+            candidate->poolVersion = current->poolVersion;
             retired = std::exchange(*stored, std::move(candidate));
             return {};
         }
@@ -2751,6 +2832,10 @@ namespace rachis::d3d12
         if (!staged)
         {
             return std::unexpected(std::move(staged.error()));
+        }
+        if (writesOnlyUpdateAfterBindEntries(*current->layout, writes) && rewritesLiveResourceTable(*current, *staged))
+        {
+            return impl_->publishInPlaceUpdate(set, current, std::move(candidate), *staged);
         }
 
         std::shared_ptr<BindingPoolVersionLease> nextPoolVersion;

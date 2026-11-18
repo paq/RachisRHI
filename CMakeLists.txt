@@ -499,6 +499,13 @@ if(RACHIS_ENABLE_VULKAN AND rachis_build_tests)
         COMMENT "Cooking Vulkan SPIR-V VariableBinding"
     )
     rachis_cook_dxc_spirv(
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/UpdateAfterBindBinding.hlsl"
+        ENTRY main
+        PROFILE cs_6_0
+        OUTPUT "${rachis_rhi_spirv_dir}/UpdateAfterBindBinding.spv"
+        COMMENT "Cooking Vulkan SPIR-V UpdateAfterBindBinding"
+    )
+    rachis_cook_dxc_spirv(
         SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/Shader16Bit.hlsl"
         ENTRY main
         PROFILE cs_6_2
@@ -1103,6 +1110,7 @@ if(RACHIS_ENABLE_VULKAN AND rachis_build_tests)
             "${rachis_rhi_spirv_dir}/VulkanHeadlessParity.textured.ps.spv"
             "${rachis_rhi_spirv_dir}/PartiallyBoundBinding.spv"
             "${rachis_rhi_spirv_dir}/VariableBinding.spv"
+            "${rachis_rhi_spirv_dir}/UpdateAfterBindBinding.spv"
             "${rachis_rhi_spirv_dir}/Shader16Bit.spv"
             "${rachis_rhi_spirv_dir}/ShaderInt64.spv"
             "${rachis_rhi_spirv_dir}/ShaderInt64AtomicGroupShared.spv"
@@ -2237,6 +2245,7 @@ if(rachis_build_tests)
         tests/d3d12/binding/BindingSetUpdateContractTests.cpp
         tests/d3d12/binding/DynamicBindingContractTests.cpp
         tests/d3d12/binding/PartiallyBoundBindingContractTests.cpp
+        tests/d3d12/binding/UpdateAfterBindBindingContractTests.cpp
         tests/d3d12/binding/VariableBindingContractTests.cpp
         tests/d3d12/commands/BufferBarrierRangeContractTests.cpp
         tests/d3d12/commands/CommandPoolContractTests.cpp
@@ -2354,6 +2363,7 @@ if(rachis_build_tests)
         tests/portable/GeneratedShaderInterfaceTests.cpp
         tests/vulkan/binding/VulkanBindingContractTests.cpp
         tests/vulkan/binding/VulkanDescriptorIndexingContractTests.cpp
+        tests/vulkan/binding/VulkanUpdateAfterBindContractTests.cpp
         tests/vulkan/commands/VulkanBarrierContractTests.cpp
         tests/vulkan/commands/VulkanCommandPoolContractTests.cpp
         tests/vulkan/commands/VulkanQueueContractTests.cpp
@@ -2488,6 +2498,7 @@ if(rachis_build_tests)
             RACHIS_TEST_INDIRECT_COMPUTE_SHADER_PATH="${rachis_rhi_dxil_dir}/IndirectArguments.dxil"
             RACHIS_TEST_PARTIALLY_BOUND_BINDING_SHADER_PATH="${rachis_rhi_dxil_dir}/PartiallyBoundBinding.dxil"
             RACHIS_TEST_VARIABLE_BINDING_SHADER_PATH="${rachis_rhi_dxil_dir}/VariableBinding.dxil"
+            RACHIS_TEST_UPDATE_AFTER_BIND_BINDING_SHADER_PATH="${rachis_rhi_dxil_dir}/UpdateAfterBindBinding.dxil"
             RACHIS_TEST_TEXTURE_VIEW_COMPONENT_SWIZZLE_SHADER_PATH="${rachis_rhi_dxil_dir}/TextureViewComponentSwizzle.dxil"
             RACHIS_TEST_MIPMAP_SHADER_READ_COMPUTE_SHADER_PATH="${rachis_rhi_dxil_dir}/MipmapShaderRead.dxil"
             RACHIS_TEST_MIPMAP_SHADER_READ_VERTEX_SHADER_PATH="${rachis_rhi_dxil_dir}/MipmapShaderRead.vs.dxil"
@@ -2553,6 +2564,7 @@ if(rachis_build_tests)
     rachis_rhi_test_dxil(DynamicUniformBufferArray.dxil "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/DynamicUniformBufferArray.hlsl" cs_6_0 ENTRY main)
     rachis_rhi_test_dxil(PartiallyBoundBinding.dxil "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/PartiallyBoundBinding.hlsl" cs_6_0 ENTRY main)
     rachis_rhi_test_dxil(VariableBinding.dxil "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/VariableBinding.hlsl" cs_6_0 ENTRY main)
+    rachis_rhi_test_dxil(UpdateAfterBindBinding.dxil "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/UpdateAfterBindBinding.hlsl" cs_6_0 ENTRY main)
     rachis_rhi_test_dxil(TextureViewComponentSwizzle.dxil "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/TextureViewComponentSwizzle.hlsl" cs_6_0 ENTRY main)
     rachis_rhi_test_dxil(MipmapShaderRead.dxil "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MipmapShaderRead.hlsl" cs_6_0 ENTRY computeMain)
     rachis_rhi_test_dxil(GraphicsDirect.vs.dxil "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/GraphicsTriangle.hlsl" vs_6_0 ENTRY directVertex)
@@ -2656,6 +2668,7 @@ if(rachis_build_tests)
             tests/portable/GeneratedShaderInterfaceTests.cpp
             tests/vulkan/binding/VulkanBindingContractTests.cpp
             tests/vulkan/binding/VulkanDescriptorIndexingContractTests.cpp
+            tests/vulkan/binding/VulkanUpdateAfterBindContractTests.cpp
             tests/vulkan/commands/VulkanBarrierContractTests.cpp
             tests/vulkan/commands/VulkanCommandPoolContractTests.cpp
             tests/vulkan/commands/VulkanQueueContractTests.cpp

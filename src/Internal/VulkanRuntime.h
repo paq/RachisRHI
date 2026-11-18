@@ -129,6 +129,10 @@ namespace rachis::vulkan
         bool runtimeDescriptorArray = false;
         bool descriptorBindingPartiallyBound = false;
         bool descriptorBindingVariableDescriptorCount = false;
+        bool descriptorBindingUpdateUnusedWhilePending = false;
+        bool descriptorBindingSampledImageUpdateAfterBind = false;
+        bool descriptorBindingStorageImageUpdateAfterBind = false;
+        bool descriptorBindingStorageBufferUpdateAfterBind = false;
         bool shaderStorageBufferArrayNonUniformIndexing = false;
         bool shaderSampledImageArrayNonUniformIndexing = false;
         bool shaderStorageImageArrayNonUniformIndexing = false;
@@ -199,6 +203,21 @@ namespace rachis::vulkan
         std::uint32_t minAccelerationStructureScratchOffsetAlignment = 256;
         std::uint32_t maxPerStageDescriptorAccelerationStructures = 0;
         std::uint32_t maxDescriptorSetAccelerationStructures = 0;
+        std::uint32_t maxPerStageDescriptorUpdateAfterBindAccelerationStructures = 0;
+        std::uint32_t maxDescriptorSetUpdateAfterBindAccelerationStructures = 0;
+        std::uint32_t maxPerStageDescriptorUpdateAfterBindSamplers = 0;
+        std::uint32_t maxPerStageDescriptorUpdateAfterBindUniformBuffers = 0;
+        std::uint32_t maxPerStageDescriptorUpdateAfterBindStorageBuffers = 0;
+        std::uint32_t maxPerStageDescriptorUpdateAfterBindSampledImages = 0;
+        std::uint32_t maxPerStageDescriptorUpdateAfterBindStorageImages = 0;
+        std::uint32_t maxPerStageUpdateAfterBindResources = 0;
+        std::uint32_t maxDescriptorSetUpdateAfterBindSamplers = 0;
+        std::uint32_t maxDescriptorSetUpdateAfterBindUniformBuffers = 0;
+        std::uint32_t maxDescriptorSetUpdateAfterBindUniformBuffersDynamic = 0;
+        std::uint32_t maxDescriptorSetUpdateAfterBindStorageBuffers = 0;
+        std::uint32_t maxDescriptorSetUpdateAfterBindStorageBuffersDynamic = 0;
+        std::uint32_t maxDescriptorSetUpdateAfterBindSampledImages = 0;
+        std::uint32_t maxDescriptorSetUpdateAfterBindStorageImages = 0;
     };
 
     [[nodiscard]] Status checkVulkanInstanceVersion(PFN_vkEnumerateInstanceVersion enumerateInstanceVersion);

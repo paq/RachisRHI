@@ -6,7 +6,7 @@
 - **Shaders & pipelines:** [Shaders](#shaders) ([Optional shader stages](#optional-shader-stages), [Stage inputs and outputs](#stage-inputs-and-outputs)) · [Vertex input](#vertex-input) · [Graphics pipeline limits on Metal](#graphics-pipeline-limits-on-metal) · [Point lists](#point-lists) · [Multiview rendering](#multiview-rendering) · [Draw index in indirect calls](#draw-index-in-indirect-calls)
 - **Presentation:** [Surfaces](#surfaces)
 - **Resources & lifetimes:** [Handles and lifetime](#handles-and-lifetime) · [Texture layouts](#texture-layouts) · [Buffer fills and storage-texture clears](#buffer-fills-and-storage-texture-clears) · [Readback buffers](#readback-buffers) · [Acceleration structures](#acceleration-structures) · [Sharing resources](#sharing-resources)
-- **Bindings & barriers:** [Samplers](#samplers) · [Binding pools](#binding-pools) · [Variable-count binding arrays](#variable-count-binding-arrays) · [Direct3D 12 without enhanced barriers](#direct3d-12-without-enhanced-barriers)
+- **Bindings & barriers:** [Samplers](#samplers) · [Binding pools](#binding-pools) · [Variable-count binding arrays](#variable-count-binding-arrays) · [Update-after-bind binding arrays](#update-after-bind-binding-arrays) · [Direct3D 12 without enhanced barriers](#direct3d-12-without-enhanced-barriers)
 - **Execution & operations:** [Threads](#threads) · [Queries](#queries) · [Conditional execution](#conditional-execution) · [Indirect dispatch batches](#indirect-dispatch-batches) · [Device loss](#device-loss) · [Diagnostics](#diagnostics) · [Examples](#examples)
 
 ---
@@ -502,7 +502,7 @@ Using an invalid transfer target or releasing from a non-`common` layout returns
 
 `createBindingPool` reserves capacity up to `maxBindingSets` and per-type descriptor `sizes`:
 
-- Calling `updateBindingSet` preserves previous descriptor versions if any active or unobserved-completion command buffer may still reference them (even when recorded from `CommandPoolFlag::unretainedResources` pools), and updates in place once idle. Exhausting pool space returns `ErrorCode::resourceExhausted`; targeting a destroyed pool returns `ErrorCode::invalidState`.
+- Calling `updateBindingSet` preserves previous descriptor versions if any active or unobserved-completion command buffer may still reference them (even when recorded from `CommandPoolFlag::unretainedResources` pools), and updates in place once idle. Writes that target only `BindingFlag::updateAfterBind` entries update in place at any time (see [Update-after-bind binding arrays](#update-after-bind-binding-arrays)). Exhausting pool space returns `ErrorCode::resourceExhausted`; targeting a destroyed pool returns `ErrorCode::invalidState`.
 - **Direct3D 12 descriptor heap budgets (`DeviceLimits`):**
   - `maxBindingPoolResourceDescriptors` (`868,928`): reserved up front by `createBindingPool` until the pool and all its sets and retained versions finish and are destroyed.
   - `maxBindingSamplerDescriptors` (`2,048`): shared online sampler heap entries deduplicated by each binding set's ordered `SamplerHandle` sequence and checked at `createBindingSet` / `updateBindingSet`.
@@ -518,6 +518,19 @@ Declare an unbounded trailing binding with `BindingFlag::variableDescriptorCount
 - Query `DeviceLimits::maxVariableBufferDescriptors`, `maxVariableSamplerDescriptors`, and `maxVariableResourceDescriptors` before choosing array capacities.
 - On Vulkan, pipeline/binding layout limits cap variable array lengths at `3/4` of the backend stage/pipeline limit (or `limit - 1024` when `1/4 > 1024`) minus other descriptors of the same category in that layout (dynamic and read-only storage buffers share the storage-buffer budget; acceleration structure arrays are capped by the stricter AS descriptor limits).
 - Exceeding per-type variable limits fails with `ErrorCode::invalidArgument`; combining sets in `createPipelineLayout` beyond cross-set limits fails with `ErrorCode::unsupported`.
+
+---
+
+## Update-after-bind binding arrays
+
+When `DeviceCapabilities::updateAfterBindBindingArrays` is `true`, set `BindingFlag::updateAfterBind` on a binding layout entry to change its elements in place, even while work that uses the set is in flight. Use it for large tables that change a few elements at a time, such as a bindless texture table fed by texture streaming. Without the flag, an update while work is in flight copies the whole set into a new version.
+
+- **Entry types:** The flag applies to `sampledTexture`, `storageTexture`, `readOnlyStorageBuffer`, and `storageBuffer` entries, alone or with `partiallyBound` and `variableDescriptorCount`. Other types fail `createBindingLayout` with `ErrorCode::invalidArgument`, and so does a layout that also holds a dynamic buffer binding. Without the capability, the flag fails with `ErrorCode::unsupported`.
+- **In-place updates:** An `updateBindingSet` call whose writes all target update-after-bind entries writes those elements straight into the set's live descriptors. It makes no new version and uses no extra pool capacity, and `bindingUpdateStatistics()` counts one prepared and one published descriptor per write.
+- **What you promise:** Change an element only when no submitted, unfinished command buffer reads it. Such work may keep reading the other elements of the array while you update. Changing an element that work in flight reads is undefined behavior.
+- **When a change is seen:** A command buffer submitted after `updateBindingSet` returns reads the new element, even when it bound the set before the update. On Direct3D 12 the new descriptor reaches the GPU as soon as the call writes it, so work already submitted would see it too; this is why elements that such work reads must not change.
+- **Other entries in the same set:** A call that writes any entry without the flag keeps the usual behavior: while work in flight may use the set, it makes a new version that starts from the current contents of every entry. Command buffers recorded before that call keep the earlier version, and later in-place updates may not reach them, so record work again after such a call if it must read later changes.
+- **Backends:** See [Platforms: Update-after-bind binding arrays](platforms.md#update-after-bind-binding-arrays) for the features and limits each backend needs.
 
 ---
 
