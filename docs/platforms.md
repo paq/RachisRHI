@@ -16,6 +16,7 @@ This page describes the host platforms RachisRHI targets, optional feature avail
 - [Scissors on Metal](#scissors-on-metal)
 - [Shared resources](#shared-resources)
 - [1D textures on Metal](#1d-textures-on-metal)
+- [Indirect calls on Metal](#indirect-calls-on-metal)
 - [Mesh shaders on Metal](#mesh-shaders-on-metal)
 - [Storage texture formats on Metal](#storage-texture-formats-on-metal)
 - [Variable-count binding arrays](#variable-count-binding-arrays)
@@ -193,6 +194,14 @@ Metal restricts 1D textures and 1D texture arrays in two ways:
 
 > [!TIP]
 > Direct3D 12 and Vulkan (including MoltenVK) allow mipmapped and renderable 1D textures. For portable mipmapped or renderable 1D textures across all backends, use a **2D texture with `height = 1`**.
+
+## Indirect calls on Metal
+
+Metal has no multi-record indirect calls and no GPU-written counts, so RachisRHI builds them from single-record calls. `multiDrawIndirect`, `drawIndirectCount`, `multiDispatchIndirect`, and `dispatchIndirectCount` are all reported, and the results match Direct3D 12 and Vulkan.
+
+- **Several records:** `drawIndirect`, `drawIndexedIndirect`, `dispatchIndirect`, and `dispatchMeshIndirect` encode one Metal call per record, `maxDrawCount` or `maxDispatchCount` of them. The CPU cost of recording grows with that maximum, not with the count the GPU writes.
+- **Count buffer:** before those calls, RachisRHI runs a small internal pass that copies the records into scratch memory and sets the instance or workgroup count of every record at or past the count to zero. Inside a render pass this pass is an object-shader draw with rasterization disabled; in a compute pass it is a compute dispatch. Each such call allocates `maxDrawCount` (or `maxDispatchCount`) times the record size of scratch memory, freed when the command buffer completes.
+- Keep `maxDrawCount` and `maxDispatchCount` close to the real upper bound on Metal.
 
 ## Mesh shaders on Metal
 

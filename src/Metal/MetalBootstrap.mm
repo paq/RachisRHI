@@ -266,6 +266,10 @@ namespace rachis::metal
             capabilities.indirectDispatch = true;
             capabilities.indirectDraws = true;
             capabilities.indirectDrawBaseInstance = true;
+            capabilities.multiDrawIndirect = true;
+            capabilities.drawIndirectCount = true;
+            capabilities.multiDispatchIndirect = true;
+            capabilities.dispatchIndirectCount = true;
             capabilities.primitiveRestart = true;
             if ([device supportsFamily:MTLGPUFamilyApple9])
             {

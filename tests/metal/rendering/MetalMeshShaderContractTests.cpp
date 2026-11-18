@@ -413,6 +413,63 @@ TEST_CASE("Metal mesh pipelines dispatch directly and indirectly with and withou
         destroyMeshTarget(device, target);
     }
 
+    SECTION("Counted mesh dispatch draws only the GPU-written number of records")
+    {
+        REQUIRE(capabilities.drawIndirectCount);
+        const std::array records{dispatchArguments, dispatchArguments};
+        const std::array<std::uint32_t, 2> counts{0, 1};
+        auto countedArguments = device.createBuffer({
+            .size = sizeof(records),
+            .usage = rachis::BufferUsage::indirect,
+            .memoryType = rachis::MemoryType::upload,
+        });
+        auto countBuffer = device.createBuffer({
+            .size = sizeof(counts),
+            .usage = rachis::BufferUsage::indirect,
+            .memoryType = rachis::MemoryType::upload,
+        });
+        REQUIRE(countedArguments.has_value());
+        REQUIRE(countBuffer.has_value());
+        auto mappedRecords = device.mapBuffer(*countedArguments);
+        REQUIRE(mappedRecords.has_value());
+        std::memcpy(mappedRecords->data, records.data(), sizeof(records));
+        REQUIRE(device.unmapBuffer(*countedArguments).has_value());
+        auto mappedCounts = device.mapBuffer(*countBuffer);
+        REQUIRE(mappedCounts.has_value());
+        std::memcpy(mappedCounts->data, counts.data(), sizeof(counts));
+        REQUIRE(device.unmapBuffer(*countBuffer).has_value());
+
+        for (const std::uint64_t countOffset : {std::uint64_t{0}, std::uint64_t{sizeof(std::uint32_t)}})
+        {
+            const auto target = createMeshTarget(device);
+            auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::graphics);
+            REQUIRE(command.has_value());
+            beginMeshRendering(device, *command, target);
+            REQUIRE(device.bindGraphicsPipeline(*command, *noTaskPipeline).has_value());
+            REQUIRE(device.bindGraphicsBindingSet(*command, 0, *bindingSet).has_value());
+            setMeshDrawState(device, *command);
+            REQUIRE(device
+                        .dispatchMeshIndirect(*command,
+                                              {.argumentBuffer = *countedArguments,
+                                               .maxDispatchCount = 2,
+                                               .countBuffer = *countBuffer,
+                                               .countOffset = countOffset})
+                        .has_value());
+            finishMeshRendering(device, std::move(*command), target);
+            auto mapped = device.mapBuffer(target.readback);
+            REQUIRE(mapped.has_value());
+            const auto* center = mapped->data + static_cast<std::uint64_t>(targetSize / 2) * rowPitch +
+                                 static_cast<std::uint64_t>(targetSize / 2) * 4;
+            CAPTURE(countOffset);
+            CHECK(center[1] == (countOffset == 0 ? std::byte{0} : std::byte{255}));
+            CHECK(center[2] == (countOffset == 0 ? std::byte{255} : std::byte{0}));
+            REQUIRE(device.unmapBuffer(target.readback).has_value());
+            destroyMeshTarget(device, target);
+        }
+        REQUIRE(device.destroyBuffer(*countBuffer).has_value());
+        REQUIRE(device.destroyBuffer(*countedArguments).has_value());
+    }
+
     REQUIRE(device.destroyBuffer(*arguments).has_value());
     REQUIRE(device.destroyBuffer(*wrongUsage).has_value());
     REQUIRE(device.destroyPipeline(*taskPipeline).has_value());

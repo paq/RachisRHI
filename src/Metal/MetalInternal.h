@@ -745,6 +745,7 @@ namespace rachis::metal
         MetalPushConstantSlice activeGraphicsPushSlice{};
 
         std::vector<id<MTLBuffer>> pushConstantPages;
+        std::vector<id<MTLBuffer>> indirectScratchBuffers;
         std::size_t pushConstantPageIndex = 0;
         std::uint32_t pushConstantPageOffset = 0;
         std::shared_ptr<MetalPipelineRecord> boundComputePipeline;
@@ -1045,6 +1046,8 @@ namespace rachis::metal
         detail::HandleTable<std::shared_ptr<MetalSwapchainRecord>, SwapchainHandle> swapchains;
         __strong id<MTLBuffer> mipmapEncodeOff;
         __strong id<MTLBuffer> mipmapEncodeOn;
+        __strong id<MTLComputePipelineState> indirectClampCompute;
+        __strong id<MTLRenderPipelineState> indirectClampRender;
         std::uint64_t nextAllocationId = 1;
         mutable std::vector<std::weak_ptr<MetalAllocationTelemetry>> allocations;
         std::size_t nextAllocationPruneThreshold = 64;
@@ -1631,5 +1634,45 @@ namespace rachis::metal
     [[nodiscard]] Result<std::uint32_t> metalValidatePushConstantRanges(std::span<const PushConstantRange> ranges);
     [[nodiscard]] Status metalApplyDynamicOffsets(std::vector<std::shared_ptr<MetalBindingSetVersion>>& versions,
                                                   std::span<const std::uint32_t> offsets);
+
+    struct MetalIndirectClampPipelines final
+    {
+        __strong id<MTLComputePipelineState> compute = nil;
+        __strong id<MTLRenderPipelineState> render = nil;
+    };
+
+    struct MetalIndirectClampRequest final
+    {
+        std::uint64_t sourceAddress = 0;
+        std::uint64_t countAddress = 0;
+        std::uint32_t maxRecords = 0;
+        std::uint32_t strideBytes = 0;
+        std::uint32_t recordWords = 0;
+        std::uint32_t zeroFirstWord = 0;
+        std::uint32_t zeroWordCount = 0;
+    };
+
+    struct MetalClampedRecords final
+    {
+        std::uint64_t headerAddress = 0;
+        std::uint64_t recordsAddress = 0;
+        std::uint32_t recordBytes = 0;
+    };
+
+    [[nodiscard]] Result<MetalIndirectClampPipelines> metalIndirectClampPipelines(
+        std::mutex& deviceMutex, const std::shared_ptr<MetalDeviceNative>& native);
+    [[nodiscard]] Result<MetalClampedRecords> metalPrepareClampedRecords(id<MTLDevice> device,
+                                                                         MetalCommandEntry& entry,
+                                                                         const MetalIndirectClampRequest& request);
+    [[nodiscard]] Status metalEncodeComputeRecordClamp(id<MTLDevice> device,
+                                                       MetalCommandEntry& entry,
+                                                       id<MTLComputePipelineState> pipeline,
+                                                       const MetalClampedRecords& records,
+                                                       std::uint32_t maxRecords);
+    [[nodiscard]] Status metalEncodeRenderRecordClamp(id<MTLDevice> device,
+                                                      MetalCommandEntry& entry,
+                                                      id<MTLRenderPipelineState> pipeline,
+                                                      const MetalClampedRecords& records,
+                                                      std::uint32_t maxRecords);
 
 } // namespace rachis::metal

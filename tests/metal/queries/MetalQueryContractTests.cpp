@@ -625,7 +625,7 @@ TEST_CASE("Metal single-record indirect draws write Apple GPU color and fail clo
     REQUIRE(device.drawIndexedIndirect(*command, {.argumentBuffer = *indexedArgs}).has_value());
     auto counted = device.drawIndexedIndirect(*command, {.argumentBuffer = *indexedArgs, .maxDrawCount = 2});
     REQUIRE_FALSE(counted);
-    CHECK(counted.error().code == rachis::ErrorCode::unsupported);
+    CHECK(counted.error().code == rachis::ErrorCode::invalidArgument);
     REQUIRE(device.endRendering(*command).has_value());
     REQUIRE(device
                 .textureBarrier(*command,
@@ -713,14 +713,14 @@ TEST_CASE("Metal rejects occlusion, pipeline statistics, predicates, and counted
                                                        .maxDispatchCount = 2,
                                                    });
     REQUIRE_FALSE(countedDispatch);
-    CHECK(countedDispatch.error().code == rachis::ErrorCode::unsupported);
+    CHECK(countedDispatch.error().code == rachis::ErrorCode::invalidArgument);
     auto countedWithBuffer = device.dispatchIndirect(*command,
                                                      {
                                                          .argumentBuffer = *arguments,
                                                          .countBuffer = *countBuffer,
                                                      });
     REQUIRE_FALSE(countedWithBuffer);
-    CHECK(countedWithBuffer.error().code == rachis::ErrorCode::unsupported);
+    CHECK(countedWithBuffer.error().code == rachis::ErrorCode::invalidArgument);
 
     auto graphics = rachis::test::acquireCommandBuffer(device, rachis::QueueType::graphics);
     REQUIRE(graphics);
@@ -730,7 +730,7 @@ TEST_CASE("Metal rejects occlusion, pipeline statistics, predicates, and counted
                                                .maxDrawCount = 2,
                                            });
     REQUIRE_FALSE(countedDraw);
-    CHECK(countedDraw.error().code == rachis::ErrorCode::unsupported);
+    CHECK(countedDraw.error().code == rachis::ErrorCode::invalidArgument);
     auto conditional = device.beginConditionalExecution(*graphics, {.buffer = *countBuffer});
     REQUIRE_FALSE(conditional);
     CHECK(conditional.error().code == rachis::ErrorCode::unsupported);

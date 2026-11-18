@@ -1321,48 +1321,207 @@ namespace rachis::metal
     namespace
     {
 
-        [[nodiscard]] Status metalValidateIndirectDispatchRecordLayout(const IndirectDispatchDesc& desc)
+        struct MetalIndirectRecordLayout final
         {
-            constexpr std::uint32_t recordSize = sizeof(DispatchIndirectArguments);
-            const std::uint32_t stride = desc.stride == 0 ? recordSize : desc.stride;
-            if (!desc.argumentBuffer.isValid() || desc.argumentOffset % indirectArgumentAlignment != 0 ||
-                stride < recordSize || stride % indirectArgumentAlignment != 0)
+            BufferHandle argumentBuffer = {};
+            std::uint64_t argumentOffset = 0;
+            std::uint32_t maxRecords = 0;
+            std::uint32_t recordSize = 0;
+            std::uint32_t stride = 0;
+            BufferHandle countBuffer = {};
+            std::uint64_t countOffset = 0;
+        };
+
+        struct MetalIndirectRecordMessages final
+        {
+            std::string_view invalidLayout;
+            std::string_view invalidArgumentBuffer;
+            std::string_view recordsOutOfBounds;
+            std::string_view invalidCountBuffer;
+        };
+
+        template<typename IndirectDesc>
+        [[nodiscard]] MetalIndirectRecordLayout metalIndirectRecordLayout(const IndirectDesc& desc,
+                                                                          std::uint32_t maxRecords,
+                                                                          std::uint32_t recordSize) noexcept
+        {
+            return {
+                .argumentBuffer = desc.argumentBuffer,
+                .argumentOffset = desc.argumentOffset,
+                .maxRecords = maxRecords,
+                .recordSize = recordSize,
+                .stride = desc.stride == 0 ? recordSize : desc.stride,
+                .countBuffer = desc.countBuffer,
+                .countOffset = desc.countOffset,
+            };
+        }
+
+        [[nodiscard]] Status metalValidateIndirectRecordLayout(const MetalIndirectRecordLayout& layout,
+                                                               const MetalIndirectRecordMessages& messages)
+        {
+            if (!layout.argumentBuffer.isValid() || layout.argumentOffset % indirectArgumentAlignment != 0 ||
+                layout.stride < layout.recordSize || layout.stride % indirectArgumentAlignment != 0 ||
+                (!layout.countBuffer.isValid() && layout.countOffset != 0))
             {
-                return std::unexpected(metalSelectionError(
-                    ErrorCode::invalidArgument,
-                    "Indirect dispatch requires an argument buffer, aligned offsets, and an aligned 12-byte record."));
+                return std::unexpected(
+                    metalSelectionError(ErrorCode::invalidArgument, std::string{messages.invalidLayout}));
             }
             return {};
         }
 
-        struct MetalIndirectDispatchArgument final
+        struct MetalResolvedIndirectRecords final
         {
-            __strong id<MTLBuffer> buffer = nil;
-            std::shared_ptr<void> owner;
+            __strong id<MTLBuffer> argument = nil;
+            std::shared_ptr<void> argumentOwner;
+            __strong id<MTLBuffer> count = nil;
+            std::shared_ptr<void> countOwner;
         };
 
-        [[nodiscard]] Result<MetalIndirectDispatchArgument> metalResolveIndirectDispatchArgument(
-            MetalDeviceNative& native, const IndirectDispatchDesc& desc)
+        [[nodiscard]] Result<MetalResolvedIndirectRecords> metalResolveIndirectRecords(
+            MetalDeviceNative& native,
+            const MetalIndirectRecordLayout& layout,
+            const MetalIndirectRecordMessages& messages)
         {
-            constexpr std::uint32_t recordSize = sizeof(DispatchIndirectArguments);
-            auto* record = native.buffers.find(desc.argumentBuffer);
+            auto* record = native.buffers.find(layout.argumentBuffer);
             if (record == nullptr || record->buffer == nil || !hasAny(record->desc.usage, BufferUsage::indirect) ||
-                desc.argumentOffset > record->desc.size)
+                layout.argumentOffset > record->desc.size)
             {
-                return std::unexpected(metalSelectionError(
-                    ErrorCode::invalidArgument,
-                    "The indirect dispatch argument buffer requires indirect usage and an in-bounds offset."));
+                return std::unexpected(
+                    metalSelectionError(ErrorCode::invalidArgument, std::string{messages.invalidArgumentBuffer}));
             }
-            if (desc.maxDispatchCount != 0)
+            const auto available = record->desc.size - layout.argumentOffset;
+            if (layout.maxRecords != 0 &&
+                (available < layout.recordSize ||
+                 static_cast<std::uint64_t>(layout.maxRecords - 1U) > (available - layout.recordSize) / layout.stride))
             {
-                const auto argumentBytes = static_cast<std::uint64_t>(recordSize);
-                if (argumentBytes > record->desc.size - desc.argumentOffset)
-                {
-                    return std::unexpected(metalSelectionError(
-                        ErrorCode::invalidArgument, "The indirect dispatch records exceed the argument buffer."));
-                }
+                return std::unexpected(
+                    metalSelectionError(ErrorCode::invalidArgument, std::string{messages.recordsOutOfBounds}));
             }
-            return MetalIndirectDispatchArgument{.buffer = record->buffer, .owner = record->owner};
+            MetalResolvedIndirectRecords resolved{.argument = record->buffer, .argumentOwner = record->owner};
+            if (!layout.countBuffer.isValid())
+            {
+                return resolved;
+            }
+            auto* count = native.buffers.find(layout.countBuffer);
+            if (count == nullptr || count->buffer == nil || !hasAny(count->desc.usage, BufferUsage::indirect) ||
+                layout.countOffset % indirectArgumentAlignment != 0 || layout.countOffset > count->desc.size ||
+                sizeof(std::uint32_t) > count->desc.size - layout.countOffset)
+            {
+                return std::unexpected(
+                    metalSelectionError(ErrorCode::invalidArgument, std::string{messages.invalidCountBuffer}));
+            }
+            resolved.count = count->buffer;
+            resolved.countOwner = count->owner;
+            return resolved;
+        }
+
+        [[nodiscard]] Status metalRetainIndirectRecords(MetalCommandBuffer& native,
+                                                        MetalCommandEntry& entry,
+                                                        const MetalResolvedIndirectRecords& records)
+        {
+            if (auto kept = retainMetalApplicationResource(native, records.argumentOwner); !kept)
+            {
+                return kept;
+            }
+            metalRetainResidency(entry, records.argument);
+            if (records.count == nil)
+            {
+                return {};
+            }
+            if (auto kept = retainMetalApplicationResource(native, records.countOwner); !kept)
+            {
+                return kept;
+            }
+            metalRetainResidency(entry, records.count);
+            return {};
+        }
+
+        struct MetalIndirectRecordSpan final
+        {
+            std::uint64_t firstAddress = 0;
+            std::uint64_t stride = 0;
+        };
+
+        [[nodiscard]] MetalIndirectClampRequest metalClampRequest(const MetalIndirectRecordLayout& layout,
+                                                                  const MetalResolvedIndirectRecords& records,
+                                                                  std::uint32_t zeroFirstWord,
+                                                                  std::uint32_t zeroWordCount) noexcept
+        {
+            return {
+                .sourceAddress = records.argument.gpuAddress + layout.argumentOffset,
+                .countAddress = records.count.gpuAddress + layout.countOffset,
+                .maxRecords = layout.maxRecords,
+                .strideBytes = layout.stride,
+                .recordWords = layout.recordSize / static_cast<std::uint32_t>(sizeof(std::uint32_t)),
+                .zeroFirstWord = zeroFirstWord,
+                .zeroWordCount = zeroWordCount,
+            };
+        }
+
+        [[nodiscard]] Result<MetalIndirectRecordSpan> metalClampComputeRecords(
+            id<MTLDevice> device,
+            MetalCommandEntry& entry,
+            const MetalIndirectClampPipelines& pipelines,
+            const MetalIndirectRecordLayout& layout,
+            const MetalResolvedIndirectRecords& records)
+        {
+            if (records.count == nil)
+            {
+                return MetalIndirectRecordSpan{records.argument.gpuAddress + layout.argumentOffset, layout.stride};
+            }
+            auto clamped = metalPrepareClampedRecords(
+                device, entry, metalClampRequest(layout, records, 0, sizeof(DispatchIndirectArguments) / 4U));
+            if (!clamped)
+            {
+                return std::unexpected(std::move(clamped.error()));
+            }
+            if (auto encoded =
+                    metalEncodeComputeRecordClamp(device, entry, pipelines.compute, *clamped, layout.maxRecords);
+                !encoded)
+            {
+                return std::unexpected(std::move(encoded.error()));
+            }
+            return MetalIndirectRecordSpan{clamped->recordsAddress, clamped->recordBytes};
+        }
+
+        [[nodiscard]] Result<MetalIndirectRecordSpan> metalClampRenderRecords(
+            id<MTLDevice> device,
+            MetalCommandEntry& entry,
+            const MetalIndirectClampPipelines& pipelines,
+            const MetalIndirectRecordLayout& layout,
+            const MetalResolvedIndirectRecords& records,
+            std::uint32_t zeroFirstWord,
+            std::uint32_t zeroWordCount)
+        {
+            if (records.count == nil)
+            {
+                return MetalIndirectRecordSpan{records.argument.gpuAddress + layout.argumentOffset, layout.stride};
+            }
+            auto clamped = metalPrepareClampedRecords(
+                device, entry, metalClampRequest(layout, records, zeroFirstWord, zeroWordCount));
+            if (!clamped)
+            {
+                return std::unexpected(std::move(clamped.error()));
+            }
+            if (auto encoded =
+                    metalEncodeRenderRecordClamp(device, entry, pipelines.render, *clamped, layout.maxRecords);
+                !encoded)
+            {
+                return std::unexpected(std::move(encoded.error()));
+            }
+            return MetalIndirectRecordSpan{clamped->recordsAddress, clamped->recordBytes};
+        }
+
+        [[nodiscard]] Result<MetalIndirectClampPipelines> metalClampPipelinesFor(
+            std::mutex& deviceMutex,
+            const std::shared_ptr<MetalDeviceNative>& native,
+            const MetalIndirectRecordLayout& layout)
+        {
+            if (!layout.countBuffer.isValid() || layout.maxRecords == 0)
+            {
+                return MetalIndirectClampPipelines{};
+            }
+            return metalIndirectClampPipelines(deviceMutex, native);
         }
 
         [[nodiscard]] Status metalValidateIndirectDispatchRecording(const MetalCommandEntry* entry)
@@ -1393,35 +1552,15 @@ namespace rachis::metal
             return {};
         }
 
-        [[nodiscard]] Status metalEncodeIndirectDispatch(MetalCommandBuffer& native,
-                                                         id<MTLDevice> device,
-                                                         MetalCommandEntry& entry,
-                                                         const MetalIndirectDispatchArgument& argument,
-                                                         std::uint64_t argumentOffset)
-        {
-            const auto& pipeline = *entry.boundComputePipeline;
-            auto kept = retainMetalApplicationResource(native, argument.owner);
-            if (!kept)
-            {
-                return kept;
-            }
-            auto prepared = native.ensureComputeEncoder();
-            if (!prepared)
-            {
-                return prepared;
-            }
-            auto applied = metalApplyComputeDispatchState(device, entry, pipeline);
-            if (!applied)
-            {
-                return applied;
-            }
-            metalRetainResidency(entry, argument.buffer);
-            const auto& workgroup = pipeline.workgroup;
-            [entry.computeEncoder
-                dispatchThreadgroupsWithIndirectBuffer:argument.buffer.gpuAddress + argumentOffset
-                                 threadsPerThreadgroup:MTLSizeMake(workgroup.x, workgroup.y, workgroup.z)];
-            return {};
-        }
+        constexpr MetalIndirectRecordMessages kMetalDispatchRecordMessages{
+            .invalidLayout =
+                "Indirect dispatch requires an argument buffer, aligned offsets, and an aligned 12-byte record.",
+            .invalidArgumentBuffer =
+                "The indirect dispatch argument buffer requires indirect usage and an in-bounds offset.",
+            .recordsOutOfBounds = "The indirect dispatch records exceed the argument buffer.",
+            .invalidCountBuffer =
+                "The indirect dispatch count buffer requires indirect usage and an aligned in-bounds uint32 count.",
+        };
 
     } // namespace
 
@@ -1432,17 +1571,19 @@ namespace rachis::metal
         {
             return std::unexpected(std::move(blocked.error()));
         }
-        if (desc.countBuffer.isValid() || desc.maxDispatchCount > 1)
-        {
-            return std::unexpected(unsupportedOperation("dispatchIndirect"));
-        }
-        if (auto validated = metalValidateIndirectDispatchRecordLayout(desc); !validated)
+        const auto layout = metalIndirectRecordLayout(desc, desc.maxDispatchCount, sizeof(DispatchIndirectArguments));
+        if (auto validated = metalValidateIndirectRecordLayout(layout, kMetalDispatchRecordMessages); !validated)
         {
             return validated;
         }
+        auto pipelines = metalClampPipelinesFor(mutex_, native_, layout);
+        if (!pipelines)
+        {
+            return std::unexpected(std::move(pipelines.error()));
+        }
         std::uint64_t deviceToken = 0;
         id<MTLDevice> device = nil;
-        MetalIndirectDispatchArgument argument{};
+        MetalResolvedIndirectRecords records{};
         {
             std::scoped_lock const lock(mutex_);
             if (native_ == nullptr)
@@ -1452,12 +1593,12 @@ namespace rachis::metal
             }
             deviceToken = native_->deviceToken;
             device = native_->device;
-            auto resolved = metalResolveIndirectDispatchArgument(*native_, desc);
+            auto resolved = metalResolveIndirectRecords(*native_, layout, kMetalDispatchRecordMessages);
             if (!resolved)
             {
                 return std::unexpected(std::move(resolved.error()));
             }
-            argument = std::move(*resolved);
+            records = std::move(*resolved);
         }
         auto* native = asMetalCommand(commandBuffer, deviceToken);
         if (native == nullptr)
@@ -1471,11 +1612,36 @@ namespace rachis::metal
         {
             return validated;
         }
-        if (desc.maxDispatchCount == 0)
+        if (layout.maxRecords == 0)
         {
             return {};
         }
-        return metalEncodeIndirectDispatch(*native, device, *entry, argument, desc.argumentOffset);
+        if (auto kept = metalRetainIndirectRecords(*native, *entry, records); !kept)
+        {
+            return kept;
+        }
+        if (auto prepared = native->ensureComputeEncoder(); !prepared)
+        {
+            return prepared;
+        }
+        auto span = metalClampComputeRecords(device, *entry, *pipelines, layout, records);
+        if (!span)
+        {
+            return std::unexpected(std::move(span.error()));
+        }
+        const auto& pipeline = *entry->boundComputePipeline;
+        if (auto applied = metalApplyComputeDispatchState(device, *entry, pipeline); !applied)
+        {
+            return applied;
+        }
+        const auto& workgroup = pipeline.workgroup;
+        for (std::uint32_t record = 0; record < layout.maxRecords; ++record)
+        {
+            [entry->computeEncoder
+                dispatchThreadgroupsWithIndirectBuffer:span->firstAddress + span->stride * record
+                                 threadsPerThreadgroup:MTLSizeMake(workgroup.x, workgroup.y, workgroup.z)];
+        }
+        return {};
     }
 
     namespace
@@ -2998,6 +3164,63 @@ namespace rachis::metal
         return {};
     }
 
+    namespace
+    {
+
+        constexpr MetalIndirectRecordMessages kMetalDrawRecordMessages{
+            .invalidLayout =
+                "Indirect draw requires an argument buffer, aligned offsets, and a record-sized aligned stride.",
+            .invalidArgumentBuffer =
+                "The indirect draw argument buffer requires indirect usage and an in-bounds offset.",
+            .recordsOutOfBounds = "The indirect draw records exceed the argument buffer.",
+            .invalidCountBuffer =
+                "The indirect draw count buffer requires indirect usage and an aligned in-bounds uint32 count.",
+        };
+
+        struct MetalIndirectDrawInputs final
+        {
+            std::uint64_t deviceToken = 0;
+            __strong id<MTLDevice> device = nil;
+            MetalResolvedIndirectRecords records{};
+            MetalIndirectClampPipelines pipelines{};
+        };
+
+        [[nodiscard]] Result<MetalIndirectDrawInputs> metalAcquireIndirectDrawInputs(
+            std::mutex& deviceMutex,
+            const std::shared_ptr<MetalDeviceNative>& native,
+            const MetalIndirectRecordLayout& layout,
+            const MetalIndirectRecordMessages& messages,
+            std::string_view inactiveMessage)
+        {
+            if (auto validated = metalValidateIndirectRecordLayout(layout, messages); !validated)
+            {
+                return std::unexpected(std::move(validated.error()));
+            }
+            auto pipelines = metalClampPipelinesFor(deviceMutex, native, layout);
+            if (!pipelines)
+            {
+                return std::unexpected(std::move(pipelines.error()));
+            }
+            std::scoped_lock const lock(deviceMutex);
+            if (native == nullptr)
+            {
+                return std::unexpected(metalSelectionError(ErrorCode::invalidState, std::string{inactiveMessage}));
+            }
+            auto resolved = metalResolveIndirectRecords(*native, layout, messages);
+            if (!resolved)
+            {
+                return std::unexpected(std::move(resolved.error()));
+            }
+            return MetalIndirectDrawInputs{
+                .deviceToken = native->deviceToken,
+                .device = native->device,
+                .records = std::move(*resolved),
+                .pipelines = std::move(*pipelines),
+            };
+        }
+
+    } // namespace
+
     Status MetalDevice::drawIndirect(detail::BackendCommandBuffer& commandBuffer, const IndirectDrawDesc& desc)
     {
         const MetalAutoreleasePool autoreleasePool;
@@ -3005,50 +3228,14 @@ namespace rachis::metal
         {
             return std::unexpected(std::move(blocked.error()));
         }
-        if (desc.countBuffer.isValid() || desc.maxDrawCount > 1)
+        const auto layout = metalIndirectRecordLayout(desc, desc.maxDrawCount, sizeof(DrawIndirectArguments));
+        auto inputs = metalAcquireIndirectDrawInputs(
+            mutex_, native_, layout, kMetalDrawRecordMessages, "Metal drawIndirect requires an active device.");
+        if (!inputs)
         {
-            return std::unexpected(unsupportedOperation("drawIndirect"));
+            return std::unexpected(std::move(inputs.error()));
         }
-        constexpr std::uint32_t recordSize = sizeof(DrawIndirectArguments);
-        const std::uint32_t stride = desc.stride == 0 ? recordSize : desc.stride;
-        if (!desc.argumentBuffer.isValid() || desc.argumentOffset % indirectArgumentAlignment != 0 ||
-            stride < recordSize || stride % indirectArgumentAlignment != 0)
-        {
-            return std::unexpected(metalSelectionError(
-                ErrorCode::invalidArgument,
-                "Indirect draw requires an argument buffer, aligned offsets, and an aligned 16-byte record."));
-        }
-        std::uint64_t deviceToken = 0;
-        id<MTLDevice> device = nil;
-        id<MTLBuffer> argument = nil;
-        std::shared_ptr<void> argumentOwner;
-        {
-            std::scoped_lock const lock(mutex_);
-            if (native_ == nullptr)
-            {
-                return std::unexpected(
-                    metalSelectionError(ErrorCode::invalidState, "Metal drawIndirect requires an active device."));
-            }
-            deviceToken = native_->deviceToken;
-            device = native_->device;
-            auto* record = native_->buffers.find(desc.argumentBuffer);
-            if (record == nullptr || record->buffer == nil || !hasAny(record->desc.usage, BufferUsage::indirect) ||
-                desc.argumentOffset > record->desc.size)
-            {
-                return std::unexpected(metalSelectionError(
-                    ErrorCode::invalidArgument,
-                    "The indirect draw argument buffer requires indirect usage and an in-bounds offset."));
-            }
-            if (desc.maxDrawCount != 0 &&
-                static_cast<std::uint64_t>(recordSize) > record->desc.size - desc.argumentOffset)
-            {
-                return std::unexpected(metalSelectionError(ErrorCode::invalidArgument,
-                                                           "The indirect draw records exceed the argument buffer."));
-            }
-            argument = record->buffer;
-            argumentOwner = record->owner;
-        }
-        auto* native = asMetalCommand(commandBuffer, deviceToken);
+        auto* native = asMetalCommand(commandBuffer, inputs->deviceToken);
         if (native == nullptr)
         {
             return std::unexpected(metalSelectionError(ErrorCode::invalidArgument,
@@ -3069,23 +3256,28 @@ namespace rachis::metal
                 ErrorCode::invalidState,
                 "Draw requires complete rendering, pipeline, binding, vertex, viewport, and scissor state."));
         }
-        if (desc.maxDrawCount == 0 || metalDrawScissoredOut(*entry, *pipeline))
+        if (layout.maxRecords == 0 || metalDrawScissoredOut(*entry, *pipeline))
         {
             return {};
         }
-        auto kept = retainMetalApplicationResource(*native, argumentOwner);
-        if (!kept)
+        if (auto kept = metalRetainIndirectRecords(*native, *entry, inputs->records); !kept)
         {
             return kept;
         }
-        auto applied = metalApplyGraphicsDrawState(device, *entry, *pipeline);
-        if (!applied)
+        auto span = metalClampRenderRecords(inputs->device, *entry, inputs->pipelines, layout, inputs->records, 1, 1);
+        if (!span)
+        {
+            return std::unexpected(std::move(span.error()));
+        }
+        if (auto applied = metalApplyGraphicsDrawState(inputs->device, *entry, *pipeline); !applied)
         {
             return applied;
         }
-        metalRetainResidency(*entry, argument);
-        [entry->renderEncoder drawPrimitives:metalPrimitiveType(pipeline->graphicsState->topology)
-                              indirectBuffer:argument.gpuAddress + desc.argumentOffset];
+        const auto primitive = metalPrimitiveType(pipeline->graphicsState->topology);
+        for (std::uint32_t record = 0; record < layout.maxRecords; ++record)
+        {
+            [entry->renderEncoder drawPrimitives:primitive indirectBuffer:span->firstAddress + span->stride * record];
+        }
         return {};
     }
 
@@ -3096,50 +3288,14 @@ namespace rachis::metal
         {
             return std::unexpected(std::move(blocked.error()));
         }
-        if (desc.countBuffer.isValid() || desc.maxDrawCount > 1)
+        const auto layout = metalIndirectRecordLayout(desc, desc.maxDrawCount, sizeof(DrawIndexedIndirectArguments));
+        auto inputs = metalAcquireIndirectDrawInputs(
+            mutex_, native_, layout, kMetalDrawRecordMessages, "Metal drawIndexedIndirect requires an active device.");
+        if (!inputs)
         {
-            return std::unexpected(unsupportedOperation("drawIndexedIndirect"));
+            return std::unexpected(std::move(inputs.error()));
         }
-        constexpr std::uint32_t recordSize = sizeof(DrawIndexedIndirectArguments);
-        const std::uint32_t stride = desc.stride == 0 ? recordSize : desc.stride;
-        if (!desc.argumentBuffer.isValid() || desc.argumentOffset % indirectArgumentAlignment != 0 ||
-            stride < recordSize || stride % indirectArgumentAlignment != 0)
-        {
-            return std::unexpected(metalSelectionError(
-                ErrorCode::invalidArgument,
-                "Indexed indirect draw requires an argument buffer, aligned offsets, and an aligned 20-byte record."));
-        }
-        std::uint64_t deviceToken = 0;
-        id<MTLDevice> device = nil;
-        id<MTLBuffer> argument = nil;
-        std::shared_ptr<void> argumentOwner;
-        {
-            std::scoped_lock const lock(mutex_);
-            if (native_ == nullptr)
-            {
-                return std::unexpected(metalSelectionError(ErrorCode::invalidState,
-                                                           "Metal drawIndexedIndirect requires an active device."));
-            }
-            deviceToken = native_->deviceToken;
-            device = native_->device;
-            auto* record = native_->buffers.find(desc.argumentBuffer);
-            if (record == nullptr || record->buffer == nil || !hasAny(record->desc.usage, BufferUsage::indirect) ||
-                desc.argumentOffset > record->desc.size)
-            {
-                return std::unexpected(metalSelectionError(
-                    ErrorCode::invalidArgument,
-                    "The indexed indirect argument buffer requires indirect usage and an in-bounds offset."));
-            }
-            if (desc.maxDrawCount != 0 &&
-                static_cast<std::uint64_t>(recordSize) > record->desc.size - desc.argumentOffset)
-            {
-                return std::unexpected(metalSelectionError(
-                    ErrorCode::invalidArgument, "The indexed indirect draw records exceed the argument buffer."));
-            }
-            argument = record->buffer;
-            argumentOwner = record->owner;
-        }
-        auto* native = asMetalCommand(commandBuffer, deviceToken);
+        auto* native = asMetalCommand(commandBuffer, inputs->deviceToken);
         if (native == nullptr)
         {
             return std::unexpected(metalSelectionError(ErrorCode::invalidArgument,
@@ -3164,30 +3320,37 @@ namespace rachis::metal
         {
             return restart;
         }
-        if (desc.maxDrawCount == 0 || metalDrawScissoredOut(*entry, *pipeline))
+        if (layout.maxRecords == 0 || metalDrawScissoredOut(*entry, *pipeline))
         {
             return {};
         }
-        auto kept = retainMetalApplicationResource(*native, argumentOwner);
-        if (!kept)
+        if (auto kept = metalRetainIndirectRecords(*native, *entry, inputs->records); !kept)
         {
             return kept;
         }
-        auto applied = metalApplyGraphicsDrawState(device, *entry, *pipeline);
-        if (!applied)
+        auto span = metalClampRenderRecords(inputs->device, *entry, inputs->pipelines, layout, inputs->records, 1, 1);
+        if (!span)
+        {
+            return std::unexpected(std::move(span.error()));
+        }
+        if (auto applied = metalApplyGraphicsDrawState(inputs->device, *entry, *pipeline); !applied)
         {
             return applied;
         }
-        metalRetainResidency(*entry, argument);
         const auto remaining = entry->indexBuffer.size;
         const auto indexStride = entry->indexFormat == IndexFormat::uint16 ? 2U : 4U;
         const auto alignedRemaining = remaining - (remaining % indexStride);
-        [entry->renderEncoder
-            drawIndexedPrimitives:metalPrimitiveType(pipeline->graphicsState->topology)
-                        indexType:entry->indexFormat == IndexFormat::uint16 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32
-                      indexBuffer:entry->indexBuffer.buffer.gpuAddress + entry->indexBuffer.offset
-                indexBufferLength:static_cast<NSUInteger>(alignedRemaining)
-                   indirectBuffer:argument.gpuAddress + desc.argumentOffset];
+        const auto primitive = metalPrimitiveType(pipeline->graphicsState->topology);
+        const auto indexType = entry->indexFormat == IndexFormat::uint16 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32;
+        const auto indexAddress = entry->indexBuffer.buffer.gpuAddress + entry->indexBuffer.offset;
+        for (std::uint32_t record = 0; record < layout.maxRecords; ++record)
+        {
+            [entry->renderEncoder drawIndexedPrimitives:primitive
+                                              indexType:indexType
+                                            indexBuffer:indexAddress
+                                      indexBufferLength:static_cast<NSUInteger>(alignedRemaining)
+                                         indirectBuffer:span->firstAddress + span->stride * record];
+        }
         return {};
     }
 
@@ -3287,57 +3450,23 @@ namespace rachis::metal
         {
             return std::unexpected(unsupportedOperation("dispatchMeshIndirect"));
         }
-        constexpr std::uint32_t recordSize = sizeof(DispatchIndirectArguments);
-        const std::uint32_t stride = desc.stride == 0 ? recordSize : desc.stride;
-        if (!desc.argumentBuffer.isValid() || desc.argumentOffset % indirectArgumentAlignment != 0 ||
-            stride < recordSize || stride % indirectArgumentAlignment != 0 ||
-            (!desc.countBuffer.isValid() && desc.countOffset != 0))
+        constexpr MetalIndirectRecordMessages messages{
+            .invalidLayout =
+                "Indirect mesh dispatch requires an argument buffer, aligned offsets, and an aligned 12-byte record.",
+            .invalidArgumentBuffer =
+                "The mesh-dispatch argument buffer requires indirect usage and an in-bounds offset.",
+            .recordsOutOfBounds = "The indirect mesh-dispatch records exceed the argument buffer.",
+            .invalidCountBuffer =
+                "The indirect mesh count buffer requires indirect usage and an aligned in-bounds uint32 count.",
+        };
+        const auto layout = metalIndirectRecordLayout(desc, desc.maxDispatchCount, sizeof(DispatchIndirectArguments));
+        auto inputs = metalAcquireIndirectDrawInputs(
+            mutex_, native_, layout, messages, "Metal dispatchMeshIndirect requires an active device.");
+        if (!inputs)
         {
-            return std::unexpected(metalSelectionError(
-                ErrorCode::invalidArgument,
-                "Indirect mesh dispatch requires an argument buffer, aligned offsets, and an aligned 12-byte record."));
+            return std::unexpected(std::move(inputs.error()));
         }
-        if (desc.countBuffer.isValid() && !capabilities_.drawIndirectCount)
-        {
-            return std::unexpected(unsupportedOperation("dispatchMeshIndirect with a count buffer"));
-        }
-        if (desc.maxDispatchCount > 1 && !capabilities_.multiDrawIndirect)
-        {
-            return std::unexpected(unsupportedOperation("dispatchMeshIndirect with more than one record"));
-        }
-        std::uint64_t deviceToken = 0;
-        id<MTLDevice> device = nil;
-        id<MTLBuffer> argument = nil;
-        std::shared_ptr<void> argumentOwner;
-        {
-            std::scoped_lock const lock(mutex_);
-            if (native_ == nullptr)
-            {
-                return std::unexpected(metalSelectionError(ErrorCode::invalidState,
-                                                           "Metal dispatchMeshIndirect requires an active device."));
-            }
-            deviceToken = native_->deviceToken;
-            device = native_->device;
-            auto* record = native_->buffers.find(desc.argumentBuffer);
-            if (record == nullptr || record->buffer == nil || !hasAny(record->desc.usage, BufferUsage::indirect) ||
-                desc.argumentOffset > record->desc.size)
-            {
-                return std::unexpected(metalSelectionError(
-                    ErrorCode::invalidArgument,
-                    "The mesh-dispatch argument buffer requires indirect usage and an in-bounds offset."));
-            }
-            const auto available = record->desc.size - desc.argumentOffset;
-            if (desc.maxDispatchCount != 0 &&
-                (available < recordSize ||
-                 static_cast<std::uint64_t>(desc.maxDispatchCount - 1U) > (available - recordSize) / stride))
-            {
-                return std::unexpected(metalSelectionError(
-                    ErrorCode::invalidArgument, "The indirect mesh-dispatch records exceed the argument buffer."));
-            }
-            argument = record->buffer;
-            argumentOwner = record->owner;
-        }
-        auto* native = asMetalCommand(commandBuffer, deviceToken);
+        auto* native = asMetalCommand(commandBuffer, inputs->deviceToken);
         if (native == nullptr)
         {
             return std::unexpected(metalSelectionError(ErrorCode::invalidArgument,
@@ -3353,26 +3482,32 @@ namespace rachis::metal
                                                        "Indirect mesh dispatch requires complete rendering, "
                                                        "mesh-pipeline, binding, viewport, and scissor state."));
         }
-        if (desc.maxDispatchCount == 0 || metalDrawScissoredOut(*entry, *pipeline))
+        if (layout.maxRecords == 0 || metalDrawScissoredOut(*entry, *pipeline))
         {
             return {};
         }
-        auto kept = retainMetalApplicationResource(*native, argumentOwner);
-        if (!kept)
+        if (auto kept = metalRetainIndirectRecords(*native, *entry, inputs->records); !kept)
         {
             return kept;
         }
-        auto applied = metalApplyGraphicsDrawState(device, *entry, *pipeline);
-        if (!applied)
+        auto span = metalClampRenderRecords(inputs->device,
+                                            *entry,
+                                            inputs->pipelines,
+                                            layout,
+                                            inputs->records,
+                                            0,
+                                            sizeof(DispatchIndirectArguments) / 4U);
+        if (!span)
+        {
+            return std::unexpected(std::move(span.error()));
+        }
+        if (auto applied = metalApplyGraphicsDrawState(inputs->device, *entry, *pipeline); !applied)
         {
             return applied;
         }
-        metalRetainResidency(*entry, argument);
-        for (std::uint32_t record = 0; record < desc.maxDispatchCount; ++record)
+        for (std::uint32_t record = 0; record < layout.maxRecords; ++record)
         {
-            const auto address =
-                argument.gpuAddress + desc.argumentOffset + static_cast<std::uint64_t>(record) * stride;
-            [entry->renderEncoder drawMeshThreadgroupsWithIndirectBuffer:address
+            [entry->renderEncoder drawMeshThreadgroupsWithIndirectBuffer:span->firstAddress + span->stride * record
                                              threadsPerObjectThreadgroup:pipeline->objectThreadgroupSize
                                                threadsPerMeshThreadgroup:pipeline->meshThreadgroupSize];
         }

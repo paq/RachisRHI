@@ -271,6 +271,7 @@ namespace rachis::metal
         entry.graphicsPushConstantsDirty = true;
         entry.activeGraphicsPushSlice = {};
         entry.pushConstantPageIndex = 0;
+        entry.indirectScratchBuffers.clear();
         entry.pushConstantPageOffset = 0;
         entry.boundComputePipeline.reset();
         entry.boundGraphicsPipeline.reset();
