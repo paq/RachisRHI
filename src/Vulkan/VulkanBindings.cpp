@@ -1546,6 +1546,24 @@ namespace rachis::vulkan
             return dynamicBuffers;
         }
 
+        [[nodiscard]] std::shared_ptr<const std::vector<VulkanAccelerationStructureUse>>
+        collectAccelerationStructureUses(const std::vector<VulkanBindingManager::BindingSlot>& slots)
+        {
+            std::vector<VulkanAccelerationStructureUse> uses;
+            for (const auto& slot : slots)
+            {
+                if (slot.type == BindingType::accelerationStructure && slot.accelerationStructureUse.version != nullptr)
+                {
+                    uses.push_back(slot.accelerationStructureUse);
+                }
+            }
+            if (uses.empty())
+            {
+                return nullptr;
+            }
+            return std::make_shared<const std::vector<VulkanAccelerationStructureUse>>(std::move(uses));
+        }
+
         [[nodiscard]] std::vector<VulkanBindingManager::BindingSlot> makeSlots(
             const std::vector<BindingLayoutEntry>& entries, std::uint32_t variableDescriptorCount)
         {
@@ -1845,6 +1863,7 @@ namespace rachis::vulkan
         version->versionLease = std::move(versionLease);
         version->slots = std::make_shared<std::vector<BindingSlot>>(std::move(slots));
         version->dynamicBuffers = collectDynamicBuffers(*version->slots);
+        version->accelerationStructureUses = collectAccelerationStructureUses(*version->slots);
         version->variableDescriptorCount = variableDescriptorCount;
         return version;
     }
@@ -2224,6 +2243,7 @@ namespace rachis::vulkan
         version->versionLease = currentVersion.versionLease;
         version->slots = currentVersion.slots;
         version->dynamicBuffers = currentVersion.dynamicBuffers;
+        version->accelerationStructureUses = currentVersion.accelerationStructureUses;
         version->variableDescriptorCount = currentVersion.variableDescriptorCount;
 
         std::vector<BindingSlot> superseded;
@@ -2619,19 +2639,6 @@ namespace rachis::vulkan
         auto owner = retainResources ? std::shared_ptr<void>(record.version)
                                      : std::shared_ptr<void>(record.version->versionLease);
         native.commandUse = VulkanCommandUse(std::move(counter), std::move(owner));
-        if (record.layout != nullptr &&
-            std::ranges::any_of(record.layout->entries, [](const BindingLayoutEntry& entry) {
-                return entry.type == BindingType::accelerationStructure;
-            }))
-        {
-            for (const auto& slot : *record.version->slots)
-            {
-                if (slot.type == BindingType::accelerationStructure && slot.accelerationStructureUse.version != nullptr)
-                {
-                    native.accelerationStructureUses.push_back(slot.accelerationStructureUse);
-                }
-            }
-        }
         return native;
     }
 
@@ -2646,6 +2653,10 @@ namespace rachis::vulkan
                              : VK_NULL_HANDLE,
             .dynamicBufferCount = record.layout != nullptr ? record.layout->dynamicBufferCount : 0,
             .dynamicBuffers = version->dynamicBuffers,
+            .accelerationStructureUses =
+                version->accelerationStructureUses != nullptr
+                    ? std::span<const VulkanAccelerationStructureUse>(*version->accelerationStructureUses)
+                    : std::span<const VulkanAccelerationStructureUse>{},
         };
     }
 

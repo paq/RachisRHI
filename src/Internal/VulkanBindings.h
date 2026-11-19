@@ -77,7 +77,7 @@ namespace rachis::vulkan
         VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
         std::uint32_t dynamicBufferCount = 0;
         std::span<const VulkanDynamicBufferBinding> dynamicBuffers = {};
-        std::vector<VulkanAccelerationStructureUse> accelerationStructureUses = {};
+        std::span<const VulkanAccelerationStructureUse> accelerationStructureUses = {};
     };
 
     struct VulkanNativePipelineLayout final
@@ -251,6 +251,7 @@ namespace rachis::vulkan
             std::vector<VulkanDynamicBufferBinding> dynamicBuffers;
             std::uint32_t variableDescriptorCount = 0;
             std::shared_ptr<BindingPoolVersionLease> versionLease;
+            std::shared_ptr<const std::vector<VulkanAccelerationStructureUse>> accelerationStructureUses;
             std::vector<BindingSlot> superseded;
             std::shared_ptr<BindingSetVersion> next;
         };
