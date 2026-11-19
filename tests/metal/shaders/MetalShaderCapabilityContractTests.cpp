@@ -22,10 +22,8 @@ namespace
 {
 
     constexpr std::array<std::uint32_t, 6> subgroupSizes{4, 8, 16, 32, 64, 128};
-    constexpr std::uint32_t laneCountGroupWidth = 128;
+    constexpr std::uint32_t anySizeGroupWidth = 128;
     constexpr std::uint32_t laneCountGroupCount = 2;
-    constexpr std::uint32_t laneCountInvocations = laneCountGroupWidth * laneCountGroupCount;
-    constexpr std::uint64_t laneCountBytes = std::uint64_t{laneCountInvocations} * 2U * sizeof(std::uint32_t);
 
     using LaneCounts = std::vector<std::array<std::uint32_t, 2>>;
 
@@ -63,16 +61,19 @@ namespace
 
     [[nodiscard]] rachis::Result<LaneCounts> runLaneCountKernel(rachis::Device& device,
                                                                 std::span<const std::byte> bytecode,
-                                                                std::uint32_t requiredSubgroupSize)
+                                                                std::uint32_t requiredSubgroupSize,
+                                                                std::uint32_t groupWidth)
     {
         REQUIRE_FALSE(bytecode.empty());
+        const std::uint32_t laneCountInvocations = groupWidth * laneCountGroupCount;
+        const std::uint64_t laneCountBytes = std::uint64_t{laneCountInvocations} * 2U * sizeof(std::uint32_t);
         auto shader = device.createShaderModule({
             .stage = rachis::ShaderStage::compute,
             .bytecode = bytecode,
             .entryPoint = "main",
             .label = "Metal subgroup size shader",
             .shaderInterface = rachis::test::computeShaderInterface(
-                {laneCountGroupWidth, 1, 1},
+                {groupWidth, 1, 1},
                 std::array{rachis::ShaderBindingRequirement{0, 0, rachis::ShaderResourceType::storageBuffer, 1}}),
         });
         if (!shader)
@@ -183,7 +184,7 @@ TEST_CASE("Metal compute pipelines accept only a required subgroup size of 32 an
     for (const auto size : subgroupSizes)
     {
         CAPTURE(size);
-        auto lanes = runLaneCountKernel(device, subgroupSizeShader(size), size);
+        auto lanes = runLaneCountKernel(device, subgroupSizeShader(size), size, size);
         if (size != 32)
         {
             REQUIRE_FALSE(lanes.has_value());
@@ -201,7 +202,8 @@ TEST_CASE("Metal compute pipelines accept only a required subgroup size of 32 an
         }
     }
 
-    auto anyShader = runLaneCountKernel(device, rachis_shaders::SubgroupSizeAny(rachis::Backend::metal), 32);
+    auto anyShader =
+        runLaneCountKernel(device, rachis_shaders::SubgroupSizeAny(rachis::Backend::metal), 32, anySizeGroupWidth);
     if (!anyShader)
     {
         UNSCOPED_INFO(anyShader.error().message);

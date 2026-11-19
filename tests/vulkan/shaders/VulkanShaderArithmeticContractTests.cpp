@@ -39,10 +39,8 @@ namespace
     constexpr std::uint64_t atomicSum = (64U * 65U) / 2U;
 
     constexpr std::array<std::uint32_t, 6> subgroupSizes{4, 8, 16, 32, 64, 128};
-    constexpr std::uint32_t laneCountGroupWidth = 128;
+    constexpr std::uint32_t anySizeGroupWidth = 128;
     constexpr std::uint32_t laneCountGroupCount = 2;
-    constexpr std::uint32_t laneCountInvocations = laneCountGroupWidth * laneCountGroupCount;
-    constexpr std::uint64_t laneCountBytes = std::uint64_t{laneCountInvocations} * 2U * sizeof(std::uint32_t);
 
     using LaneCounts = std::vector<std::array<std::uint32_t, 2>>;
 
@@ -70,16 +68,19 @@ namespace
 
     [[nodiscard]] rachis::Result<LaneCounts> runLaneCountKernel(rachis::Device& device,
                                                                 std::span<const std::byte> bytecode,
-                                                                std::uint32_t requiredSubgroupSize)
+                                                                std::uint32_t requiredSubgroupSize,
+                                                                std::uint32_t groupWidth)
     {
         REQUIRE_FALSE(bytecode.empty());
+        const std::uint32_t laneCountInvocations = groupWidth * laneCountGroupCount;
+        const std::uint64_t laneCountBytes = std::uint64_t{laneCountInvocations} * 2U * sizeof(std::uint32_t);
         auto shader = device.createShaderModule({
             .stage = rachis::ShaderStage::compute,
             .bytecode = bytecode,
             .entryPoint = "main",
             .label = "Vulkan subgroup size shader",
             .shaderInterface = rachis::test::computeShaderInterface(
-                {laneCountGroupWidth, 1, 1},
+                {groupWidth, 1, 1},
                 std::array{rachis::ShaderBindingRequirement{0, 0, rachis::ShaderResourceType::storageBuffer, 1}}),
         });
         if (!shader)
@@ -1120,7 +1121,7 @@ TEST_CASE("Vulkan compute pipelines that require a subgroup size run full subgro
     const auto subgroup = capabilities.subgroup;
     if (!rachis::hasAny(subgroup.requiredSizeStages, rachis::ShaderStage::compute))
     {
-        auto rejected = runLaneCountKernel(device, subgroupSizeShader(32), 32);
+        auto rejected = runLaneCountKernel(device, subgroupSizeShader(32), 32, 32);
         REQUIRE_FALSE(rejected.has_value());
         CHECK(rejected.error().code == rachis::ErrorCode::unsupported);
         SKIP("This Vulkan device does not accept a required subgroup size for compute pipelines.");
@@ -1132,7 +1133,7 @@ TEST_CASE("Vulkan compute pipelines that require a subgroup size run full subgro
     for (const auto size : subgroupSizes)
     {
         CAPTURE(size);
-        auto lanes = runLaneCountKernel(device, subgroupSizeShader(size), size);
+        auto lanes = runLaneCountKernel(device, subgroupSizeShader(size), size, size);
         if (size < subgroup.minSize || size > subgroup.maxSize)
         {
             REQUIRE_FALSE(lanes.has_value());
@@ -1152,8 +1153,9 @@ TEST_CASE("Vulkan compute pipelines that require a subgroup size run full subgro
     }
     CHECK(testedSizes > 0);
 
-    const auto anySize = std::min(subgroup.maxSize, laneCountGroupWidth);
-    auto anyShader = runLaneCountKernel(device, rachis_shaders::SubgroupSizeAny(rachis::Backend::vulkan), anySize);
+    const auto anySize = std::min(subgroup.maxSize, anySizeGroupWidth);
+    auto anyShader = runLaneCountKernel(
+        device, rachis_shaders::SubgroupSizeAny(rachis::Backend::vulkan), anySize, anySizeGroupWidth);
     if (!anyShader)
     {
         UNSCOPED_INFO(anyShader.error().message);

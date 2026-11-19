@@ -1857,6 +1857,7 @@ if(rachis_build_tests)
     set(rachis_c_abi_binding_array_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/CAbiBindingArray.hlsl")
     set(rachis_c_abi_indirect_dispatch_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/CAbiIndirectDispatch.hlsl")
     set(rachis_c_abi_subgroup_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/SubgroupSize.hlsl")
+    set(rachis_c_abi_subgroup_sizes 4 8 16 32 64 128)
     # Each entry is <entry point>:<output stage name>:<dxc profile>:<Slang stage> for CAbiDrawIndex.hlsl.
     set(rachis_c_abi_draw_index_entries
         indirectVertex:vertex:vs_6_0:vertex
@@ -1939,8 +1940,9 @@ if(rachis_build_tests)
         list(APPEND rachis_c_abi_shader_outputs
             "${rachis_c_abi_shader_dir}/CAbiBindingArray.pixel.dxil"
             "${rachis_c_abi_shader_dir}/CAbiIndirectDispatch.dxil")
-        # Direct3D 12 reads the subgroup size from [WaveSize(N)] in the shader, so each size has its own shader.
-        foreach(size IN ITEMS 4 8 16 32 64 128)
+        # Each subgroup size has its own shader with a one-subgroup workgroup, which every device can run at that
+        # size; Direct3D 12 also reads the size from its [WaveSize(N)].
+        foreach(size IN ITEMS ${rachis_c_abi_subgroup_sizes})
             rachis_cook_dxc_dxil(
                 SOURCE "${rachis_c_abi_subgroup_source}"
                 ENTRY main
@@ -2038,17 +2040,20 @@ if(rachis_build_tests)
             OUTPUT "${rachis_c_abi_shader_dir}/CAbiIndirectDispatch.spv"
             COMMENT "Cooking Vulkan SPIR-V CAbiIndirectDispatch"
         )
-        rachis_cook_dxc_spirv(
-            SOURCE "${rachis_c_abi_subgroup_source}"
-            ENTRY main
-            PROFILE cs_6_0
-            OUTPUT "${rachis_c_abi_shader_dir}/CAbiSubgroupSize.spv"
-            COMMENT "Cooking Vulkan SPIR-V CAbiSubgroupSize"
-        )
+        foreach(size IN ITEMS ${rachis_c_abi_subgroup_sizes})
+            rachis_cook_dxc_spirv(
+                SOURCE "${rachis_c_abi_subgroup_source}"
+                ENTRY main
+                PROFILE cs_6_0
+                OUTPUT "${rachis_c_abi_shader_dir}/CAbiSubgroupSize${size}.spv"
+                DEFINES RACHIS_SUBGROUP_SIZE=${size}
+                COMMENT "Cooking Vulkan SPIR-V CAbiSubgroupSize${size}"
+            )
+            list(APPEND rachis_c_abi_shader_outputs "${rachis_c_abi_shader_dir}/CAbiSubgroupSize${size}.spv")
+        endforeach()
         list(APPEND rachis_c_abi_shader_outputs
             "${rachis_c_abi_shader_dir}/CAbiBindingArray.pixel.spv"
-            "${rachis_c_abi_shader_dir}/CAbiIndirectDispatch.spv"
-            "${rachis_c_abi_shader_dir}/CAbiSubgroupSize.spv")
+            "${rachis_c_abi_shader_dir}/CAbiIndirectDispatch.spv")
     endif()
     if(RACHIS_ENABLE_METAL)
         rachis_cook_slang_metallib(
@@ -2125,17 +2130,20 @@ if(rachis_build_tests)
             OUTPUT "${rachis_c_abi_shader_dir}/CAbiIndirectDispatch.metallib"
             COMMENT "Cooking Metal PNMS CAbiIndirectDispatch"
         )
-        rachis_cook_slang_metallib(
-            SOURCE "${rachis_c_abi_subgroup_source}"
-            ENTRY main
-            STAGE compute
-            OUTPUT "${rachis_c_abi_shader_dir}/CAbiSubgroupSize.metallib"
-            COMMENT "Cooking Metal PNMS CAbiSubgroupSize"
-        )
+        foreach(size IN ITEMS ${rachis_c_abi_subgroup_sizes})
+            rachis_cook_slang_metallib(
+                SOURCE "${rachis_c_abi_subgroup_source}"
+                ENTRY main
+                STAGE compute
+                OUTPUT "${rachis_c_abi_shader_dir}/CAbiSubgroupSize${size}.metallib"
+                DEFINES RACHIS_SUBGROUP_SIZE=${size}
+                COMMENT "Cooking Metal PNMS CAbiSubgroupSize${size}"
+            )
+            list(APPEND rachis_c_abi_shader_outputs "${rachis_c_abi_shader_dir}/CAbiSubgroupSize${size}.pnms")
+        endforeach()
         list(APPEND rachis_c_abi_shader_outputs
             "${rachis_c_abi_shader_dir}/CAbiBindingArray.pixel.pnms"
-            "${rachis_c_abi_shader_dir}/CAbiIndirectDispatch.pnms"
-            "${rachis_c_abi_shader_dir}/CAbiSubgroupSize.pnms")
+            "${rachis_c_abi_shader_dir}/CAbiIndirectDispatch.pnms")
     endif()
     if(rachis_c_abi_shader_outputs)
         add_custom_target(RachisCAbiShaders DEPENDS ${rachis_c_abi_shader_outputs})
@@ -2201,24 +2209,10 @@ if(rachis_build_tests)
                 RACHIS_CABI_DRAW_INDEX_PIXEL_PATH="${rachis_c_abi_shader_dir}/CAbiDrawIndex.pixel.${graphics_extension}"
                 RACHIS_CABI_BINDING_ARRAY_PIXEL_PATH="${rachis_c_abi_shader_dir}/CAbiBindingArray.pixel.${graphics_extension}"
                 RACHIS_CABI_INDIRECT_DISPATCH_PATH="${rachis_c_abi_shader_dir}/CAbiIndirectDispatch.${graphics_extension}")
-            # Direct3D 12 needs one subgroup-size shader per size, which declares [WaveSize(N)]; Vulkan and Metal
-            # take the size from the pipeline.
-            if(backend STREQUAL "RACHIS_BACKEND_D3D12")
-                target_compile_definitions(${target} PRIVATE
-                    RACHIS_CABI_SUBGROUP_SHADER_PREFIX="${rachis_c_abi_shader_dir}/CAbiSubgroupSize"
-                    RACHIS_CABI_SUBGROUP_SHADER_EXTENSION=".dxil"
-                    RACHIS_CABI_SUBGROUP_SIZE_IN_SHADER=1)
-            elseif(backend STREQUAL "RACHIS_BACKEND_VULKAN")
-                target_compile_definitions(${target} PRIVATE
-                    RACHIS_CABI_SUBGROUP_SHADER_PREFIX="${rachis_c_abi_shader_dir}/CAbiSubgroupSize"
-                    RACHIS_CABI_SUBGROUP_SHADER_EXTENSION=".spv"
-                    RACHIS_CABI_SUBGROUP_SIZE_IN_SHADER=0)
-            elseif(backend STREQUAL "RACHIS_BACKEND_METAL")
-                target_compile_definitions(${target} PRIVATE
-                    RACHIS_CABI_SUBGROUP_SHADER_PREFIX="${rachis_c_abi_shader_dir}/CAbiSubgroupSize"
-                    RACHIS_CABI_SUBGROUP_SHADER_EXTENSION=".pnms"
-                    RACHIS_CABI_SUBGROUP_SIZE_IN_SHADER=0)
-            endif()
+            # One subgroup-size shader per size, whose workgroup is one subgroup of that size.
+            target_compile_definitions(${target} PRIVATE
+                RACHIS_CABI_SUBGROUP_SHADER_PREFIX="${rachis_c_abi_shader_dir}/CAbiSubgroupSize"
+                RACHIS_CABI_SUBGROUP_SHADER_EXTENSION=".${graphics_extension}")
         endif()
         catch_discover_tests(${target} TEST_PREFIX "${target}."
             DISCOVERY_MODE PRE_TEST ADD_TAGS_AS_LABELS PROPERTIES TIMEOUT 60)
@@ -3296,8 +3290,8 @@ if(rachis_build_tests)
                 STAGE compute
                 SHADER_MODEL 6_6)
         endif()
-        # SubgroupSize<N> declares [WaveSize(N)] for Direct3D 12, where the shader carries the subgroup size;
-        # SubgroupSizeAny declares none.
+        # SubgroupSize<N> runs one subgroup of N lanes per workgroup and declares [WaveSize(N)] for Direct3D 12,
+        # where the shader carries the subgroup size; SubgroupSizeAny has 128 lanes and declares no size.
         foreach(size IN ITEMS 4 8 16 32 64 128)
             rachis_add_shader(RachisRHITests
                 NAME SubgroupSize${size}

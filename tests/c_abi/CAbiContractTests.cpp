@@ -2400,19 +2400,15 @@ TEST_CASE("C ABI compute pipelines run full subgroups of a required size",
         const auto size = capabilities.subgroup_min_size;
         constexpr std::uint32_t laneCountThreads = 128;
         REQUIRE(laneCountThreads % size == 0);
-        std::string path = RACHIS_CABI_SUBGROUP_SHADER_PREFIX;
-        if (RACHIS_CABI_SUBGROUP_SIZE_IN_SHADER != 0)
-        {
-            path += std::to_string(size);
-        }
-        path += RACHIS_CABI_SUBGROUP_SHADER_EXTENSION;
+        const std::string path =
+            RACHIS_CABI_SUBGROUP_SHADER_PREFIX + std::to_string(size) + RACHIS_CABI_SUBGROUP_SHADER_EXTENSION;
         std::ifstream input{path, std::ios::binary};
         const std::vector<char> laneBytecode{std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
         REQUIRE_FALSE(laneBytecode.empty());
         auto laneDesc = writeDesc;
         laneDesc.bytecode = laneBytecode.data();
         laneDesc.bytecode_size = laneBytecode.size();
-        laneDesc.workgroup_x = laneCountThreads;
+        laneDesc.workgroup_x = size;
         rachis_handle laneShader = 0;
         requireOk(rachis_shader_module_create(device.get(), &laneDesc, &laneShader, &error), error);
         pipelineDesc.shader = laneShader;
@@ -2454,7 +2450,7 @@ TEST_CASE("C ABI compute pipelines run full subgroups of a required size",
         requireOk(recordBarriers(device.get(), command, &toWrite, 1, nullptr, 0, error), error);
         requireOk(rachis_command_bind_compute_pipeline(device.get(), command, pipeline, &error), error);
         requireOk(rachis_command_bind_compute_set(device.get(), command, 0, set, &error), error);
-        requireOk(rachis_command_dispatch(device.get(), command, 1, 1, 1, &error), error);
+        requireOk(rachis_command_dispatch(device.get(), command, laneCountThreads / size, 1, 1, &error), error);
         const auto toCopy = bufferBarrier(lanes,
                                           RACHIS_STAGE_COMPUTE_SHADER,
                                           RACHIS_ACCESS_UNORDERED_ACCESS,
