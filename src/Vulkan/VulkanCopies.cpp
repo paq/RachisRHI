@@ -1451,7 +1451,6 @@ namespace rachis::vulkan
                         .index = cell,
                         .layout = TextureLayout::unorderedAccess,
                         .subresource = subresource,
-                        .entryLayoutUnknown = texture->shared,
                     });
                 }
                 if (transition)

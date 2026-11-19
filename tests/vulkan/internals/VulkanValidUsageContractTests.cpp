@@ -4950,7 +4950,7 @@ TEST_CASE("Vulkan texture barriers must name the current layout of every subreso
     REQUIRE(texture.has_value());
     REQUIRE(other.has_value());
     REQUIRE(shared.has_value());
-    resources.markTextureSharedForTesting(*shared);
+    resources.markTextureSharedForTesting(*shared, true);
 
     const auto record = [&](auto& commandBuffer, const rachis::TextureBarrier& barrier) {
         auto& native = static_cast<rachis::vulkan::VulkanCommandBuffer&>(*commandBuffer);
@@ -5066,7 +5066,7 @@ TEST_CASE("Vulkan texture barriers must name the current layout of every subreso
         REQUIRE(queueManager.submit(discardBatch, {}).has_value());
     }
 
-    SECTION("a shared texture's layout on entry is unknown, so only the record-time check applies")
+    SECTION("a shared texture's entry layout is unknown until a submitted barrier establishes it")
     {
         auto entry = acquire();
         REQUIRE(accepts(entry, layoutBarrier(*shared, TextureLayout::copyDestination, TextureLayout::shaderResource)));
@@ -5080,7 +5080,32 @@ TEST_CASE("Vulkan texture barriers must name the current layout of every subreso
         REQUIRE_FALSE(wrong.has_value());
         CHECK(wrong.error().code == rachis::ErrorCode::invalidState);
         std::array insideBatch{std::move(inside)};
-        REQUIRE(queueManager.submit(insideBatch, {}).has_value());
+        const auto rejected = queueManager.submit(insideBatch, {});
+        REQUIRE_FALSE(rejected.has_value());
+        CHECK(rejected.error().code == rachis::ErrorCode::invalidState);
+        CHECK(rejected.error().message.find("leaves it in shaderResource") != std::string::npos);
+
+        auto known = acquire();
+        REQUIRE(accepts(known, layoutBarrier(*shared, TextureLayout::shaderResource, TextureLayout::copySource)));
+        std::array knownBatch{std::move(known)};
+        REQUIRE(queueManager.submit(knownBatch, {}).has_value());
+    }
+
+    SECTION("a shared texture keeps the entry layout its first submitted barrier established")
+    {
+        resources.markTextureSharedForTesting(*other, false);
+        auto entry = acquire();
+        REQUIRE(accepts(entry, layoutBarrier(*other, TextureLayout::undefined, TextureLayout::common)));
+        std::array entryBatch{std::move(entry)};
+        REQUIRE(queueManager.submit(entryBatch, {}).has_value());
+
+        auto wrongEntry = acquire();
+        REQUIRE(accepts(wrongEntry, layoutBarrier(*other, TextureLayout::shaderResource, TextureLayout::copySource)));
+        std::array wrongBatch{std::move(wrongEntry)};
+        const auto rejected = queueManager.submit(wrongBatch, {});
+        REQUIRE_FALSE(rejected.has_value());
+        CHECK(rejected.error().code == rachis::ErrorCode::invalidState);
+        CHECK(rejected.error().message.find("leaves it in common") != std::string::npos);
     }
 
     SECTION("portable layouts that share a Vulkan layout are still told apart")
@@ -5404,6 +5429,45 @@ TEST_CASE("Vulkan storage clears and copies in one command buffer agree on the s
         std::array ordered{std::move(toStorage), std::move(cleared)};
         REQUIRE(fixture.queueManager.submit(ordered, {}).has_value());
         CHECK(fixture.mock.lastSubmittedCommands.size() == 2);
+    }
+}
+
+TEST_CASE("Vulkan storage clears check the entry layout of shared textures whose layout is known",
+          "[size:small][rhi][vulkan][vuid][layouts-mock][fill-and-clear]")
+{
+    using rachis::TextureLayout;
+    MockStorageClearFixture fixture;
+    {
+        auto initial = fixture.acquire();
+        REQUIRE(fixture.transition(initial, TextureLayout::undefined, TextureLayout::common));
+        REQUIRE(fixture.submit(std::move(initial)));
+    }
+
+    SECTION("a shared texture that a submitted barrier left in common")
+    {
+        fixture.resources.markTextureSharedForTesting(fixture.texture, false);
+        auto cleared = fixture.acquire();
+        REQUIRE(fixture.clear(cleared).has_value());
+        std::array batch{std::move(cleared)};
+        const auto rejected = fixture.queueManager.submit(batch, {});
+        REQUIRE_FALSE(rejected.has_value());
+        CHECK(rejected.error().code == rachis::ErrorCode::invalidState);
+        CHECK(rejected.error().message.find("leaves it in common") != std::string::npos);
+    }
+
+    SECTION("a shared texture that no submitted barrier has transitioned yet")
+    {
+        fixture.resources.markTextureSharedForTesting(fixture.texture, true);
+        auto cleared = fixture.acquire();
+        REQUIRE(fixture.clear(cleared).has_value());
+        REQUIRE(fixture.submit(std::move(cleared)));
+
+        auto established = fixture.acquire();
+        REQUIRE(fixture.transition(established, TextureLayout::unorderedAccess, TextureLayout::shaderResource));
+        REQUIRE(fixture.submit(std::move(established)));
+        auto wrong = fixture.acquire();
+        REQUIRE(fixture.clear(wrong).has_value());
+        CHECK_FALSE(fixture.submit(std::move(wrong)));
     }
 }
 

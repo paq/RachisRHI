@@ -139,6 +139,8 @@ namespace rachis::vulkan
         count,
     };
 
+    inline constexpr auto externallyUnknownTextureLayout = static_cast<TextureLayout>(0xFFU);
+
     inline constexpr std::size_t explicitResidencyPriorityCount = 4;
     inline constexpr std::size_t residencyPoolClassCount = static_cast<std::size_t>(ResidencyPoolClass::count);
 
@@ -461,7 +463,7 @@ namespace rachis::vulkan
                                               BufferHandle buffer,
                                               std::uint32_t value,
                                               std::vector<std::shared_ptr<void>>* retained = nullptr);
-        void markTextureSharedForTesting(TextureHandle texture) noexcept;
+        void markTextureSharedForTesting(TextureHandle texture, bool layoutUnknown) noexcept;
 #endif
 
     private:
@@ -669,7 +671,6 @@ namespace rachis::vulkan
             std::size_t index = 0;
             TextureLayout layout = TextureLayout::undefined;
             TextureSubresource subresource{};
-            bool entryLayoutUnknown = false;
         };
         struct LayoutRequirement final
         {

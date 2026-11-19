@@ -1481,8 +1481,9 @@ namespace rachis::vulkan
         }
         if (record.submittedPublicLayouts == nullptr)
         {
-            record.submittedPublicLayouts =
-                std::make_shared<std::vector<TextureLayout>>(record.submittedLayouts->size(), TextureLayout::undefined);
+            record.submittedPublicLayouts = std::make_shared<std::vector<TextureLayout>>(
+                record.submittedLayouts->size(),
+                record.shared ? externallyUnknownTextureLayout : TextureLayout::undefined);
         }
     }
 
@@ -1748,12 +1749,12 @@ namespace rachis::vulkan
         {
             for (const auto& entry : entries)
             {
-                if (entry.submittedPublic == nullptr || entry.entryLayoutUnknown)
+                if (entry.submittedPublic == nullptr)
                 {
                     continue;
                 }
                 const auto current = publicLayoutAt(entry.submittedPublic, entry.index);
-                if (current != entry.layout)
+                if (current != externallyUnknownTextureLayout && current != entry.layout)
                 {
                     return std::unexpected(barrierEntryLayoutMismatch(
                         entry.layout, current, entry.subresource, "the work submitted before it leaves it in"));
@@ -2210,7 +2211,6 @@ namespace rachis::vulkan
                             .index = cell,
                             .layout = layoutBefore,
                             .subresource = subresource,
-                            .entryLayoutUnknown = record.shared,
                         });
                     }
                     stageLayoutWrite(state,
@@ -2566,12 +2566,16 @@ namespace rachis::vulkan
     }
 
 #ifdef RACHIS_TESTING
-    void VulkanResourceAllocator::markTextureSharedForTesting(TextureHandle texture) noexcept
+    void VulkanResourceAllocator::markTextureSharedForTesting(TextureHandle texture, bool layoutUnknown) noexcept
     {
         const std::scoped_lock lock(mutex_);
         if (auto* record = textures_.find(texture); record != nullptr)
         {
             record->shared = true;
+            if (layoutUnknown && record->submittedPublicLayouts != nullptr)
+            {
+                std::ranges::fill(*record->submittedPublicLayouts, externallyUnknownTextureLayout);
+            }
         }
     }
 #endif
