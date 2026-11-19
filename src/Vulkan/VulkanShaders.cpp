@@ -602,6 +602,11 @@ namespace rachis::vulkan
         constexpr std::uint32_t spirvCapabilityMinLod = 42;
         constexpr std::uint32_t spirvCapabilityMultiViewport = 57;
         constexpr std::uint32_t spirvCapabilityGroupNonUniform = 61;
+        constexpr std::uint32_t spirvCapabilityRuntimeDescriptorArray = 5302;
+        constexpr std::uint32_t spirvCapabilityUniformBufferArrayNonUniformIndexing = 5306;
+        constexpr std::uint32_t spirvCapabilitySampledImageArrayNonUniformIndexing = 5307;
+        constexpr std::uint32_t spirvCapabilityStorageBufferArrayNonUniformIndexing = 5308;
+        constexpr std::uint32_t spirvCapabilityStorageImageArrayNonUniformIndexing = 5309;
         constexpr std::uint32_t spirvCapabilityGroupNonUniformArithmetic = 63;
         constexpr std::uint32_t spirvCapabilityDrawParameters = 4427;
         constexpr std::uint32_t spirvCapabilityStorageBuffer16BitAccess = 4433;
@@ -3617,6 +3622,11 @@ namespace rachis::vulkan
             bool imageGatherExtended = false;
             bool sampleRateShading = false;
             bool minLod = false;
+            bool runtimeDescriptorArray = false;
+            bool uniformBufferArrayNonUniformIndexing = false;
+            bool sampledImageArrayNonUniformIndexing = false;
+            bool storageBufferArrayNonUniformIndexing = false;
+            bool storageImageArrayNonUniformIndexing = false;
         };
 
         struct SpirvAtomicOperandTypes final
@@ -3667,6 +3677,21 @@ namespace rachis::vulkan
             case spirvCapabilityGroupNonUniform:
             case spirvCapabilityGroupNonUniformArithmetic:
                 requirements.subgroups = true;
+                break;
+            case spirvCapabilityRuntimeDescriptorArray:
+                requirements.runtimeDescriptorArray = true;
+                break;
+            case spirvCapabilityUniformBufferArrayNonUniformIndexing:
+                requirements.uniformBufferArrayNonUniformIndexing = true;
+                break;
+            case spirvCapabilitySampledImageArrayNonUniformIndexing:
+                requirements.sampledImageArrayNonUniformIndexing = true;
+                break;
+            case spirvCapabilityStorageBufferArrayNonUniformIndexing:
+                requirements.storageBufferArrayNonUniformIndexing = true;
+                break;
+            case spirvCapabilityStorageImageArrayNonUniformIndexing:
+                requirements.storageImageArrayNonUniformIndexing = true;
                 break;
             case spirvCapabilityGeometry:
                 requirements.geometry = true;
@@ -3938,6 +3963,21 @@ namespace rachis::vulkan
                 FeatureSupportCheck{
                     requirements.drawParameters && !features.shaderDrawParameters,
                     "SPIR-V DrawParameters capability requires the Vulkan shaderDrawParameters feature."},
+                FeatureSupportCheck{
+                    requirements.runtimeDescriptorArray && !features.runtimeDescriptorArray,
+                    "SPIR-V RuntimeDescriptorArray capability requires the Vulkan runtimeDescriptorArray feature."},
+                FeatureSupportCheck{requirements.uniformBufferArrayNonUniformIndexing &&
+                                        !features.uniformBufferArrayNonUniformIndexing,
+                                    "Non-uniform indexing of uniform-buffer arrays is not available on this device."},
+                FeatureSupportCheck{requirements.sampledImageArrayNonUniformIndexing &&
+                                        !features.sampledImageArrayNonUniformIndexing,
+                                    "Non-uniform indexing of sampled-texture arrays is not available on this device."},
+                FeatureSupportCheck{requirements.storageBufferArrayNonUniformIndexing &&
+                                        !features.storageBufferArrayNonUniformIndexing,
+                                    "Non-uniform indexing of storage-buffer arrays is not available on this device."},
+                FeatureSupportCheck{requirements.storageImageArrayNonUniformIndexing &&
+                                        !features.storageImageArrayNonUniformIndexing,
+                                    "Non-uniform indexing of storage-texture arrays is not available on this device."},
             };
             for (const auto& check : checks)
             {

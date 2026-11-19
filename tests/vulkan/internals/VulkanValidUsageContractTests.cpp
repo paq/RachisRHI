@@ -4813,7 +4813,7 @@ TEST_CASE("Vulkan publishes variable-count limits that sampler, buffer and textu
     CHECK(withoutVariableCounts.limits.maxVariableBufferDescriptors == 0);
     CHECK(withoutVariableCounts.limits.maxVariableSamplerDescriptors == 0);
 }
-TEST_CASE("Vulkan publishes update-after-bind binding arrays only with every required descriptor-indexing feature",
+TEST_CASE("Vulkan publishes update-after-bind binding arrays with exactly the update-after-bind features they need",
           "[size:small][rhi][vulkan][vuid][bindings-mock]")
 {
     rachis::vulkan::VulkanPhysicalDeviceRecord record{};
@@ -4843,6 +4843,22 @@ TEST_CASE("Vulkan publishes update-after-bind binding arrays only with every req
         missing.*requirements[index] = false;
         CHECK_FALSE(
             rachis::vulkan::publishVulkanCapabilities(instanceTable, missing, false).updateAfterBindBindingArrays);
+    }
+
+    const std::array shaderIndexing{
+        &rachis::vulkan::VulkanPhysicalDeviceRecord::runtimeDescriptorArray,
+        &rachis::vulkan::VulkanPhysicalDeviceRecord::shaderStorageBufferArrayNonUniformIndexing,
+        &rachis::vulkan::VulkanPhysicalDeviceRecord::shaderSampledImageArrayNonUniformIndexing,
+        &rachis::vulkan::VulkanPhysicalDeviceRecord::shaderStorageImageArrayNonUniformIndexing,
+    };
+    for (std::size_t index = 0; index < shaderIndexing.size(); ++index)
+    {
+        CAPTURE(index);
+        auto withoutIndexing = record;
+        withoutIndexing.*shaderIndexing[index] = false;
+        const auto published = rachis::vulkan::publishVulkanCapabilities(instanceTable, withoutIndexing, false);
+        CHECK(published.updateAfterBindBindingArrays);
+        CHECK_FALSE(published.partiallyBoundBindingArrays);
     }
 }
 

@@ -71,6 +71,11 @@ namespace rachis::vulkan
         bool storagePushConstant16 = false;
         bool storageInputOutput16 = false;
         bool shaderDrawParameters = false;
+        bool runtimeDescriptorArray = false;
+        bool uniformBufferArrayNonUniformIndexing = false;
+        bool sampledImageArrayNonUniformIndexing = false;
+        bool storageBufferArrayNonUniformIndexing = false;
+        bool storageImageArrayNonUniformIndexing = false;
     };
 
     struct VulkanQueueFamilyTraits final

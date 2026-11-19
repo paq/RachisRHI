@@ -1527,6 +1527,42 @@ TEST_CASE("Vulkan shader reflection gives the WorkgroupSize built-in precedence 
     CHECK(effective.has_value());
 }
 
+TEST_CASE("Vulkan shader modules need the descriptor-indexing features their array capabilities use",
+          "[size:small][rhi][vulkan][shader][module]")
+{
+    rachis::DeviceCapabilities capabilities{};
+    capabilities.limits.maxComputeWorkgroupSize = {1024, 1024, 64};
+    capabilities.limits.maxComputeWorkgroupInvocations = 1024;
+    struct Case final
+    {
+        std::uint32_t capability = 0;
+        bool rachis::vulkan::VulkanShaderFeatureSupport::* feature = nullptr;
+    };
+    const std::array cases{
+        Case{5302, &rachis::vulkan::VulkanShaderFeatureSupport::runtimeDescriptorArray},
+        Case{5306, &rachis::vulkan::VulkanShaderFeatureSupport::uniformBufferArrayNonUniformIndexing},
+        Case{5307, &rachis::vulkan::VulkanShaderFeatureSupport::sampledImageArrayNonUniformIndexing},
+        Case{5308, &rachis::vulkan::VulkanShaderFeatureSupport::storageBufferArrayNonUniformIndexing},
+        Case{5309, &rachis::vulkan::VulkanShaderFeatureSupport::storageImageArrayNonUniformIndexing},
+    };
+    for (const auto& entry : cases)
+    {
+        CAPTURE(entry.capability);
+        const auto bytecode = computeModuleDeclaringCapability(entry.capability, "SPV_EXT_descriptor_indexing");
+        rachis::vulkan::VulkanShaderFeatureSupport features{};
+        const auto rejected = createWithoutDevice(bytecode, capabilities, features);
+        REQUIRE_FALSE(rejected.has_value());
+        CHECK(rejected.error().code == rachis::ErrorCode::unsupported);
+        features.*entry.feature = true;
+        const auto accepted = createWithoutDevice(bytecode, capabilities, features);
+        if (!accepted)
+        {
+            UNSCOPED_INFO(accepted.error().message);
+        }
+        CHECK(accepted.has_value());
+    }
+}
+
 TEST_CASE("Vulkan shader modules gate storage-buffer 64-bit atomics on shaderInt64AtomicStorageBuffer alone",
           "[size:small][rhi][vulkan][shader][module]")
 {

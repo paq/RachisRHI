@@ -2768,6 +2768,11 @@ namespace rachis::vulkan
                 .storagePushConstant16 = chain.v11.storagePushConstant16 == VK_TRUE,
                 .storageInputOutput16 = chain.v11.storageInputOutput16 == VK_TRUE,
                 .shaderDrawParameters = chain.v11.shaderDrawParameters == VK_TRUE,
+                .runtimeDescriptorArray = chain.v12.runtimeDescriptorArray == VK_TRUE,
+                .uniformBufferArrayNonUniformIndexing = chain.v12.shaderUniformBufferArrayNonUniformIndexing == VK_TRUE,
+                .sampledImageArrayNonUniformIndexing = chain.v12.shaderSampledImageArrayNonUniformIndexing == VK_TRUE,
+                .storageBufferArrayNonUniformIndexing = chain.v12.shaderStorageBufferArrayNonUniformIndexing == VK_TRUE,
+                .storageImageArrayNonUniformIndexing = chain.v12.shaderStorageImageArrayNonUniformIndexing == VK_TRUE,
             };
         }
 
@@ -3037,7 +3042,7 @@ namespace rachis::vulkan
                 descriptorIndexingContract && record.descriptorBindingPartiallyBound;
             capabilities.variableDescriptorCountBindingArrays =
                 descriptorIndexingContract && record.descriptorBindingVariableDescriptorCount;
-            capabilities.updateAfterBindBindingArrays = capabilities.partiallyBoundBindingArrays &&
+            capabilities.updateAfterBindBindingArrays = record.descriptorBindingPartiallyBound &&
                                                         record.descriptorBindingUpdateUnusedWhilePending &&
                                                         record.descriptorBindingSampledImageUpdateAfterBind &&
                                                         record.descriptorBindingStorageImageUpdateAfterBind &&
