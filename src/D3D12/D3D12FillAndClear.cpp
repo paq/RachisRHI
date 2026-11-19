@@ -41,6 +41,46 @@ namespace rachis::d3d12
                 commandBuffer, dependencies, leases, std::span{sparseDependencies}.first(sparseDependencyCount));
         }
 
+        [[nodiscard]] std::uint64_t typedBufferClearElementLimit() noexcept
+        {
+            const auto forced = test::bufferFillChunkElementLimit().load(std::memory_order_relaxed);
+            return forced == 0 ? maxTypedBufferClearElements : (std::min)(forced, maxTypedBufferClearElements);
+        }
+
+        void recordFillChunkBarrier(ID3D12GraphicsCommandList& commandList,
+                                    ID3D12GraphicsCommandList7* enhanced,
+                                    ID3D12Resource& resource) noexcept
+        {
+            if (enhanced != nullptr)
+            {
+                const D3D12_BUFFER_BARRIER barrier{
+                    .SyncBefore = D3D12_BARRIER_SYNC_CLEAR_UNORDERED_ACCESS_VIEW,
+                    .SyncAfter = D3D12_BARRIER_SYNC_CLEAR_UNORDERED_ACCESS_VIEW,
+                    .AccessBefore = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS,
+                    .AccessAfter = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS,
+                    .pResource = &resource,
+                    .Offset = 0,
+                    .Size = UINT64_MAX,
+                };
+                const D3D12_BARRIER_GROUP group{
+                    .Type = D3D12_BARRIER_TYPE_BUFFER,
+                    .NumBarriers = 1,
+                    .pBufferBarriers = &barrier,
+                };
+                enhanced->Barrier(1, &group);
+            }
+            else
+            {
+                const D3D12_RESOURCE_BARRIER barrier{
+                    .Type = D3D12_RESOURCE_BARRIER_TYPE_UAV,
+                    .Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE,
+                    .UAV = {.pResource = &resource},
+                };
+                commandList.ResourceBarrier(1, &barrier);
+            }
+            test::noteBufferFillChunkBarrier();
+        }
+
         void bindClearDescriptorHeaps(ID3D12GraphicsCommandList& commandList, const BindingManager& bindings)
         {
             const auto heaps = bindings.nativeDescriptorHeaps();
@@ -95,6 +135,17 @@ namespace rachis::d3d12
 
         const std::uint64_t firstElement = offset / detail::bufferFillAlignment;
         const std::uint64_t elementCount = *range / detail::bufferFillAlignment;
+        const std::uint64_t chunkElements = typedBufferClearElementLimit();
+        ID3D12GraphicsCommandList7* enhanced = nullptr;
+        if (impl_->enhancedBarriers && elementCount > chunkElements)
+        {
+            auto prepared = queues.commandList7(commandBuffer);
+            if (!prepared)
+            {
+                return std::unexpected(std::move(prepared.error()));
+            }
+            enhanced = *prepared;
+        }
         std::vector<ClearResourceDescriptorPair> descriptors;
         std::vector<QueueManager::ResourceRetention> retentions{
             QueueManager::ResourceRetention{
@@ -102,7 +153,7 @@ namespace rachis::d3d12
                 .residency = source->residency,
             },
         };
-        for (std::uint64_t cleared = 0; cleared < elementCount; cleared += maxTypedBufferClearElements)
+        for (std::uint64_t cleared = 0; cleared < elementCount; cleared += chunkElements)
         {
             auto pair = bindings.allocateClearResourceDescriptors();
             if (!pair)
@@ -113,7 +164,7 @@ namespace rachis::d3d12
             view.Format = DXGI_FORMAT_R32_UINT;
             view.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
             view.Buffer.FirstElement = firstElement + cleared;
-            view.Buffer.NumElements = static_cast<UINT>(std::min(elementCount - cleared, maxTypedBufferClearElements));
+            view.Buffer.NumElements = static_cast<UINT>(std::min(elementCount - cleared, chunkElements));
             impl_->device->CreateUnorderedAccessView(
                 source->resource, nullptr, &view, pair->shaderVisible->cpuHandle());
             impl_->device->CreateUnorderedAccessView(source->resource, nullptr, &view, pair->cpuVisible->handle());
@@ -131,6 +182,10 @@ namespace rachis::d3d12
         const std::array values{value, value, value, value};
         for (const auto& pair : descriptors)
         {
+            if (&pair != &descriptors.front())
+            {
+                recordFillChunkBarrier(**commandList, enhanced, *source->resource);
+            }
             (*commandList)
                 ->ClearUnorderedAccessViewUint(pair.shaderVisible->gpuHandle(),
                                                pair.cpuVisible->handle(),

@@ -5,10 +5,13 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
+#include <utility>
 #include <vector>
 
 namespace
@@ -34,6 +37,29 @@ namespace
 
     private:
         bool previous_ = false;
+    };
+
+    class ForceBufferFillChunkElements final
+    {
+    public:
+        explicit ForceBufferFillChunkElements(std::uint64_t elements)
+            : previous_(
+                  rachis::d3d12::test::bufferFillChunkElementLimit().exchange(elements, std::memory_order_relaxed))
+        {
+        }
+
+        ~ForceBufferFillChunkElements()
+        {
+            rachis::d3d12::test::bufferFillChunkElementLimit().store(previous_, std::memory_order_relaxed);
+        }
+
+        ForceBufferFillChunkElements(const ForceBufferFillChunkElements&) = delete;
+        ForceBufferFillChunkElements& operator=(const ForceBufferFillChunkElements&) = delete;
+        ForceBufferFillChunkElements(ForceBufferFillChunkElements&&) = delete;
+        ForceBufferFillChunkElements& operator=(ForceBufferFillChunkElements&&) = delete;
+
+    private:
+        std::uint64_t previous_ = 0;
     };
 
     void printDiagnostic(const rachis::DiagnosticMessage& message, void*) noexcept
@@ -107,6 +133,25 @@ TEST_CASE("D3D12 fillBuffer writes 32-bit patterns across a large buffer", "[siz
         INFO("Legacy barriers: " << legacyBarriers);
         auto device = createWarpDevice(legacyBarriers);
         rachis::test::fill_and_clear::verifyLargeBufferFill(device, rachis::QueueType::compute);
+    }
+}
+
+TEST_CASE("D3D12 fillBuffer orders the UAV clears of a fill that spans several typed views",
+          "[size:medium][rhi][d3d12][fill][warp]")
+{
+    constexpr std::uint64_t chunkElements = 65536;
+    constexpr std::uint64_t size = 3ULL * 1024ULL * 1024ULL + 64ULL;
+    constexpr std::uint64_t offset = 4;
+    const auto chunkBarriers = [](std::uint64_t bytes) { return (bytes / 4 + chunkElements - 1) / chunkElements - 1; };
+    const ForceBufferFillChunkElements forcedChunks(chunkElements);
+    for (const bool legacyBarriers : {false, true})
+    {
+        INFO("Legacy barriers: " << legacyBarriers);
+        auto device = createWarpDevice(legacyBarriers);
+        const auto before = rachis::d3d12::test::bufferFillChunkBarrierCount().load(std::memory_order_relaxed);
+        rachis::test::fill_and_clear::verifyLargeBufferFill(device, rachis::QueueType::compute);
+        const auto recorded = rachis::d3d12::test::bufferFillChunkBarrierCount().load(std::memory_order_relaxed);
+        CHECK(recorded - before == chunkBarriers(size) + chunkBarriers(size - 2 * offset));
     }
 }
 

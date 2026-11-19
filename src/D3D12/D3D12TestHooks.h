@@ -169,6 +169,23 @@ namespace rachis::d3d12::test
         accelerationStructureRecordCount().fetch_add(1, std::memory_order_relaxed);
     }
 
+    [[nodiscard]] inline std::atomic_uint64_t& bufferFillChunkElementLimit() noexcept
+    {
+        static std::atomic_uint64_t s_value = 0;
+        return s_value;
+    }
+
+    [[nodiscard]] inline std::atomic_uint64_t& bufferFillChunkBarrierCount() noexcept
+    {
+        static std::atomic_uint64_t s_value = 0;
+        return s_value;
+    }
+
+    inline void noteBufferFillChunkBarrier() noexcept
+    {
+        bufferFillChunkBarrierCount().fetch_add(1, std::memory_order_relaxed);
+    }
+
     struct GlobalBarrierSnapshot final
     {
         std::uint32_t syncBefore = 0;
