@@ -364,8 +364,6 @@ TEST_CASE("binding set updates republish a large array in full while work in fli
 
     const std::array firstSelections{Selection{.element = 0, .slot = 0}};
     auto first = fixture.record(firstSelections);
-    auto firstSubmitted = device.submit(std::move(first));
-    REQUIRE(firstSubmitted.has_value());
 
     const auto beforeInFlight = device.bindingUpdateStatistics();
     REQUIRE(update(device, fixture.set(), 1, 1, slice(fixture.values(), 2)).has_value());
@@ -373,6 +371,8 @@ TEST_CASE("binding set updates republish a large array in full while work in fli
     CHECK(inFlight.prepared == 1);
     CHECK(inFlight.tablePublishes == 1);
     CHECK(inFlight.published == inputCount + 1);
+    auto firstSubmitted = device.submit(std::move(first));
+    REQUIRE(firstSubmitted.has_value());
 
     const std::array secondSelections{Selection{.element = 1, .slot = 1}};
     auto second = fixture.record(secondSelections);
@@ -420,8 +420,6 @@ TEST_CASE("update-after-bind entries of a large array change in place while work
     auto third = fixture.record(thirdSelections);
     auto secondSubmitted = device.submit(std::move(second));
     REQUIRE(secondSubmitted.has_value());
-    auto thirdSubmitted = device.submit(std::move(third));
-    REQUIRE(thirdSubmitted.has_value());
 
     const auto beforeVersioned = device.bindingUpdateStatistics();
     REQUIRE(update(device,
@@ -434,6 +432,8 @@ TEST_CASE("update-after-bind entries of a large array change in place while work
     CHECK(versioned.prepared == 1);
     CHECK(versioned.tablePublishes == 1);
     CHECK(versioned.published == inputCount + 1);
+    auto thirdSubmitted = device.submit(std::move(third));
+    REQUIRE(thirdSubmitted.has_value());
 
     const auto beforeNewVersion = device.bindingUpdateStatistics();
     REQUIRE(update(device, fixture.set(), 1, 2, slice(fixture.values(), 3)).has_value());
