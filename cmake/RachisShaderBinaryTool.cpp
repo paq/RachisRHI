@@ -1377,7 +1377,7 @@ namespace
                 const auto stage = rachis::shader_tool::parseInterfaceStage(value);
                 if (!stage.has_value())
                 {
-                    return std::unexpected("--stage must be vertex, pixel, or compute.");
+                    return std::unexpected("--stage must be vertex, pixel, compute, task, or mesh.");
                 }
                 options.stage = *stage;
                 hasStage = true;
@@ -1582,14 +1582,15 @@ namespace
                 backend == rachis::shader_tool::InterfaceBackend::d3d12
                     ? rachis::shader_tool::dxilReadsDrawIndex(*bytes)
                 : backend == rachis::shader_tool::InterfaceBackend::metal
-                    ? rachis::shader_tool::metalManifestReadsDrawIndex(*bytes)
+                    ? rachis::shader_tool::metalManifestReadsDrawIndex(*bytes, options->entryPoint, options->stage)
                     : rachis::shader_tool::spirvReadsDrawIndex(*bytes, options->entryPoint, options->stage);
             if (!drawIndex.has_value())
             {
                 std::cerr << path << ": " << drawIndex.error() << '\n';
                 return 1;
             }
-            target->reflected.drawIndex = *drawIndex && options->stage == rachis::shader_tool::InterfaceStage::vertex;
+            target->reflected.drawIndex =
+                *drawIndex && rachis::shader_tool::interfaceStageReadsDrawIndex(options->stage);
         }
         const auto header = rachis::shader_tool::generateShaderInterfaceHeader(
             options->name, options->stage, options->entryPoint, backends, options->tag);

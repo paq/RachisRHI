@@ -426,6 +426,65 @@ namespace
         std::memcpy(bytes.data(), words.data(), bytes.size());
         return bytes;
     }
+    [[nodiscard]] std::vector<std::byte> workgroupModuleWithDrawIndex(std::uint32_t executionModel)
+    {
+        constexpr std::uint32_t mainName = 0x6E69616DU;
+        const std::vector<std::uint32_t> words{
+            0x07230203U,
+            0x00010600U,
+            0U,
+            8U,
+            0U,
+            (2U << 16U) | 17U,
+            1U,
+            (2U << 16U) | 17U,
+            4427U,
+            (3U << 16U) | 14U,
+            0U,
+            1U,
+            (6U << 16U) | 15U,
+            executionModel,
+            1U,
+            mainName,
+            0U,
+            2U,
+            (6U << 16U) | 16U,
+            1U,
+            17U,
+            4U,
+            2U,
+            1U,
+            (4U << 16U) | 71U,
+            2U,
+            11U,
+            4426U,
+            (4U << 16U) | 21U,
+            3U,
+            32U,
+            0U,
+            (4U << 16U) | 32U,
+            4U,
+            1U,
+            3U,
+            (4U << 16U) | 59U,
+            4U,
+            2U,
+            1U,
+        };
+        std::vector<std::byte> bytes(words.size() * sizeof(std::uint32_t));
+        std::memcpy(bytes.data(), words.data(), bytes.size());
+        return bytes;
+    }
+
+    [[nodiscard]] std::vector<std::byte> pnmsShader(std::string_view json)
+    {
+        constexpr std::array metallib{std::byte{'M'}, std::byte{'T'}, std::byte{'L'}, std::byte{'B'}, std::byte{0}};
+        auto packed = rachis::shader_tool::packMetalShaderManifest(
+            std::span(reinterpret_cast<const std::byte*>(json.data()), json.size()), metallib);
+        REQUIRE(packed.has_value());
+        return *packed;
+    }
+
     [[nodiscard]] std::vector<std::byte> dxilContainer(std::span<const std::array<std::uint32_t, 4>> resources)
     {
         std::vector<std::uint32_t> psv{0U, static_cast<std::uint32_t>(resources.size())};
@@ -543,4 +602,102 @@ TEST_CASE("Shader interface reflection reads the draw index from each backend's 
     CHECK(header->find("constexpr bool drawIndex(rachis::Backend backend) noexcept") != std::string::npos);
     CHECK(header->find("case rachis::Backend::d3d12:\n            return d3d12::drawIndex;") != std::string::npos);
     CHECK(header->find("RachisDrawIndex") == std::string::npos);
+}
+TEST_CASE("Shader interface reflection reads task and mesh entry points and their draw index",
+          "[size:small][rhi][tooling][shader-interface][draw-index]")
+{
+    CHECK(rachis::shader_tool::parseInterfaceStage("task") == InterfaceStage::task);
+    CHECK(rachis::shader_tool::parseInterfaceStage("mesh") == InterfaceStage::mesh);
+    CHECK_FALSE(rachis::shader_tool::parseInterfaceStage("amplification").has_value());
+
+    for (const auto stage : {InterfaceStage::task, InterfaceStage::mesh})
+    {
+        const auto name = rachis::shader_tool::interfaceStageName(stage);
+        INFO("stage " << name);
+        const std::string json = std::string(R"({"parameters": [
+            {"name": "RachisDrawIndex", "binding": {"kind": "constantBuffer", "space": 5, "index": 0},
+             "type": {"kind": "constantBuffer", "elementType": {"kind": "struct", "fields": [
+                 {"name": "rachisDrawIndexValue", "type": {"kind": "scalar", "scalarType": "uint32"}}]}}}],
+            "entryPoints": [{"name": "main", "stage": ")") +
+                                 (stage == InterfaceStage::task ? "amplification" : "mesh") +
+                                 R"(", "threadGroupSize": [4, 2, 1], "bindings": [
+                {"name": "RachisDrawIndex", "binding": {"kind": "constantBuffer", "space": 5, "index": 0, "used": 1}}
+            ]}]})";
+        const auto reflected = reflectShaderInterface(json, InterfaceBackend::d3d12, "main", stage);
+        REQUIRE(reflected.has_value());
+        CHECK(reflected->drawIndex);
+        CHECK(reflected->workgroupSize == std::array<std::uint32_t, 3>{4, 2, 1});
+
+        std::string withoutWorkgroup = json;
+        withoutWorkgroup.erase(withoutWorkgroup.find(R"("threadGroupSize": [4, 2, 1], )"),
+                               std::string_view(R"("threadGroupSize": [4, 2, 1], )").size());
+        const auto missing = reflectShaderInterface(withoutWorkgroup, InterfaceBackend::metal, "main", stage);
+        REQUIRE_FALSE(missing.has_value());
+        CHECK(missing.error().find("thread-group size") != std::string::npos);
+
+        const auto model = stage == InterfaceStage::task ? 5364U : 5365U;
+        const auto module = workgroupModuleWithDrawIndex(model);
+        const auto reads = rachis::shader_tool::spirvReadsDrawIndex(module, "main", stage);
+        REQUIRE(reads.has_value());
+        CHECK(*reads);
+        const auto spirv = rachis::shader_tool::reflectSpirvShaderInterface(module, "main", stage);
+        REQUIRE(spirv.has_value());
+        CHECK(spirv->drawIndex);
+        CHECK(spirv->workgroupSize == std::array<std::uint32_t, 3>{4, 2, 1});
+        CHECK_FALSE(rachis::shader_tool::spirvReadsDrawIndex(module, "main", InterfaceStage::vertex).has_value());
+
+        const std::array backends{BackendInterface{.backend = InterfaceBackend::d3d12, .reflected = *reflected}};
+        const auto header = rachis::shader_tool::generateShaderInterfaceHeader("StageProbe", stage, "main", backends);
+        REQUIRE(header.has_value());
+        CHECK(header->contains("rachis::ShaderStage::" + std::string(name) + ";"));
+        CHECK(header->contains("rachis::ShaderWorkgroupSize{4, 2, 1}"));
+        CHECK(header->contains("inline constexpr bool drawIndex = true;"));
+    }
+}
+
+TEST_CASE("PNMS draw-index reflection checks the envelope and reads only the selected entry point",
+          "[size:small][rhi][tooling][shader-interface][draw-index]")
+{
+    using rachis::shader_tool::metalManifestReadsDrawIndex;
+    constexpr std::string_view json = R"({"parameters": [],
+        "entryPoints": [
+            {"name": "drawn", "stage": "vertex", "bindings": [
+                {"name": "RachisDrawIndex", "binding": {"kind": "constantBuffer", "space": 5, "index": 0, "used": 1}}]},
+            {"name": "plain", "stage": "vertex", "bindings": [
+                {"name": "RachisDrawIndex", "binding": {"kind": "constantBuffer", "space": 5, "index": 0, "used": 0}}]},
+            {"name": "meshed", "stage": "mesh", "threadGroupSize": [1, 1, 1], "bindings": [
+                {"name": "RachisDrawIndex", "binding": {"kind": "constantBuffer", "space": 5, "index": 0}}]},
+            {"name": "empty", "stage": "fragment"}
+        ],
+        "rachisBindings": [{"name": "RachisDrawIndex", "drawIndex": true}]})";
+    const auto pnms = pnmsShader(json);
+    const auto drawn = metalManifestReadsDrawIndex(pnms, "drawn", InterfaceStage::vertex);
+    REQUIRE(drawn.has_value());
+    CHECK(*drawn);
+    const auto plain = metalManifestReadsDrawIndex(pnms, "plain", InterfaceStage::vertex);
+    REQUIRE(plain.has_value());
+    CHECK_FALSE(*plain);
+    const auto meshed = metalManifestReadsDrawIndex(pnms, "meshed", InterfaceStage::mesh);
+    REQUIRE(meshed.has_value());
+    CHECK(*meshed);
+    const auto empty = metalManifestReadsDrawIndex(pnms, "empty", InterfaceStage::pixel);
+    REQUIRE(empty.has_value());
+    CHECK_FALSE(*empty);
+    CHECK_FALSE(metalManifestReadsDrawIndex(pnms, "missing", InterfaceStage::vertex).has_value());
+    CHECK_FALSE(metalManifestReadsDrawIndex(pnms, "drawn", InterfaceStage::mesh).has_value());
+
+    const auto truncated = std::span(pnms).first(pnms.size() - 5);
+    CHECK_FALSE(metalManifestReadsDrawIndex(truncated, "drawn", InterfaceStage::vertex).has_value());
+    auto longer = pnms;
+    longer.push_back(std::byte{0});
+    CHECK_FALSE(metalManifestReadsDrawIndex(longer, "drawn", InterfaceStage::vertex).has_value());
+    auto version = pnms;
+    version[4] = std::byte{2};
+    CHECK_FALSE(metalManifestReadsDrawIndex(version, "drawn", InterfaceStage::vertex).has_value());
+    auto library = pnms;
+    library[pnms.size() - 5] = std::byte{'X'};
+    CHECK_FALSE(metalManifestReadsDrawIndex(library, "drawn", InterfaceStage::vertex).has_value());
+    const std::string duplicated(R"({"entryPoints": [{"name": "drawn", "stage": "vertex"},
+                                                    {"name": "drawn", "stage": "vertex"}]})");
+    CHECK_FALSE(metalManifestReadsDrawIndex(pnmsShader(duplicated), "drawn", InterfaceStage::vertex).has_value());
 }

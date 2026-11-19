@@ -31,6 +31,8 @@ namespace rachis::shader_tool
         vertex,
         pixel,
         compute,
+        task,
+        mesh,
     };
 
     inline constexpr std::uint32_t d3d12PushConstantRegister = 0;
@@ -98,7 +100,43 @@ namespace rachis::shader_tool
         {
             return InterfaceStage::compute;
         }
+        if (name == "task")
+        {
+            return InterfaceStage::task;
+        }
+        if (name == "mesh")
+        {
+            return InterfaceStage::mesh;
+        }
         return std::nullopt;
+    }
+
+    [[nodiscard]] constexpr bool interfaceStageHasWorkgroup(InterfaceStage stage) noexcept
+    {
+        return stage == InterfaceStage::compute || stage == InterfaceStage::task || stage == InterfaceStage::mesh;
+    }
+
+    [[nodiscard]] constexpr bool interfaceStageReadsDrawIndex(InterfaceStage stage) noexcept
+    {
+        return stage == InterfaceStage::vertex || stage == InterfaceStage::task || stage == InterfaceStage::mesh;
+    }
+
+    [[nodiscard]] constexpr std::string_view interfaceStageName(InterfaceStage stage) noexcept
+    {
+        switch (stage)
+        {
+        case InterfaceStage::vertex:
+            return "vertex";
+        case InterfaceStage::pixel:
+            return "pixel";
+        case InterfaceStage::compute:
+            return "compute";
+        case InterfaceStage::task:
+            return "task";
+        case InterfaceStage::mesh:
+            return "mesh";
+        }
+        return "compute";
     }
 
     [[nodiscard]] constexpr std::string_view interfaceBackendName(InterfaceBackend backend) noexcept
@@ -542,14 +580,14 @@ namespace rachis::shader_tool
             return std::unexpected(std::move(sorted.error()));
         }
 
-        if (stage == InterfaceStage::compute)
+        if (interfaceStageHasWorkgroup(stage))
         {
             const auto* size = entry->find("threadGroupSize");
             const auto* items = size != nullptr ? size->asArray() : nullptr;
             if (items == nullptr || items->size() != 3)
             {
-                return std::unexpected("The compute entry point '" + std::string(entryPoint) +
-                                       "' has no reflected thread-group size.");
+                return std::unexpected("The " + std::string(interfaceStageName(stage)) + " entry point '" +
+                                       std::string(entryPoint) + "' has no reflected thread-group size.");
             }
             std::array<std::uint32_t, 3> workgroup{};
             for (std::size_t axis = 0; axis < 3; ++axis)
@@ -557,7 +595,8 @@ namespace rachis::shader_tool
                 const auto value = (*items)[axis].asUint32();
                 if (!value.has_value() || *value == 0)
                 {
-                    return std::unexpected("The compute entry point's thread-group size is not a positive integer.");
+                    return std::unexpected("The " + std::string(interfaceStageName(stage)) +
+                                           " entry point's thread-group size is not a positive integer.");
                 }
                 workgroup[axis] = *value;
             }
@@ -585,7 +624,7 @@ namespace rachis::shader_tool
                 return std::unexpected("Two vertex inputs share a location.");
             }
         }
-        reflected.drawIndex = reflected.drawIndex && stage == InterfaceStage::vertex;
+        reflected.drawIndex = reflected.drawIndex && interfaceStageReadsDrawIndex(stage);
         return reflected;
     }
 
@@ -733,9 +772,20 @@ namespace rachis::shader_tool
 
     [[nodiscard]] constexpr std::uint32_t spirvExecutionModel(InterfaceStage stage) noexcept
     {
-        return stage == InterfaceStage::vertex  ? detail::SpirvLayoutModule::executionModelVertex
-               : stage == InterfaceStage::pixel ? detail::SpirvLayoutModule::executionModelFragment
-                                                : detail::SpirvLayoutModule::executionModelGLCompute;
+        switch (stage)
+        {
+        case InterfaceStage::vertex:
+            return detail::SpirvLayoutModule::executionModelVertex;
+        case InterfaceStage::pixel:
+            return detail::SpirvLayoutModule::executionModelFragment;
+        case InterfaceStage::compute:
+            return detail::SpirvLayoutModule::executionModelGLCompute;
+        case InterfaceStage::task:
+            return detail::SpirvLayoutModule::executionModelTaskEXT;
+        case InterfaceStage::mesh:
+            return detail::SpirvLayoutModule::executionModelMeshEXT;
+        }
+        return detail::SpirvLayoutModule::executionModelGLCompute;
     }
 
     [[nodiscard]] inline std::expected<bool, std::string> spirvReadsDrawIndex(std::span<const std::byte> spirv,
@@ -753,6 +803,134 @@ namespace rachis::shader_tool
             return std::unexpected(std::move(found.error()));
         }
         return found->drawIndex;
+    }
+
+    namespace detail
+    {
+        [[nodiscard]] constexpr bool reflectedStageMatches(std::string_view reflected, InterfaceStage stage) noexcept
+        {
+            switch (stage)
+            {
+            case InterfaceStage::vertex:
+                return reflected == "vertex";
+            case InterfaceStage::pixel:
+                return reflected == "fragment" || reflected == "pixel";
+            case InterfaceStage::compute:
+                return reflected == "compute";
+            case InterfaceStage::task:
+                return reflected == "amplification";
+            case InterfaceStage::mesh:
+                return reflected == "mesh";
+            }
+            return false;
+        }
+
+        [[nodiscard]] inline bool isAnnotatedDrawIndex(const JsonValue* annotations, std::string_view name)
+        {
+            if (annotations == nullptr || annotations->asArray() == nullptr)
+            {
+                return false;
+            }
+            return std::ranges::any_of(*annotations->asArray(), [&](const JsonValue& annotation) {
+                const auto* flag = annotation.find("drawIndex");
+                return jsonString(annotation.find("name")) == name && flag != nullptr && flag->asBool() != nullptr &&
+                       *flag->asBool();
+            });
+        }
+    } // namespace detail
+
+    [[nodiscard]] inline std::expected<bool, std::string> metalManifestReadsDrawIndex(std::span<const std::byte> pnms,
+                                                                                      std::string_view entryPoint,
+                                                                                      InterfaceStage stage)
+    {
+        constexpr std::size_t headerBytes = 16;
+        constexpr std::uint32_t manifestVersion = 1;
+        if (pnms.size() < headerBytes || std::memcmp(pnms.data(), "PNMS", 4) != 0)
+        {
+            return std::unexpected("The Metal shader does not start with a PNMS header.");
+        }
+        const auto readU32 = [&](std::size_t offset) {
+            std::uint32_t value = 0;
+            std::memcpy(&value, pnms.data() + offset, sizeof(value));
+            return value;
+        };
+        if (readU32(4) != manifestVersion)
+        {
+            return std::unexpected("The PNMS header has an unsupported version.");
+        }
+        const std::size_t jsonBytes = readU32(8);
+        const std::size_t metallibBytes = readU32(12);
+        if (jsonBytes > pnms.size() - headerBytes || metallibBytes != pnms.size() - headerBytes - jsonBytes)
+        {
+            return std::unexpected("The PNMS section sizes do not match the size of the shader.");
+        }
+        if (jsonBytes == 0 || metallibBytes < 4 || std::memcmp(pnms.data() + headerBytes + jsonBytes, "MTLB", 4) != 0)
+        {
+            return std::unexpected("The PNMS shader lacks its reflection JSON or its Metal library.");
+        }
+        const std::string_view json(reinterpret_cast<const char*>(pnms.data() + headerBytes), jsonBytes);
+        auto root = detail::JsonParser(json).parseDocument();
+        if (!root.has_value())
+        {
+            return std::unexpected("The PNMS reflection does not parse: " + root.error());
+        }
+        const auto* entries = root->find("entryPoints");
+        if (root->asObject() == nullptr || entries == nullptr || entries->asArray() == nullptr)
+        {
+            return std::unexpected("The PNMS reflection has no entry points.");
+        }
+        const detail::JsonValue* entry = nullptr;
+        for (const auto& candidate : *entries->asArray())
+        {
+            if (detail::jsonString(candidate.find("name")) != entryPoint)
+            {
+                continue;
+            }
+            if (entry != nullptr)
+            {
+                return std::unexpected("The PNMS reflection lists the entry point '" + std::string(entryPoint) +
+                                       "' twice.");
+            }
+            entry = &candidate;
+        }
+        if (entry == nullptr)
+        {
+            return std::unexpected("The PNMS reflection has no entry point '" + std::string(entryPoint) + "'.");
+        }
+        if (!detail::reflectedStageMatches(detail::jsonString(entry->find("stage")), stage))
+        {
+            return std::unexpected("The PNMS entry point '" + std::string(entryPoint) + "' is not a " +
+                                   std::string(interfaceStageName(stage)) + " shader.");
+        }
+        const auto* active = entry->find("bindings");
+        if (active == nullptr)
+        {
+            return false;
+        }
+        if (active->asArray() == nullptr)
+        {
+            return std::unexpected("The PNMS entry point bindings are not an array.");
+        }
+        const auto* annotations = root->find("rachisBindings");
+        return std::ranges::any_of(*active->asArray(), [&](const detail::JsonValue& binding) {
+            const auto name = detail::jsonString(binding.find("name"));
+            if (!detail::isAnnotatedDrawIndex(annotations, name))
+            {
+                return false;
+            }
+            const auto* record = detail::findBindingOfKind(binding, "constantBuffer");
+            const auto* used = record != nullptr ? record->find("used") : nullptr;
+            if (used == nullptr)
+            {
+                return record != nullptr;
+            }
+            if (const auto* flag = used->asBool(); flag != nullptr)
+            {
+                return *flag;
+            }
+            const auto value = used->asUint32();
+            return value.has_value() && *value != 0;
+        });
     }
 
     [[nodiscard]] inline std::expected<ReflectedInterface, std::string> reflectSpirvShaderInterface(
@@ -840,16 +1018,7 @@ namespace rachis::shader_tool
 
         [[nodiscard]] constexpr std::string_view stageEnumerator(InterfaceStage stage) noexcept
         {
-            switch (stage)
-            {
-            case InterfaceStage::vertex:
-                return "vertex";
-            case InterfaceStage::pixel:
-                return "pixel";
-            case InterfaceStage::compute:
-                return "compute";
-            }
-            return "compute";
+            return interfaceStageName(stage);
         }
 
         [[nodiscard]] inline std::string countText(std::uint32_t count)

@@ -531,6 +531,194 @@ TEST_CASE("Metal GPU accepts metallib unpacked from ShaderBinaryTool PNMS manife
 #endif
 
 #ifdef RACHIS_SHADER_BINARY_TOOL_PATH
+namespace
+{
+    [[nodiscard]] std::vector<std::byte> wordsAsBytes(const std::vector<std::uint32_t>& words)
+    {
+        std::vector<std::byte> bytes(words.size() * sizeof(std::uint32_t));
+        std::memcpy(bytes.data(), words.data(), bytes.size());
+        return bytes;
+    }
+
+    [[nodiscard]] std::vector<std::byte> dxilWithResources(std::span<const std::array<std::uint32_t, 4>> resources)
+    {
+        std::vector<std::uint32_t> psv{0U, static_cast<std::uint32_t>(resources.size())};
+        if (!resources.empty())
+        {
+            psv.push_back(16U);
+            for (const auto& resource : resources)
+            {
+                psv.insert(psv.end(), resource.begin(), resource.end());
+            }
+        }
+        const auto partSize = static_cast<std::uint32_t>(psv.size() * sizeof(std::uint32_t));
+        constexpr std::uint32_t partOffset = 36;
+        std::vector<std::uint32_t> words{
+            0x43425844U, 0U, 0U, 0U, 0U, 1U, partOffset + 8U + partSize, 1U, partOffset, 0x30565350U, partSize};
+        words.insert(words.end(), psv.begin(), psv.end());
+        return wordsAsBytes(words);
+    }
+
+    [[nodiscard]] std::vector<std::byte> spirvEntryWithBuiltIn(std::uint32_t executionModel, std::uint32_t builtIn)
+    {
+        constexpr std::uint32_t mainName = 0x6E69616DU;
+        return wordsAsBytes({
+            0x07230203U,
+            0x00010600U,
+            0U,
+            8U,
+            0U,
+            (2U << 16U) | 17U,
+            1U,
+            (2U << 16U) | 17U,
+            4427U,
+            (3U << 16U) | 14U,
+            0U,
+            1U,
+            (6U << 16U) | 15U,
+            executionModel,
+            1U,
+            mainName,
+            0U,
+            2U,
+            (6U << 16U) | 16U,
+            1U,
+            17U,
+            32U,
+            1U,
+            1U,
+            (4U << 16U) | 71U,
+            2U,
+            11U,
+            builtIn,
+            (4U << 16U) | 21U,
+            3U,
+            32U,
+            0U,
+            (4U << 16U) | 32U,
+            4U,
+            1U,
+            3U,
+            (4U << 16U) | 59U,
+            4U,
+            2U,
+            1U,
+        });
+    }
+} // namespace
+
+TEST_CASE("RachisShaderBinaryTool reflect-interface reports the draw index of task and mesh shaders",
+          "[size:small][rhi][shader][tooling][draw-index]")
+{
+    ScopedTempDirectory const temp;
+    struct StageCase final
+    {
+        std::string_view stage;
+        std::string_view reflectedStage;
+        std::uint32_t executionModel = 0;
+    };
+    for (const auto& item : {StageCase{"task", "amplification", 5364U}, StageCase{"mesh", "mesh", 5365U}})
+    {
+        INFO("stage " << item.stage);
+        const std::string drawIndexParameter = R"(
+            {"name": "RachisDrawIndex", "binding": {"kind": "constantBuffer", "space": 5, "index": 0},
+             "type": {"kind": "constantBuffer", "elementType": {"kind": "struct", "fields": [
+                 {"name": "rachisDrawIndexValue", "type": {"kind": "scalar", "scalarType": "uint32"}}]}}})";
+        const auto entry = std::string(R"({"name": "main", "stage": ")") + std::string(item.reflectedStage) +
+                           R"(", "threadGroupSize": [32, 1, 1]})";
+        const auto hlslJson = R"({"parameters": [)" + drawIndexParameter + R"(], "entryPoints": [)" + entry + "]}";
+        const auto spirvJson = R"({"parameters": [], "entryPoints": [)" + entry + "]}";
+        const auto pnmsJson = std::string(R"({"parameters": [)") + drawIndexParameter +
+                              R"(], "entryPoints": [{"name": "main", "stage": ")" + std::string(item.reflectedStage) +
+                              R"(", "threadGroupSize": [32, 1, 1], "bindings": [
+                {"name": "RachisDrawIndex", "binding": {"kind": "constantBuffer", "space": 5, "index": 0, "used": 1}}]}],
+                "rachisBindings": [{"name": "RachisDrawIndex", "drawIndex": true}]})";
+        const auto d3d12Json = temp.path / "d3d12.json";
+        const auto vulkanJson = temp.path / "vulkan.json";
+        const auto metalJson = temp.path / "metal.json";
+        writeBinaryFile(d3d12Json, asBytes(hlslJson));
+        writeBinaryFile(vulkanJson, asBytes(spirvJson));
+        writeBinaryFile(metalJson, asBytes(hlslJson));
+
+        const std::array<std::array<std::uint32_t, 4>, 1> drawIndexResource{{{2U, 5U, 0U, 0U}}};
+        const auto dxil = temp.path / "shader.dxil";
+        const auto spirv = temp.path / "shader.spv";
+        const auto pnms = temp.path / "shader.pnms";
+        writeBinaryFile(dxil, dxilWithResources(drawIndexResource));
+        writeBinaryFile(spirv, spirvEntryWithBuiltIn(item.executionModel, 4426U));
+        constexpr std::array metallib{std::byte{'M'}, std::byte{'T'}, std::byte{'L'}, std::byte{'B'}};
+        const auto packed = rachis::shader_tool::packMetalShaderManifest(asBytes(pnmsJson), metallib);
+        REQUIRE(packed.has_value());
+        writeBinaryFile(pnms, *packed);
+
+        const auto header = temp.path / "StageProbe.interface.h";
+        const auto run = [&](const std::filesystem::path& spirvBytecode) {
+            return runShaderBinaryTool(temp.path,
+                                       {"reflect-interface",
+                                        "--name",
+                                        "StageProbe",
+                                        "--stage",
+                                        std::string(item.stage),
+                                        "--entry",
+                                        "main",
+                                        "--output",
+                                        header.string(),
+                                        "--reflection",
+                                        "d3d12=" + d3d12Json.string(),
+                                        "--reflection",
+                                        "vulkan=" + vulkanJson.string(),
+                                        "--reflection",
+                                        "metal=" + metalJson.string(),
+                                        "--bytecode",
+                                        "d3d12=" + dxil.string(),
+                                        "--bytecode",
+                                        "vulkan=" + spirvBytecode.string(),
+                                        "--bytecode",
+                                        "metal=" + pnms.string()});
+        };
+        const auto reflected = run(spirv);
+        INFO("stderr=" << reflected.stderrText);
+        REQUIRE(reflected.status == 0);
+        const auto text = readTextFile(header);
+        CHECK(text.contains(
+            "inline constexpr rachis::ShaderStage stage = rachis::ShaderStage::" + std::string(item.stage) + ";"));
+        std::size_t drawIndexBackends = 0;
+        for (auto found = text.find("inline constexpr bool drawIndex = true;"); found != std::string::npos;
+             found = text.find("inline constexpr bool drawIndex = true;", found + 1))
+        {
+            ++drawIndexBackends;
+        }
+        CHECK(drawIndexBackends == 3);
+        CHECK(text.contains("rachis::ShaderWorkgroupSize{32, 1, 1}"));
+
+        const auto baseInstance = temp.path / "base-instance.spv";
+        writeBinaryFile(baseInstance, spirvEntryWithBuiltIn(item.executionModel, 4425U));
+        const auto withoutVulkanDrawIndex = run(baseInstance);
+        INFO("stderr=" << withoutVulkanDrawIndex.stderrText);
+        REQUIRE(withoutVulkanDrawIndex.status == 0);
+        const auto vulkanText = readTextFile(header);
+        const auto vulkanNamespace = vulkanText.find("namespace vulkan");
+        REQUIRE(vulkanNamespace != std::string::npos);
+        CHECK(vulkanText.find("inline constexpr bool drawIndex = false;", vulkanNamespace) <
+              vulkanText.find("namespace metal", vulkanNamespace));
+
+        const auto wrongStage = runShaderBinaryTool(temp.path,
+                                                    {"reflect-interface",
+                                                     "--name",
+                                                     "StageProbe",
+                                                     "--stage",
+                                                     "amplification",
+                                                     "--entry",
+                                                     "main",
+                                                     "--output",
+                                                     header.string(),
+                                                     "--reflection",
+                                                     "d3d12=" + d3d12Json.string()});
+        CHECK(wrongStage.status != 0);
+        CHECK(wrongStage.stderrText.contains("task, or mesh"));
+    }
+}
+
 TEST_CASE("RachisShaderBinaryTool CLI validates flags and writes binary artifacts",
           "[size:small][rhi][shader][tooling]")
 {

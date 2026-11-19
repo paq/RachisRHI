@@ -2566,39 +2566,4 @@ namespace rachis::shader_tool
         return assigned;
     }
 
-    [[nodiscard]] inline std::expected<bool, std::string> metalManifestReadsDrawIndex(std::span<const std::byte> pnms)
-    {
-        constexpr std::size_t headerBytes = 16;
-        if (pnms.size() < headerBytes || pnms[0] != std::byte{'P'} || pnms[1] != std::byte{'N'} ||
-            pnms[2] != std::byte{'M'} || pnms[3] != std::byte{'S'})
-        {
-            return std::unexpected("The Metal shader does not start with a PNMS header.");
-        }
-        const auto readU32 = [&](std::size_t offset) {
-            return static_cast<std::uint32_t>(pnms[offset]) | (static_cast<std::uint32_t>(pnms[offset + 1]) << 8U) |
-                   (static_cast<std::uint32_t>(pnms[offset + 2]) << 16U) |
-                   (static_cast<std::uint32_t>(pnms[offset + 3]) << 24U);
-        };
-        const std::size_t jsonBytes = readU32(8);
-        if (jsonBytes > pnms.size() - headerBytes)
-        {
-            return std::unexpected("The PNMS reflection section is truncated.");
-        }
-        const std::string_view json(reinterpret_cast<const char*>(pnms.data() + headerBytes), jsonBytes);
-        auto root = detail::JsonParser(json).parseDocument();
-        if (!root.has_value())
-        {
-            return std::unexpected("The PNMS reflection does not parse: " + root.error());
-        }
-        const auto* bindings = root->find("rachisBindings");
-        if (bindings == nullptr || bindings->asArray() == nullptr)
-        {
-            return false;
-        }
-        return std::ranges::any_of(*bindings->asArray(), [](const detail::JsonValue& binding) {
-            const auto* flag = binding.find("drawIndex");
-            return flag != nullptr && flag->asBool() != nullptr && *flag->asBool();
-        });
-    }
-
 } // namespace rachis::shader_tool
