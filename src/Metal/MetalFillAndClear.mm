@@ -487,6 +487,11 @@ RACHIS_CLEAR_KERNELS(Sint, int, clear.s)
         {
             return prepared;
         }
+        auto staging = metalPrepareLayoutTransitions(native->layoutState(), transitions);
+        if (!staging)
+        {
+            return std::unexpected(std::move(staging.error()));
+        }
         MetalClearValueBlock block{};
         std::memcpy(block.f.data(), value.float32.data(), sizeof(block.f));
         std::memcpy(block.u.data(), value.uint32.data(), sizeof(block.u));
@@ -501,7 +506,6 @@ RACHIS_CLEAR_KERNELS(Sint, int, clear.s)
         {
             return std::unexpected(std::move(constants.error()));
         }
-        metalStageLayoutTransitions(native->layoutState(), transitions);
         metalRetainResidency(*entry, target.view);
         const auto depth = volume ? target.view.depth : std::max<NSUInteger>(target.view.arrayLength, 1);
         const bool oneDimensional =
@@ -512,6 +516,7 @@ RACHIS_CLEAR_KERNELS(Sint, int, clear.s)
                         (std::max<NSUInteger>(target.view.height, 1) + threads.height - 1U) / threads.height,
                         depth);
         metalEmitInternalDispatch(*entry, *table, target.pipeline, *constants, target.view, groups, threads);
+        metalCommitLayoutTransitions(native->layoutState(), *staging);
         return {};
     }
 

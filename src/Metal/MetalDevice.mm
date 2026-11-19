@@ -1322,6 +1322,18 @@ bool rachis::metal::consumeInjectedMetalBindingResidencyReserveFailure() noexcep
     return std::exchange(metalTestingState().failNextBindingResidencyReserve, false);
 }
 
+void rachis::metal::setFailNextLayoutStaging(bool fail) noexcept
+{
+    std::scoped_lock const lock(metalTestingState().mutex);
+    metalTestingState().failNextLayoutStaging = fail;
+}
+
+bool rachis::metal::consumeInjectedMetalLayoutStagingFailure() noexcept
+{
+    std::scoped_lock const lock(metalTestingState().mutex);
+    return std::exchange(metalTestingState().failNextLayoutStaging, false);
+}
+
 bool rachis::metal::consumeInjectedMetalDrawIndexTableGrowthFailure() noexcept
 {
     std::scoped_lock const lock(metalTestingState().mutex);

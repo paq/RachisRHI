@@ -1584,6 +1584,7 @@ namespace rachis::metal
         bool failNextPipelineCacheSerialize = false;
         bool failNextDrawIndexTableGrowth = false;
         bool failNextBindingResidencyReserve = false;
+        bool failNextLayoutStaging = false;
         std::int64_t failPushConstantSliceAfter = -1;
         std::string pipelineCacheTemporaryDirectory;
         std::atomic<std::uint64_t> residencyAddCount{0};
@@ -1619,6 +1620,7 @@ namespace rachis::metal
     [[nodiscard]] bool consumeInjectedMetalDrawIndexTableGrowthFailure() noexcept;
     [[nodiscard]] bool consumeInjectedMetalPushConstantSliceFailure() noexcept;
     [[nodiscard]] bool consumeInjectedMetalBindingResidencyReserveFailure() noexcept;
+    [[nodiscard]] bool consumeInjectedMetalLayoutStagingFailure() noexcept;
 #endif
 
     [[nodiscard]] FormatProperties probeFormat(id<MTLDevice> device, Format format) noexcept;
@@ -1647,8 +1649,16 @@ namespace rachis::metal
     [[nodiscard]] std::shared_ptr<MetalTextureLayoutTable> metalTextureLayoutTable(MetalTextureRecord& record);
     [[nodiscard]] Status metalCheckLayoutTransitions(const MetalCommandLayoutState& state,
                                                      std::span<const MetalLayoutTransition> transitions);
-    void metalStageLayoutTransitions(MetalCommandLayoutState& state,
-                                     std::span<const MetalLayoutTransition> transitions);
+    struct MetalLayoutStaging final
+    {
+        std::unordered_map<MetalLayoutCell, std::size_t, MetalLayoutCellHash> added;
+        std::vector<MetalLayoutWrite> writes;
+        std::vector<MetalLayoutEntryRequirement> entries;
+        std::vector<std::pair<std::size_t, TextureLayout>> updates;
+    };
+    [[nodiscard]] Result<MetalLayoutStaging> metalPrepareLayoutTransitions(
+        MetalCommandLayoutState& state, std::span<const MetalLayoutTransition> transitions);
+    void metalCommitLayoutTransitions(MetalCommandLayoutState& state, MetalLayoutStaging& staging) noexcept;
 
     struct MetalBatchLayouts final
     {
