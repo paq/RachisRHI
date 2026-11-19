@@ -1744,6 +1744,25 @@ TEST_CASE("Vulkan queue selection gives each queue type its own native queue unl
         CHECK(queues.present == queues.graphics);
     }
 
+    SECTION("graphics takes a family that also computes, and compute never lands on a graphics-only family")
+    {
+        const std::array graphicsFirst{
+            queueFamily(graphics | transfer, 2),
+            queueFamily(general, 2),
+        };
+        const auto selected = rachis::vulkan::selectVulkanQueueFamilies(graphicsFirst);
+        checkSelectedQueues(selected, {.family = 1, .index = 0}, {.family = 1, .index = 1}, {.family = 0, .index = 0});
+
+        const std::array onlyGraphicsOnly{
+            queueFamily(graphics | transfer, 2),
+            queueFamily(compute | transfer, 1),
+        };
+        const auto separated = rachis::vulkan::selectVulkanQueueFamilies(onlyGraphicsOnly);
+        CHECK(separated.graphics == 0);
+        CHECK(separated.compute == 1);
+        CHECK(separated.computeIndex == 0);
+    }
+
     SECTION("a dedicated compute family serves compute when the graphics family has a single queue")
     {
         const std::array families{

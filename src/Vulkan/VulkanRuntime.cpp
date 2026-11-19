@@ -486,6 +486,11 @@ namespace rachis::vulkan
                 return claimed_[family]++;
             }
 
+            [[nodiscard]] bool supports(std::uint32_t family, VkQueueFlags flags) const noexcept
+            {
+                return family < families_.size() && (families_[family].queueFlags & flags) == flags;
+            }
+
         private:
             std::span<const VkQueueFamilyProperties> families_;
             std::vector<std::uint32_t> claimed_;
@@ -493,7 +498,7 @@ namespace rachis::vulkan
 
         [[nodiscard]] std::uint32_t computeQueueFamily(const QueueFamilyClaims& claims, std::uint32_t graphics) noexcept
         {
-            if (claims.hasUnclaimedQueue(graphics))
+            if (claims.supports(graphics, VK_QUEUE_COMPUTE_BIT) && claims.hasUnclaimedQueue(graphics))
             {
                 return graphics;
             }
@@ -553,8 +558,15 @@ namespace rachis::vulkan
     {
         QueueFamilyClaims claims(families);
         VulkanQueueFamilies selected{};
-        selected.graphics = claims.firstUnclaimed(
-            [](const VkQueueFamilyProperties& family) { return (family.queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0; });
+        selected.graphics = claims.firstUnclaimed([](const VkQueueFamilyProperties& family) {
+            return (family.queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) ==
+                   (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT);
+        });
+        if (selected.graphics == VK_QUEUE_FAMILY_IGNORED)
+        {
+            selected.graphics = claims.firstUnclaimed(
+                [](const VkQueueFamilyProperties& family) { return (family.queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0; });
+        }
         if (selected.graphics == VK_QUEUE_FAMILY_IGNORED)
         {
             return selected;
