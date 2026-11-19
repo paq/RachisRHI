@@ -714,6 +714,7 @@ namespace rachis::vulkan
             std::vector<std::uint32_t> callees;
             std::vector<std::uint32_t> referencedIds;
             std::vector<std::uint32_t> writtenPointers;
+            std::vector<std::uint32_t> readPointers;
         };
 
         constexpr std::size_t spirvHeaderWordCount = 5;
@@ -1491,6 +1492,7 @@ namespace rachis::vulkan
             std::unordered_set<std::uint32_t> pointSizeVariables;
             std::unordered_map<std::uint32_t, std::uint32_t> pointSizeMembers;
             std::unordered_set<std::uint32_t> drawIndexVariables;
+            std::unordered_map<std::uint32_t, std::uint32_t> drawIndexMembers;
         };
 
         struct SpirvVariableTable final
@@ -1748,6 +1750,11 @@ namespace rachis::vulkan
                      instruction.words[4] == spirvBuiltInPointSize)
             {
                 decorations.pointSizeMembers[structId] = member;
+            }
+            else if (decoration == spirvDecorationBuiltIn && hasLiteral &&
+                     instruction.words[4] == spirvBuiltInDrawIndex)
+            {
+                decorations.drawIndexMembers[structId] = member;
             }
         }
 
@@ -2260,18 +2267,31 @@ namespace rachis::vulkan
             const auto wordCount = instruction.wordCount;
             switch (instruction.opcode)
             {
+            case spirvOpLoad:
+                if (wordCount >= 4)
+                {
+                    function.readPointers.push_back(words[3]);
+                }
+                return;
             case spirvOpStore:
+                if (wordCount >= 3)
+                {
+                    function.writtenPointers.push_back(words[1]);
+                }
+                return;
             case spirvOpCopyMemory:
             case spirvOpCopyMemorySized:
                 if (wordCount >= 3)
                 {
                     function.writtenPointers.push_back(words[1]);
+                    function.readPointers.push_back(words[2]);
                 }
                 return;
             case spirvOpFunctionCall:
                 for (std::uint32_t i = 4; i < wordCount; ++i)
                 {
                     function.writtenPointers.push_back(words[i]);
+                    function.readPointers.push_back(words[i]);
                 }
                 return;
             case spirvOpAccessChain:
@@ -2527,9 +2547,20 @@ namespace rachis::vulkan
         {
             std::unordered_set<std::uint32_t> usedIds;
             bool writesPointSize = false;
+            bool readsDrawIndex = false;
         };
 
-        [[nodiscard]] bool pointerWritesPointSize(const SpirvModule& module, std::uint32_t pointer)
+        struct BuiltInVariableReference final
+        {
+            const std::unordered_set<std::uint32_t>* variables = nullptr;
+            const std::unordered_map<std::uint32_t, std::uint32_t>* members = nullptr;
+            std::uint32_t storageClass = 0;
+            const std::unordered_set<std::uint32_t>* interfaceIds = nullptr;
+        };
+
+        [[nodiscard]] bool pointerReachesBuiltIn(const SpirvModule& module,
+                                                 std::uint32_t pointer,
+                                                 const BuiltInVariableReference& builtIn)
         {
             std::optional<std::uint32_t> memberIndexId;
             auto root = pointer;
@@ -2548,19 +2579,20 @@ namespace rachis::vulkan
             }
             const auto storage = module.variables.storageClasses.find(root);
             const auto variableType = module.variables.typeIds.find(root);
-            if (storage == module.variables.storageClasses.end() || storage->second != spirvStorageClassOutput ||
-                variableType == module.variables.typeIds.end())
+            if (storage == module.variables.storageClasses.end() || storage->second != builtIn.storageClass ||
+                variableType == module.variables.typeIds.end() ||
+                (builtIn.interfaceIds != nullptr && !builtIn.interfaceIds->contains(root)))
             {
                 return false;
             }
-            if (module.decorations.pointSizeVariables.contains(root))
+            if (builtIn.variables->contains(root))
             {
                 return true;
             }
             const auto pointerType = module.types.find(variableType->second);
             const auto pointeeType = pointerType != module.types.end() ? pointerType->second.pointee : 0U;
-            const auto member = module.decorations.pointSizeMembers.find(pointeeType);
-            if (member == module.decorations.pointSizeMembers.end())
+            const auto member = builtIn.members->find(pointeeType);
+            if (member == builtIn.members->end())
             {
                 return false;
             }
@@ -2572,14 +2604,16 @@ namespace rachis::vulkan
             return index != module.constants.scalars.end() && index->second == member->second;
         }
 
-        [[nodiscard]] bool entryPointWritesPointSize(const SpirvModule& module,
-                                                     const std::unordered_set<std::uint32_t>& reachableFunctions)
+        [[nodiscard]] bool entryPointAccessesBuiltIn(const SpirvModule& module,
+                                                     const std::unordered_set<std::uint32_t>& reachableFunctions,
+                                                     std::vector<std::uint32_t> FunctionReflectionInfo::* pointers,
+                                                     const BuiltInVariableReference& builtIn)
         {
             return std::ranges::any_of(reachableFunctions, [&](std::uint32_t fnId) {
                 const auto fnIt = module.functions.find(fnId);
                 return fnIt != module.functions.end() &&
-                       std::ranges::any_of(fnIt->second.writtenPointers, [&](std::uint32_t pointer) {
-                           return pointerWritesPointSize(module, pointer);
+                       std::ranges::any_of(fnIt->second.*pointers, [&](std::uint32_t pointer) {
+                           return pointerReachesBuiltIn(module, pointer, builtIn);
                        });
             });
         }
@@ -2589,7 +2623,23 @@ namespace rachis::vulkan
             const auto reachableFunctions = collectReachableFunctions(module.functions, *module.entryPoint.functionId);
             return EntryPointUsage{
                 .usedIds = collectUsedIds(module, reachableFunctions),
-                .writesPointSize = entryPointWritesPointSize(module, reachableFunctions),
+                .writesPointSize = entryPointAccessesBuiltIn(module,
+                                                             reachableFunctions,
+                                                             &FunctionReflectionInfo::writtenPointers,
+                                                             BuiltInVariableReference{
+                                                                 .variables = &module.decorations.pointSizeVariables,
+                                                                 .members = &module.decorations.pointSizeMembers,
+                                                                 .storageClass = spirvStorageClassOutput,
+                                                             }),
+                .readsDrawIndex = entryPointAccessesBuiltIn(module,
+                                                            reachableFunctions,
+                                                            &FunctionReflectionInfo::readPointers,
+                                                            BuiltInVariableReference{
+                                                                .variables = &module.decorations.drawIndexVariables,
+                                                                .members = &module.decorations.drawIndexMembers,
+                                                                .storageClass = spirvStorageClassInput,
+                                                                .interfaceIds = &module.entryPoint.interfaceIds,
+                                                            }),
             };
         }
 
@@ -3371,9 +3421,7 @@ namespace rachis::vulkan
                 .specIds = std::move(module->specialization.specIds),
                 .non32BitSpecIds = std::move(module->specialization.non32BitSpecIds),
                 .writesPointSize = usage.writesPointSize,
-                .readsDrawIndex = std::ranges::any_of(
-                    module->entryPoint.interfaceIds,
-                    [&](std::uint32_t id) { return module->decorations.drawIndexVariables.contains(id); }),
+                .readsDrawIndex = usage.readsDrawIndex,
             };
             if (auto reflected = reflectVariables(*module, usage.usedIds, stage, reflection); !reflected)
             {

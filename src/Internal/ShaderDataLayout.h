@@ -659,17 +659,14 @@ namespace rachis::shader_tool
                     return std::ranges::find(entry->interfaceIds, id) != entry->interfaceIds.end();
                 };
                 Interface result;
+                result.drawIndex = readsDrawIndex(*entry);
                 for (const auto& [id, variable] : variables_)
                 {
                     const auto storage = variable.storageClass;
                     if (storage == storageInput)
                     {
-                        if (const auto builtIn = builtIns_.find(id);
-                            builtIn != builtIns_.end() && builtIn->second == builtInDrawIndex && uses(id))
-                        {
-                            result.drawIndex = true;
-                        }
-                        if (executionModel == executionModelVertex && uses(id) && !builtIns_.contains(id))
+                        if (executionModel == executionModelVertex && uses(id) && !builtIns_.contains(id) &&
+                            !isBuiltInBlock(variable))
                         {
                             if (auto appended = appendVertexInput(id, variable, result.vertexInputLocations); !appended)
                             {
@@ -727,6 +724,18 @@ namespace rachis::shader_tool
             }
 
         private:
+            struct AccessChain final
+            {
+                std::uint32_t base = 0;
+                std::optional<std::uint32_t> firstIndex;
+            };
+
+            struct Function final
+            {
+                std::vector<std::uint32_t> callees;
+                std::vector<std::uint32_t> readPointers;
+            };
+
             static constexpr std::uint32_t opName = 5;
             static constexpr std::uint32_t opMemberName = 6;
             static constexpr std::uint32_t opEntryPoint = 15;
@@ -747,7 +756,15 @@ namespace rachis::shader_tool
             static constexpr std::uint32_t opConstantComposite = 44;
             static constexpr std::uint32_t opSpecConstant = 50;
             static constexpr std::uint32_t opSpecConstantComposite = 51;
+            static constexpr std::uint32_t opFunction = 54;
+            static constexpr std::uint32_t opFunctionEnd = 56;
+            static constexpr std::uint32_t opFunctionCall = 57;
             static constexpr std::uint32_t opVariable = 59;
+            static constexpr std::uint32_t opLoad = 61;
+            static constexpr std::uint32_t opCopyMemory = 63;
+            static constexpr std::uint32_t opCopyMemorySized = 64;
+            static constexpr std::uint32_t opAccessChain = 65;
+            static constexpr std::uint32_t opInBoundsAccessChain = 66;
             static constexpr std::uint32_t opDecorate = 71;
             static constexpr std::uint32_t opMemberDecorate = 72;
             static constexpr std::uint32_t opExecutionModeId = 331;
@@ -775,6 +792,83 @@ namespace rachis::shader_tool
             static constexpr std::uint32_t storagePushConstant = 9;
             static constexpr std::uint32_t storageStorageBuffer = 12;
             static constexpr std::uint32_t unboundedBindingCount = 0xFFFFFFFFU;
+
+            [[nodiscard]] bool isBuiltInBlock(const Variable& variable) const
+            {
+                const auto pointee = pointeeType(variable);
+                return pointee.has_value() && builtInBlocks_.contains(*pointee);
+            }
+
+            [[nodiscard]] bool pointerReadsDrawIndex(const EntryPoint& entry, std::uint32_t pointer) const
+            {
+                std::optional<std::uint32_t> memberIndex;
+                auto root = pointer;
+                for (std::size_t depth = 0; depth <= accessChains_.size(); ++depth)
+                {
+                    const auto chain = accessChains_.find(root);
+                    if (chain == accessChains_.end())
+                    {
+                        break;
+                    }
+                    if (chain->second.firstIndex.has_value())
+                    {
+                        memberIndex = chain->second.firstIndex;
+                    }
+                    root = chain->second.base;
+                }
+                const auto variable = std::ranges::find(variables_, root, &std::pair<std::uint32_t, Variable>::first);
+                if (variable == variables_.end() || variable->second.storageClass != storageInput ||
+                    std::ranges::find(entry.interfaceIds, root) == entry.interfaceIds.end())
+                {
+                    return false;
+                }
+                if (const auto builtIn = builtIns_.find(root);
+                    builtIn != builtIns_.end() && builtIn->second == builtInDrawIndex)
+                {
+                    return true;
+                }
+                const auto pointee = pointeeType(variable->second);
+                const auto member = pointee.has_value() ? drawIndexMembers_.find(*pointee) : drawIndexMembers_.end();
+                if (member == drawIndexMembers_.end())
+                {
+                    return false;
+                }
+                if (!memberIndex.has_value())
+                {
+                    return true;
+                }
+                const auto index = constants_.find(*memberIndex);
+                return index != constants_.end() && index->second == member->second;
+            }
+
+            [[nodiscard]] bool readsDrawIndex(const EntryPoint& entry) const
+            {
+                std::vector<std::uint32_t> pending{entry.function};
+                std::vector<std::uint32_t> visited;
+                while (!pending.empty())
+                {
+                    const auto current = pending.back();
+                    pending.pop_back();
+                    if (std::ranges::find(visited, current) != visited.end())
+                    {
+                        continue;
+                    }
+                    visited.push_back(current);
+                    const auto found = functions_.find(current);
+                    if (found == functions_.end())
+                    {
+                        continue;
+                    }
+                    if (std::ranges::any_of(found->second.readPointers, [this, &entry](std::uint32_t pointer) {
+                            return pointerReadsDrawIndex(entry, pointer);
+                        }))
+                    {
+                        return true;
+                    }
+                    pending.insert(pending.end(), found->second.callees.begin(), found->second.callees.end());
+                }
+                return false;
+            }
 
             [[nodiscard]] std::optional<std::uint32_t> pointeeType(const Variable& variable) const
             {
@@ -1101,8 +1195,68 @@ namespace rachis::shader_tool
                 return text;
             }
 
+            void functionInstruction(std::uint32_t opcode, std::span<const std::uint32_t> operands)
+            {
+                auto& function = functions_[currentFunction_];
+                switch (opcode)
+                {
+                case opFunctionCall:
+                    if (operands.size() >= 3)
+                    {
+                        function.callees.push_back(operands[2]);
+                        function.readPointers.insert(function.readPointers.end(), operands.begin() + 3, operands.end());
+                    }
+                    break;
+                case opLoad:
+                    if (operands.size() >= 3)
+                    {
+                        function.readPointers.push_back(operands[2]);
+                    }
+                    break;
+                case opCopyMemory:
+                case opCopyMemorySized:
+                    if (operands.size() >= 2)
+                    {
+                        function.readPointers.push_back(operands[1]);
+                    }
+                    break;
+                case opAccessChain:
+                case opInBoundsAccessChain:
+                    if (operands.size() >= 3)
+                    {
+                        accessChains_[operands[1]] = AccessChain{
+                            .base = operands[2],
+                            .firstIndex =
+                                operands.size() >= 4 ? std::optional<std::uint32_t>{operands[3]} : std::nullopt,
+                        };
+                    }
+                    break;
+                default:
+                    break;
+                }
+            }
+
             void instruction(std::uint32_t opcode, std::span<const std::uint32_t> operands)
             {
+                if (opcode == opFunction && operands.size() >= 2)
+                {
+                    currentFunction_ = operands[1];
+                    functions_.try_emplace(currentFunction_);
+                    return;
+                }
+                if (opcode == opFunctionEnd)
+                {
+                    currentFunction_ = 0;
+                    return;
+                }
+                if (currentFunction_ != 0)
+                {
+                    functionInstruction(opcode, operands);
+                    if (opcode != opVariable)
+                    {
+                        return;
+                    }
+                }
                 switch (opcode)
                 {
                 case opName:
@@ -1237,6 +1391,14 @@ namespace rachis::shader_tool
                         {
                             nonWritableMembers_[operands[0]].insert(operands[1]);
                         }
+                        else if (operands[2] == decorationBuiltIn && operands.size() >= 4)
+                        {
+                            builtInBlocks_.insert(operands[0]);
+                            if (operands[3] == builtInDrawIndex)
+                            {
+                                drawIndexMembers_[operands[0]] = operands[1];
+                            }
+                        }
                     }
                     break;
                 default:
@@ -1331,6 +1493,11 @@ namespace rachis::shader_tool
             std::map<std::uint32_t, std::set<std::uint32_t>> nonWritableMembers_;
             std::set<std::uint32_t> blocks_;
             std::set<std::uint32_t> bufferBlocks_;
+            std::map<std::uint32_t, std::uint32_t> drawIndexMembers_;
+            std::set<std::uint32_t> builtInBlocks_;
+            std::unordered_map<std::uint32_t, Function> functions_;
+            std::unordered_map<std::uint32_t, AccessChain> accessChains_;
+            std::uint32_t currentFunction_ = 0;
         };
 
     } // namespace detail

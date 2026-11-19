@@ -10,6 +10,7 @@
 #error Public Rachis headers must not include Vulkan headers.
 #endif
 
+#include "Internal/ShaderInterfaceReflection.h"
 #include "Internal/VulkanShaders.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -1026,6 +1027,96 @@ namespace
         }
         return createWithoutDevice(
             bytecode, capabilities, stage, {.bindings = bindings, .workgroupSize = workgroupSize}, features);
+    }
+
+    constexpr std::uint32_t spirvBuiltInDrawIndex = 4426;
+
+    enum class DrawIndexRead : std::uint8_t
+    {
+        none,
+        directVariable,
+        blockMember,
+        otherBlockMember,
+        wholeBlock,
+    };
+
+    [[nodiscard]] std::vector<std::byte> vertexModuleReadingDrawIndex(DrawIndexRead read)
+    {
+        constexpr std::uint32_t mainId = 1;
+        constexpr std::uint32_t voidTypeId = 2;
+        constexpr std::uint32_t functionTypeId = 3;
+        constexpr std::uint32_t labelId = 4;
+        constexpr std::uint32_t uintTypeId = 5;
+        constexpr std::uint32_t uintInputTypeId = 6;
+        constexpr std::uint32_t drawIndexId = 7;
+        constexpr std::uint32_t blockTypeId = 8;
+        constexpr std::uint32_t blockInputTypeId = 9;
+        constexpr std::uint32_t blockId = 10;
+        constexpr std::uint32_t memberZeroId = 11;
+        constexpr std::uint32_t memberOneId = 12;
+        constexpr std::uint32_t memberPointerId = 13;
+        constexpr std::uint32_t loadedId = 14;
+        constexpr std::uint32_t idBound = 15;
+        const std::vector<std::uint32_t> header{spirvMagicNumber, spirvVersion1_0, 0U, idBound, 0U};
+        std::vector<std::uint32_t> body;
+        switch (read)
+        {
+        case DrawIndexRead::none:
+            break;
+        case DrawIndexRead::directVariable:
+            body = spirvInstruction(spirvOpLoad, {uintTypeId, loadedId, drawIndexId});
+            break;
+        case DrawIndexRead::blockMember:
+        case DrawIndexRead::otherBlockMember:
+            body = joinSpirvWords({
+                spirvInstruction(spirvOpAccessChain,
+                                 {uintInputTypeId,
+                                  memberPointerId,
+                                  blockId,
+                                  read == DrawIndexRead::blockMember ? memberOneId : memberZeroId}),
+                spirvInstruction(spirvOpLoad, {uintTypeId, loadedId, memberPointerId}),
+            });
+            break;
+        case DrawIndexRead::wholeBlock:
+            body = spirvInstruction(spirvOpLoad, {blockTypeId, loadedId, blockId});
+            break;
+        }
+        return joinSpirvBytes({
+            header,
+            spirvInstruction(spirvOpCapability, {spirvCapabilityShader}),
+            spirvInstruction(spirvOpCapability, {spirvCapabilityDrawParameters}),
+            spirvInstruction(spirvOpMemoryModel, {spirvAddressingLogical, spirvMemoryModelGlsl450}),
+            vertexEntryPoint(mainId, {drawIndexId, blockId}),
+            spirvInstruction(spirvOpDecorate, {drawIndexId, spirvDecorationBuiltIn, spirvBuiltInDrawIndex}),
+            spirvInstruction(spirvOpMemberDecorate, {blockTypeId, 0U, spirvDecorationBuiltIn, spirvBuiltInVertexIndex}),
+            spirvInstruction(spirvOpMemberDecorate, {blockTypeId, 1U, spirvDecorationBuiltIn, spirvBuiltInDrawIndex}),
+            spirvInstruction(spirvOpDecorate, {blockTypeId, spirvDecorationBlock}),
+            spirvInstruction(spirvOpTypeVoid, {voidTypeId}),
+            spirvInstruction(spirvOpTypeFunction, {functionTypeId, voidTypeId}),
+            spirvInstruction(spirvOpTypeInt, {uintTypeId, 32U, 0U}),
+            spirvInstruction(spirvOpTypePointer, {uintInputTypeId, spirvStorageClassInput, uintTypeId}),
+            spirvInstruction(spirvOpVariable, {uintInputTypeId, drawIndexId, spirvStorageClassInput}),
+            spirvInstruction(spirvOpTypeStruct, {blockTypeId, uintTypeId, uintTypeId}),
+            spirvInstruction(spirvOpTypePointer, {blockInputTypeId, spirvStorageClassInput, blockTypeId}),
+            spirvInstruction(spirvOpVariable, {blockInputTypeId, blockId, spirvStorageClassInput}),
+            spirvInstruction(spirvOpConstant, {uintTypeId, memberZeroId, 0U}),
+            spirvInstruction(spirvOpConstant, {uintTypeId, memberOneId, 1U}),
+            spirvInstruction(spirvOpFunction, {voidTypeId, mainId, spirvFunctionControlNone, functionTypeId}),
+            spirvInstruction(spirvOpLabel, {labelId}),
+            body,
+            spirvInstruction(spirvOpReturn, {}),
+            spirvInstruction(spirvOpFunctionEnd, {}),
+        });
+    }
+
+    [[nodiscard]] rachis::Result<rachis::ShaderModuleHandle> createDrawIndexVertex(std::span<const std::byte> bytecode,
+                                                                                   bool drawIndex)
+    {
+        return createWithoutDevice(bytecode,
+                                   rachis::DeviceCapabilities{},
+                                   rachis::ShaderStage::vertex,
+                                   {.drawIndex = drawIndex},
+                                   {.shaderDrawParameters = true});
     }
 
     [[nodiscard]] rachis::Result<rachis::ShaderLibraryHandle> createLibraryWithoutDevice(
@@ -3212,4 +3303,41 @@ TEST_CASE("Vulkan shader modules reject SPIR-V cut before a function or ID that 
         CHECK(rejectsAsInvalidArgument(device, bytecode, "main", shaderInterface));
     }
     CHECK(device.diagnosticCounts().errors == 0);
+}
+
+TEST_CASE(
+    "Vulkan and the shader tool read the draw index from a loaded variable or block member, not an interface list",
+    "[size:small][rhi][vulkan][shader][module][draw-index]")
+{
+    using rachis::shader_tool::InterfaceStage;
+    struct Case final
+    {
+        const char* name = nullptr;
+        DrawIndexRead read = DrawIndexRead::none;
+        bool reads = false;
+    };
+    for (const auto& [name, read, reads] : std::array{
+             Case{"listed but never loaded", DrawIndexRead::none, false},
+             Case{"loaded variable", DrawIndexRead::directVariable, true},
+             Case{"loaded block member", DrawIndexRead::blockMember, true},
+             Case{"another member of the block", DrawIndexRead::otherBlockMember, false},
+             Case{"whole block load", DrawIndexRead::wholeBlock, true},
+         })
+    {
+        INFO(name);
+        const auto bytecode = vertexModuleReadingDrawIndex(read);
+        const auto reflected = rachis::shader_tool::spirvReadsDrawIndex(bytecode, "main", InterfaceStage::vertex);
+        REQUIRE(reflected.has_value());
+        CHECK(*reflected == reads);
+
+        auto matching = createDrawIndexVertex(bytecode, reads);
+        if (!matching)
+        {
+            UNSCOPED_INFO(matching.error().message);
+        }
+        CHECK(matching.has_value());
+        auto mismatched = createDrawIndexVertex(bytecode, !reads);
+        REQUIRE_FALSE(mismatched.has_value());
+        CHECK(mismatched.error().code == rachis::ErrorCode::invalidArgument);
+    }
 }
