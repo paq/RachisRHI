@@ -212,9 +212,9 @@ namespace rachis
     {
         std::span<const BindingLayoutHandle> bindingLayouts = {};
         std::span<const PushConstantRange> pushConstantRanges = {};
+        std::string_view label = {};
 
         bool drawIndex = false;
-        std::string_view label = {};
     };
 
     struct DerivedPipelineLayout final
