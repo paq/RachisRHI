@@ -300,6 +300,7 @@ namespace rachis::metal
     void holdNextCommitFeedback(std::shared_ptr<MetalCommitFeedbackGate> gate);
     void holdNextCommandPoolReset(std::shared_ptr<MetalCommitFeedbackGate> gate);
     void holdNextDrawableAcquire(std::shared_ptr<MetalCommitFeedbackGate> gate);
+    void holdNextSubmitAfterResidencyFold(std::shared_ptr<MetalCommitFeedbackGate> gate);
     [[nodiscard]] std::weak_ptr<void> boundBufferOwnerObserver(BufferHandle buffer);
     [[nodiscard]] Result<std::size_t> boundAllocationTelemetryCount();
     [[nodiscard]] Status injectMetalDeviceLoss(DeviceFaultStatus status = DeviceFaultStatus::removed);
@@ -328,6 +329,9 @@ namespace rachis::metal
         const void* version = nullptr;
         const void* elements = nullptr;
         std::weak_ptr<void> argumentBuffer;
+        bool contentsLocked = false;
+        std::size_t replacedCount = 0;
+        std::size_t replacedCapacity = 0;
     };
 
     [[nodiscard]] MetalBindingSetStorage boundBindingSetStorage(BindingSetHandle set);

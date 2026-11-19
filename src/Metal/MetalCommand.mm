@@ -1,5 +1,6 @@
 #include "Metal/MetalInternal.h"
 
+#include "Common/VectorReserve.h"
 #include "Internal/PortableValidation.h"
 #ifdef RACHIS_TESTING
 #include "Internal/CommandPoolRetirementTestHook.h"
@@ -502,7 +503,7 @@ namespace rachis::metal
     {
         try
         {
-            entry.foldedArgumentContents.reserve(entry.foldedArgumentContents.size() + versionCount);
+            detail::reserveAdditional(entry.foldedArgumentContents, versionCount);
         }
         catch (const std::bad_alloc&)
         {
@@ -516,7 +517,7 @@ namespace rachis::metal
     {
         for (const auto& contents : entry.foldedArgumentContents)
         {
-            const std::scoped_lock lock(contents->mutex);
+            const std::scoped_lock lock(*contents->mutex);
             for (const auto& [key, count] : contents->residentElements)
             {
                 if (count != 0)

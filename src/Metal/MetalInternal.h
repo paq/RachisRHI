@@ -481,8 +481,11 @@ namespace rachis::metal
     {
         std::vector<std::shared_ptr<void>> replaced;
         std::shared_ptr<MetalArgumentEra> next;
+        std::shared_ptr<std::mutex> chainMutex;
 
-        MetalArgumentEra() = default;
+        explicit MetalArgumentEra(std::shared_ptr<std::mutex> mutex) noexcept : chainMutex(std::move(mutex))
+        {
+        }
         MetalArgumentEra(const MetalArgumentEra&) = delete;
         MetalArgumentEra& operator=(const MetalArgumentEra&) = delete;
         MetalArgumentEra(MetalArgumentEra&&) = delete;
@@ -492,7 +495,7 @@ namespace rachis::metal
 
     struct MetalArgumentBufferContents final
     {
-        std::mutex mutex;
+        std::shared_ptr<std::mutex> mutex = std::make_shared<std::mutex>();
         std::vector<MetalBindingSlot> elements;
         std::unordered_map<const void*, std::uint32_t> residentElements;
         std::weak_ptr<MetalArgumentEra> era;
