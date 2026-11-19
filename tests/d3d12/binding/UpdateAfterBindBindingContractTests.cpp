@@ -420,6 +420,38 @@ namespace
         CHECK_FALSE(entry->logicalAlive);
     }
 
+    class OwnedHandle final
+    {
+    public:
+        OwnedHandle() = default;
+
+        ~OwnedHandle()
+        {
+            if (value_ != nullptr)
+            {
+                static_cast<void>(CloseHandle(value_));
+            }
+        }
+
+        OwnedHandle(const OwnedHandle&) = delete;
+        OwnedHandle& operator=(const OwnedHandle&) = delete;
+        OwnedHandle(OwnedHandle&&) = delete;
+        OwnedHandle& operator=(OwnedHandle&&) = delete;
+
+        [[nodiscard]] HANDLE* put() noexcept
+        {
+            return &value_;
+        }
+
+        [[nodiscard]] HANDLE get() const noexcept
+        {
+            return value_;
+        }
+
+    private:
+        HANDLE value_ = nullptr;
+    };
+
     class QueueBlocker final
     {
     public:
@@ -433,12 +465,12 @@ namespace
             Microsoft::WRL::ComPtr<ID3D12Device> native;
             REQUIRE(SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&native))));
             REQUIRE(SUCCEEDED(native->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&fence_))));
-            REQUIRE(SUCCEEDED(native->CreateSharedHandle(fence_.Get(), nullptr, GENERIC_ALL, nullptr, &handle_)));
+            REQUIRE(SUCCEEDED(native->CreateSharedHandle(fence_.Get(), nullptr, GENERIC_ALL, nullptr, handle_.put())));
             const rachis::SharedTimelinePointView point{
                 .handle =
                     rachis::SharedHandleView{
                         .type = rachis::SharedHandleType::windowsNt,
-                        .value = std::bit_cast<std::uintptr_t>(handle_),
+                        .value = std::bit_cast<std::uintptr_t>(handle_.get()),
                     },
                 .value = 1,
             };
@@ -453,10 +485,6 @@ namespace
         ~QueueBlocker()
         {
             release();
-            if (handle_ != nullptr)
-            {
-                static_cast<void>(CloseHandle(handle_));
-            }
         }
 
         QueueBlocker(const QueueBlocker&) = delete;
@@ -474,7 +502,7 @@ namespace
 
     private:
         Microsoft::WRL::ComPtr<ID3D12Fence> fence_;
-        HANDLE handle_ = nullptr;
+        OwnedHandle handle_;
     };
 
 } // namespace
