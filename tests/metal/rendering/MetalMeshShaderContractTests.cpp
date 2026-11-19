@@ -197,7 +197,8 @@ namespace
         auto mapped = device.mapBuffer(target.readback);
         REQUIRE(mapped.has_value());
         const auto at = [&](std::uint32_t x, std::uint32_t y) {
-            return meshDrawCount(mapped->data + static_cast<std::uint64_t>(y) * rowPitch + static_cast<std::uint64_t>(x) * 4U);
+            return meshDrawCount(mapped->data + static_cast<std::uint64_t>(y) * rowPitch +
+                                 static_cast<std::uint64_t>(x) * 4U);
         };
         const MeshCoverage coverage{
             .left = at(leftColumn, sampleRow),
@@ -632,8 +633,8 @@ TEST_CASE("Metal mesh pipelines dispatch directly and indirectly with and withou
             CAPTURE(gpuCount);
             auto countBuffer = device.createBuffer({
                 .size = sizeof(std::uint32_t),
-                .usage = rachis::BufferUsage::indirect | rachis::BufferUsage::storage |
-                         rachis::BufferUsage::copyDestination,
+                .usage =
+                    rachis::BufferUsage::indirect | rachis::BufferUsage::storage | rachis::BufferUsage::copyDestination,
                 .memoryType = rachis::MemoryType::upload,
             });
             REQUIRE(countBuffer.has_value());

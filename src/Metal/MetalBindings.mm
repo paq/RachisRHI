@@ -202,7 +202,8 @@ namespace rachis::metal
             MetalSlotTables tables;
             for (const auto& entry : entries)
             {
-                auto& slots = hasAny(entry.flags, BindingFlag::variableDescriptorCount) ? tables.elements : tables.fixed;
+                auto& slots =
+                    hasAny(entry.flags, BindingFlag::variableDescriptorCount) ? tables.elements : tables.fixed;
                 const auto count = metalLogicalDescriptorCount(entry, variableDescriptorCount);
                 slots.reserve(slots.size() + count);
                 for (std::uint32_t index = 0; index < count; ++index)
@@ -459,8 +460,9 @@ namespace rachis::metal
             std::ranges::sort(sorted);
             if (std::ranges::adjacent_find(sorted) != sorted.end())
             {
-                return std::unexpected(metalSelectionError(
-                    ErrorCode::invalidArgument, "A binding update cannot write the same descriptor element more than once."));
+                return std::unexpected(
+                    metalSelectionError(ErrorCode::invalidArgument,
+                                        "A binding update cannot write the same descriptor element more than once."));
             }
             return addresses;
         }
@@ -1504,8 +1506,9 @@ namespace rachis::metal
             if (std::ranges::adjacent_find(prepared.staged, {}, &MetalStagedElementWrite::element) !=
                 prepared.staged.end())
             {
-                return std::unexpected(metalSelectionError(
-                    ErrorCode::invalidArgument, "A binding update cannot write the same descriptor element more than once."));
+                return std::unexpected(
+                    metalSelectionError(ErrorCode::invalidArgument,
+                                        "A binding update cannot write the same descriptor element more than once."));
             }
             return {};
         }

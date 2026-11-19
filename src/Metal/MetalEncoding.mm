@@ -3579,9 +3579,9 @@ namespace rachis::metal
         [[nodiscard]] Status metalRequireMeshRecordArguments(const MetalPipelineRecord& pipeline,
                                                              const MetalIndirectRecordLayout& layout)
         {
-            const bool tablesRead = metalStageReadsArgumentTable(pipeline.meshStageBindings) &&
-                                    (!pipeline.hasObjectShader ||
-                                     metalStageReadsArgumentTable(pipeline.objectStageBindings));
+            const bool tablesRead =
+                metalStageReadsArgumentTable(pipeline.meshStageBindings) &&
+                (!pipeline.hasObjectShader || metalStageReadsArgumentTable(pipeline.objectStageBindings));
             if (layout.maxRecords > 1 && !tablesRead)
             {
                 return std::unexpected(metalSelectionError(

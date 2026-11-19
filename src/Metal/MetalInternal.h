@@ -1434,9 +1434,8 @@ namespace rachis::metal
 
     [[nodiscard]] inline std::uint32_t metalArgumentBufferSamplerLimit(id<MTLDevice> device) noexcept
     {
-        return device != nil && [device supportsFamily:MTLGPUFamilyApple9]
-                   ? metalMaxArgumentBufferSamplers
-                   : metalMaxArgumentBufferSamplersBeforeApple9;
+        return device != nil && [device supportsFamily:MTLGPUFamilyApple9] ? metalMaxArgumentBufferSamplers
+                                                                           : metalMaxArgumentBufferSamplersBeforeApple9;
     }
 
     [[nodiscard]] constexpr std::uint32_t metalArgumentBufferLimit(BindingType type,

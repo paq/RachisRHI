@@ -439,19 +439,19 @@ TEST_CASE("Metal reflection accepts only a one-uint32 space-5 constant buffer as
     })";
     };
 
-    const auto accepted = rachis::metal::parseSlangReflectionJson(
-        reflection("5", "4"), "vertexMain", rachis::ShaderStage::vertex);
+    const auto accepted =
+        rachis::metal::parseSlangReflectionJson(reflection("5", "4"), "vertexMain", rachis::ShaderStage::vertex);
     REQUIRE(accepted.has_value());
     CHECK(accepted->drawIndex);
     CHECK(accepted->drawIndexMetalIndex == 0);
 
-    const auto wideConstant = rachis::metal::parseSlangReflectionJson(
-        reflection("5", "16"), "vertexMain", rachis::ShaderStage::vertex);
+    const auto wideConstant =
+        rachis::metal::parseSlangReflectionJson(reflection("5", "16"), "vertexMain", rachis::ShaderStage::vertex);
     REQUIRE_FALSE(wideConstant.has_value());
     CHECK(wideConstant.error().code == rachis::ErrorCode::invalidArgument);
 
-    const auto otherSpace = rachis::metal::parseSlangReflectionJson(
-        reflection("1", "4"), "vertexMain", rachis::ShaderStage::vertex);
+    const auto otherSpace =
+        rachis::metal::parseSlangReflectionJson(reflection("1", "4"), "vertexMain", rachis::ShaderStage::vertex);
     REQUIRE_FALSE(otherSpace.has_value());
     CHECK(otherSpace.error().code == rachis::ErrorCode::invalidArgument);
 }

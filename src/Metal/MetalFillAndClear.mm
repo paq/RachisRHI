@@ -221,15 +221,15 @@ RACHIS_CLEAR_KERNELS(Sint, int, clear.s)
         }
 
         [[nodiscard]] Result<id<MTL4ArgumentTable>> metalAcquireInternalDispatchTable(id<MTLDevice> device,
-                                                                                    MetalCommandEntry& entry,
-                                                                                    bool texture)
+                                                                                      MetalCommandEntry& entry,
+                                                                                      bool texture)
         {
             return acquireMetalArgumentTable(device, entry, MetalArgumentTableStage::compute, 1, texture ? 1 : 0, 0);
         }
 
         [[nodiscard]] Result<MetalPushConstantSlice> metalCaptureInternalConstants(id<MTLDevice> device,
-                                                                                 MetalCommandEntry& entry,
-                                                                                 std::span<const std::byte> constants)
+                                                                                   MetalCommandEntry& entry,
+                                                                                   std::span<const std::byte> constants)
         {
             auto slice =
                 metalCapturePushConstantSlice(device, entry, constants, static_cast<std::uint32_t>(constants.size()));

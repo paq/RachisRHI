@@ -297,11 +297,8 @@ namespace
         for (std::size_t index = 0; index < counts.size(); ++index)
         {
             REQUIRE(device
-                        .fillBuffer(command,
-                                    countBuffer,
-                                    index * sizeof(std::uint32_t),
-                                    sizeof(std::uint32_t),
-                                    counts[index])
+                        .fillBuffer(
+                            command, countBuffer, index * sizeof(std::uint32_t), sizeof(std::uint32_t), counts[index])
                         .has_value());
         }
         REQUIRE(device

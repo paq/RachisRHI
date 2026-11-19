@@ -528,7 +528,8 @@ TEST_CASE("Metal update-after-bind writes swap, repeat, and clear elements in on
         elementWrite(0, first),
         elementWrite(1, second),
     };
-    auto set = rachis::test::createBindingSet(device, {.layout = *layout, .writes = writes, .variableDescriptorCount = 2});
+    auto set =
+        rachis::test::createBindingSet(device, {.layout = *layout, .writes = writes, .variableDescriptorCount = 2});
     REQUIRE(set.has_value());
     const std::array layouts{*layout};
     const std::array pushRanges{rachis::PushConstantRange{rachis::ShaderStage::compute, 0, 2 * sizeof(std::uint32_t)}};
