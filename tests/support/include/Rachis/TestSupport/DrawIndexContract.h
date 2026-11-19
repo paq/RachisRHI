@@ -362,7 +362,8 @@ namespace rachis::test::draw_index
         const auto capabilities = requireCapabilities(device);
         REQUIRE(capabilities.shaderDrawIndex);
         REQUIRE(capabilities.multiDrawIndirect);
-        REQUIRE(capabilities.drawIndirectCount);
+        const bool counted = capabilities.drawIndirectCount;
+        const std::uint32_t maxRecords = counted ? recordCount : drawnRecordCount;
 
         checkModuleValidation(device, bytecode);
 
@@ -469,12 +470,13 @@ namespace rachis::test::draw_index
         const std::array<std::uint32_t, 1> drawnCount{drawnRecordCount};
         const auto countBuffer =
             uploadBuffer(device, BufferUsage::indirect, std::span<const std::uint32_t>(drawnCount));
+        const BufferHandle recordCountBuffer = counted ? countBuffer : BufferHandle{};
 
         Target target(device);
         const IndirectDrawDesc prefixedDraws{
             .argumentBuffer = drawArguments,
-            .maxDrawCount = recordCount,
-            .countBuffer = countBuffer,
+            .maxDrawCount = maxRecords,
+            .countBuffer = recordCountBuffer,
             .drawIndexPrefix = true,
         };
 
@@ -511,9 +513,9 @@ namespace rachis::test::draw_index
             target.setViewportAndScissor(command);
             const IndirectDrawDesc indexedDraws{
                 .argumentBuffer = indexedArguments,
-                .maxDrawCount = recordCount,
+                .maxDrawCount = maxRecords,
                 .stride = sizeof(IndexedDrawRecord),
-                .countBuffer = countBuffer,
+                .countBuffer = recordCountBuffer,
                 .drawIndexPrefix = true,
             };
             auto shortStride = indexedDraws;
@@ -563,8 +565,8 @@ namespace rachis::test::draw_index
                 target.setViewportAndScissor(command);
                 const IndirectMeshDispatchDesc prefixedDispatches{
                     .argumentBuffer = meshArguments,
-                    .maxDispatchCount = recordCount,
-                    .countBuffer = countBuffer,
+                    .maxDispatchCount = maxRecords,
+                    .countBuffer = recordCountBuffer,
                     .drawIndexPrefix = true,
                 };
                 checkRejected(
