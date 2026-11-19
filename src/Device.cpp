@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <new>
 #include <utility>
 
@@ -116,6 +117,54 @@ namespace rachis
                 !outside)
             {
                 return std::unexpected(detail::preferDeviceLossError(backend, std::move(outside.error())));
+            }
+            return {};
+        }
+
+        [[nodiscard]] Status validateRequiredSubgroupSize(const detail::BackendDevice& backend,
+                                                          const ComputePipelineDesc& desc)
+        {
+            const auto size = desc.requiredSubgroupSize;
+            if (size == 0)
+            {
+                return {};
+            }
+            if (!std::has_single_bit(size))
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidArgument,
+                    0,
+                    "ComputePipelineDesc::requiredSubgroupSize must be zero or a power of two.",
+                });
+            }
+            const auto& capabilities = backend.capabilities();
+            if (!capabilities.subgroupOperations ||
+                !hasAny(capabilities.subgroup.requiredSizeStages, ShaderStage::compute))
+            {
+                return std::unexpected(Error{
+                    ErrorCode::unsupported,
+                    0,
+                    "This device cannot require a subgroup size for compute pipelines.",
+                });
+            }
+            if (size < capabilities.subgroup.minSize || size > capabilities.subgroup.maxSize)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::unsupported,
+                    0,
+                    "The required subgroup size is outside this device's subgroup size range.",
+                });
+            }
+            const auto shaderInterface = backend.shaderModuleInterface(desc.computeShader);
+            if (shaderInterface && shaderInterface->workgroupSize.has_value() &&
+                shaderInterface->workgroupSize->x % size != 0)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidArgument,
+                    0,
+                    "A compute pipeline that requires a subgroup size needs a workgroup width that is a multiple "
+                    "of that size.",
+                });
             }
             return {};
         }
@@ -2544,6 +2593,10 @@ namespace rachis
                     "Cannot create a compute pipeline on an invalid device.",
                 });
             }
+            if (auto valid = validateRequiredSubgroupSize(*backend_, desc); !valid)
+            {
+                return std::unexpected(detail::preferDeviceLossError(*backend_, std::move(valid.error())));
+            }
             return backend_->createComputePipeline(desc);
         });
     }
@@ -2577,6 +2630,10 @@ namespace rachis
                     0,
                     "Cannot begin compute-pipeline compilation on an invalid device.",
                 });
+            }
+            if (auto valid = validateRequiredSubgroupSize(*backend_, desc); !valid)
+            {
+                return std::unexpected(detail::preferDeviceLossError(*backend_, std::move(valid.error())));
             }
             return backend_->beginComputePipelineCompilation(desc);
         });

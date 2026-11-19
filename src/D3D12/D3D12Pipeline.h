@@ -100,7 +100,8 @@ namespace rachis::d3d12
                                         std::uint32_t maxFramebufferLayers,
                                         std::uint32_t maxMultiviewViewCount,
                                         bool rayTracing,
-                                        const RayTracingCapabilities& rayTracingCapabilities);
+                                        const RayTracingCapabilities& rayTracingCapabilities,
+                                        const SubgroupCapabilities& subgroup);
         [[nodiscard]] Result<ShaderLibraryHandle> createShaderLibrary(const ShaderLibraryDesc& desc);
         [[nodiscard]] Status destroyShaderLibrary(ShaderLibraryHandle shaderLibrary);
         [[nodiscard]] Result<ShaderModuleHandle> createShaderModule(const ShaderModuleDesc& desc);

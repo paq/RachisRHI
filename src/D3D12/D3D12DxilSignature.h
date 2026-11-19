@@ -246,6 +246,50 @@ namespace rachis::d3d12::dxil
 
     } // namespace signature_detail
 
+    struct WaveLaneCountRange final
+    {
+        std::uint32_t minimum = 0;
+        std::uint32_t maximum = 0;
+    };
+
+    [[nodiscard]] inline Result<std::optional<WaveLaneCountRange>> readExpectedWaveLaneCounts(
+        std::span<const std::byte> container)
+    {
+        using namespace signature_detail;
+        constexpr std::size_t runtimeInfo0Size = 24;
+        constexpr std::size_t minimumWaveLaneCountOffset = 16;
+        constexpr std::size_t maximumWaveLaneCountOffset = 20;
+        auto found = findPart(container, fourCC('P', 'S', 'V', '0'));
+        if (!found)
+        {
+            return std::unexpected(std::move(found.error()));
+        }
+        if (!found->has_value())
+        {
+            return std::optional<WaveLaneCountRange>{};
+        }
+        Cursor cursor(**found);
+        const auto infoSize = cursor.u32();
+        const auto info = infoSize.has_value() ? cursor.take(*infoSize) : std::nullopt;
+        if (!info.has_value())
+        {
+            return std::unexpected(malformed("has a truncated PSV0 runtime info"));
+        }
+        if (info->size() < runtimeInfo0Size)
+        {
+            return std::optional<WaveLaneCountRange>{};
+        }
+        const WaveLaneCountRange range{
+            .minimum = readU32(*info, minimumWaveLaneCountOffset),
+            .maximum = readU32(*info, maximumWaveLaneCountOffset),
+        };
+        if (range.minimum == 0)
+        {
+            return std::optional<WaveLaneCountRange>{};
+        }
+        return std::optional{range};
+    }
+
     [[nodiscard]] inline Result<std::optional<std::vector<SignatureVariable>>> readStageSignature(
         std::span<const std::byte> container, SignaturePart part)
     {

@@ -145,6 +145,8 @@ namespace rachis::vulkan
         bool subgroupOperations = false;
         std::uint32_t subgroupMinSize = 0;
         std::uint32_t subgroupMaxSize = 0;
+        bool subgroupSizeControl = false;
+        VkShaderStageFlags requiredSubgroupSizeStages = 0;
         bool geometryShaders = false;
         bool tessellationShaders = false;
         std::uint32_t tessellationMaxPatchControlPoints = 0;

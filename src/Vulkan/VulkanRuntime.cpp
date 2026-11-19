@@ -1296,6 +1296,8 @@ namespace rachis::vulkan
             record.report.dynamicRendering = features.v13.dynamicRendering == VK_TRUE;
             record.report.synchronization2 = features.v13.synchronization2 == VK_TRUE;
             record.maintenance4 = features.v13.maintenance4 == VK_TRUE;
+            record.subgroupSizeControl =
+                features.v13.subgroupSizeControl == VK_TRUE && features.v13.computeFullSubgroups == VK_TRUE;
             record.report.timelineSemaphore = features.v12.timelineSemaphore == VK_TRUE;
             record.report.independentBlend = features.base.independentBlend == VK_TRUE;
             record.report.samplerAnisotropy = features.base.samplerAnisotropy == VK_TRUE;
@@ -1718,6 +1720,7 @@ namespace rachis::vulkan
             {
                 record.subgroupMinSize = minSubgroup;
                 record.subgroupMaxSize = maxSubgroup;
+                record.requiredSubgroupSizeStages = properties.v13.requiredSubgroupSizeStages;
             }
         }
 
@@ -2685,6 +2688,8 @@ namespace rachis::vulkan
             chain.v13.synchronization2 = VK_TRUE;
             chain.v13.dynamicRendering = VK_TRUE;
             chain.v13.maintenance4 = available.v13.maintenance4 == VK_TRUE ? VK_TRUE : VK_FALSE;
+            chain.v13.subgroupSizeControl = record.subgroupSizeControl ? VK_TRUE : VK_FALSE;
+            chain.v13.computeFullSubgroups = record.subgroupSizeControl ? VK_TRUE : VK_FALSE;
             prependToChain(chain.features2, chain.v13, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES);
 #ifdef VK_KHR_maintenance5
             if (record.maintenance5)
@@ -3065,9 +3070,12 @@ namespace rachis::vulkan
             capabilities.subgroupOperations = record.subgroupOperations;
             if (capabilities.subgroupOperations)
             {
+                const bool requiredComputeSize =
+                    record.subgroupSizeControl && (record.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
                 capabilities.subgroup = {
                     .minSize = record.subgroupMinSize,
                     .maxSize = record.subgroupMaxSize,
+                    .requiredSizeStages = requiredComputeSize ? ShaderStage::compute : ShaderStage::none,
                 };
             }
             capabilities.geometryShaders = record.geometryShaders;

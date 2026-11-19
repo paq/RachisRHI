@@ -234,6 +234,8 @@ namespace rachis
         PipelineCacheHandle cache = {};
         PipelineCacheKey cacheKey = {};
         PipelineCachePolicy cachePolicy = PipelineCachePolicy::populate;
+
+        std::uint32_t requiredSubgroupSize = 0;
     };
 
     enum class RayTracingShaderGroupType : std::uint8_t

@@ -279,6 +279,8 @@ namespace rachis::vulkan
             std::string label = {};
             PipelineCacheKey cacheKey = {};
             PipelineCachePolicy cachePolicy = PipelineCachePolicy::populate;
+            std::uint32_t requiredSubgroupSize = 0;
+            std::uint32_t workgroupInvocations = 0;
         };
 
         struct PreparedGraphicsCompilation final
@@ -330,10 +332,12 @@ namespace rachis::vulkan
         [[nodiscard]] Result<std::shared_ptr<CacheRecord>> findCacheRecord(PipelineCacheHandle pipelineCache) const;
         [[nodiscard]] Result<LockedPipelineCache> lockCacheAndConsumeEntry(ResolvedCache& cache);
         [[nodiscard]] bool isolatesShaderModules(const VulkanNativePipelineLayout& layout) const noexcept;
+        [[nodiscard]] Status validateRequiredSubgroupSize(const PreparedComputeCompilation& prepared) const;
         [[nodiscard]] Result<VkPipeline> createNativeComputePipeline(
             const VulkanShaderManager::NativeShaderModule& shader,
             VkPipelineLayout pipelineLayout,
-            VkPipelineCache nativeCache) const;
+            VkPipelineCache nativeCache,
+            std::uint32_t requiredSubgroupSize) const;
         [[nodiscard]] std::shared_ptr<PipelineKeepAlive> makePipelineKeepAlive(
             VkPipeline pipeline, const std::shared_ptr<void>& layoutOwner) const;
         [[nodiscard]] Result<std::shared_ptr<PipelineKeepAlive>> adoptComputePipeline(
@@ -384,6 +388,7 @@ namespace rachis::vulkan
         const VulkanInstanceTable* instanceTable_ = nullptr;
         VkPhysicalDevice physical_ = VK_NULL_HANDLE;
         DeviceCapabilities capabilities_{};
+        std::uint32_t maxComputeWorkgroupSubgroups_ = 0;
         bool depthBiasClampSupported_ = true;
         bool maintenance5_ = false;
         VulkanMultiviewStageSupport multiviewStages_{};

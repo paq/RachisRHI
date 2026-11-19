@@ -2315,7 +2315,8 @@ namespace rachis::d3d12
                                        std::uint32_t maxFramebufferLayers,
                                        std::uint32_t maxMultiviewViewCount,
                                        bool rayTracing,
-                                       const RayTracingCapabilities& rayTracingCapabilities)
+                                       const RayTracingCapabilities& rayTracingCapabilities,
+                                       const SubgroupCapabilities& subgroup)
     {
         impl_->device = &device;
         impl_->maxComputeWorkgroupInvocations = maxComputeWorkgroupInvocations;
@@ -2341,6 +2342,7 @@ namespace rachis::d3d12
         impl_->maxMultiviewViewCount = maxMultiviewViewCount;
         impl_->rayTracing = rayTracing;
         impl_->rayTracingCapabilities = rayTracingCapabilities;
+        impl_->subgroup = subgroup;
         if (rayTracing && FAILED(device.QueryInterface(IID_PPV_ARGS(&impl_->rayTracingDevice))))
         {
             return std::unexpected(Error{
@@ -2774,6 +2776,42 @@ namespace rachis::d3d12
             };
         }
 
+        [[nodiscard]] Status validateComputeWaveSize(const ShaderModuleRecord& shader,
+                                                     std::uint32_t requiredSubgroupSize,
+                                                     const SubgroupCapabilities& subgroup)
+        {
+            auto declared = dxil::readExpectedWaveLaneCounts(*shader.bytecode);
+            if (!declared)
+            {
+                if (requiredSubgroupSize == 0)
+                {
+                    return {};
+                }
+                return std::unexpected(std::move(declared.error()));
+            }
+            if (requiredSubgroupSize != 0 &&
+                (!declared->has_value() || (*declared)->minimum != requiredSubgroupSize ||
+                 (*declared)->maximum != requiredSubgroupSize))
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidArgument,
+                    0,
+                    "On Direct3D 12, a compute pipeline that requires a subgroup size needs a shader that declares "
+                    "[WaveSize] with that size.",
+                });
+            }
+            if (declared->has_value() &&
+                ((*declared)->minimum < subgroup.minSize || (*declared)->maximum > subgroup.maxSize))
+            {
+                return std::unexpected(Error{
+                    ErrorCode::unsupported,
+                    0,
+                    "The compute shader's [WaveSize] is outside this device's subgroup size range.",
+                });
+            }
+            return {};
+        }
+
         [[nodiscard]] Result<ComPtr<ID3D12PipelineState>> createNativeComputePipeline(
             ID3D12Device& device, const D3D12_COMPUTE_PIPELINE_STATE_DESC& nativeDesc)
         {
@@ -2963,6 +3001,11 @@ namespace rachis::d3d12
         if (!interfaceValidation)
         {
             return std::unexpected(std::move(interfaceValidation.error()));
+        }
+        if (auto waveSize = validateComputeWaveSize(*resolved->shader, desc.requiredSubgroupSize, impl_->subgroup);
+            !waveSize)
+        {
+            return std::unexpected(std::move(waveSize.error()));
         }
         auto cache = impl_->pipelineCache(desc.cache, desc.cacheKey);
         if (!cache)

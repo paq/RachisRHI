@@ -614,10 +614,14 @@ namespace rachis::vulkan
         bindings_ = bindings;
         formatCache_.reset();
         activeFormatCache_ = sharedFormatCache != nullptr ? sharedFormatCache : &formatCache_;
+        maxComputeWorkgroupSubgroups_ = 0;
         if (physical != VK_NULL_HANDLE && instanceTable != nullptr)
         {
+            VkPhysicalDeviceVulkan13Properties v13{};
+            v13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES;
             VkPhysicalDeviceIDProperties id{};
             id.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+            id.pNext = &v13;
 
             VkPhysicalDeviceProperties2 properties2{
                 .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
@@ -631,6 +635,7 @@ namespace rachis::vulkan
             std::memcpy(pipelineCacheUuid_.data(), properties2.properties.pipelineCacheUUID, VK_UUID_SIZE);
             std::memcpy(deviceUuid_.data(), id.deviceUUID, VK_UUID_SIZE);
             std::memcpy(driverUuid_.data(), id.driverUUID, VK_UUID_SIZE);
+            maxComputeWorkgroupSubgroups_ = v13.maxComputeWorkgroupSubgroups;
         }
         if (device_ != VK_NULL_HANDLE && table_ != nullptr)
         {
@@ -1136,7 +1141,17 @@ namespace rachis::vulkan
             .hasCache = desc.cache.isValid(),
             .cacheKey = desc.cacheKey,
             .cachePolicy = desc.cachePolicy,
+            .requiredSubgroupSize = desc.requiredSubgroupSize,
         };
+        if (desc.requiredSubgroupSize != 0 && shaders_ != nullptr && desc.computeShader.isValid())
+        {
+            if (const auto shaderInterface = shaders_->shaderModuleInterface(desc.computeShader);
+                shaderInterface && shaderInterface->workgroupSize.has_value())
+            {
+                const auto& size = *shaderInterface->workgroupSize;
+                prepared.workgroupInvocations = size.x * size.y * size.z;
+            }
+        }
         if (desc.cache.isValid())
         {
             auto cacheRecord = findCacheRecord(desc.cache);
@@ -1376,17 +1391,58 @@ namespace rachis::vulkan
         return locked;
     }
 
+    Status VulkanPipelineManager::validateRequiredSubgroupSize(const PreparedComputeCompilation& prepared) const
+    {
+        const auto size = prepared.requiredSubgroupSize;
+        if (size == 0)
+        {
+            return {};
+        }
+        if (!hasAny(capabilities_.subgroup.requiredSizeStages, ShaderStage::compute) ||
+            size < capabilities_.subgroup.minSize || size > capabilities_.subgroup.maxSize)
+        {
+            return std::unexpected(Error{
+                ErrorCode::unsupported,
+                0,
+                "This Vulkan device cannot run compute pipelines with the required subgroup size.",
+            });
+        }
+        if (maxComputeWorkgroupSubgroups_ != 0 &&
+            prepared.workgroupInvocations > static_cast<std::uint64_t>(maxComputeWorkgroupSubgroups_) * size)
+        {
+            return std::unexpected(Error{
+                ErrorCode::unsupported,
+                0,
+                "The compute shader's workgroup needs more subgroups of the required size than this Vulkan device "
+                "allows in one workgroup.",
+            });
+        }
+        return {};
+    }
+
     Result<VkPipeline> VulkanPipelineManager::createNativeComputePipeline(
         const VulkanShaderManager::NativeShaderModule& shader,
         VkPipelineLayout pipelineLayout,
-        VkPipelineCache nativeCache) const
+        VkPipelineCache nativeCache,
+        std::uint32_t requiredSubgroupSize) const
     {
         const auto specialization = makeSpecialization(shader.specializationConstants);
+        const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo requiredSize{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO,
+            .pNext = {},
+            .requiredSubgroupSize = requiredSubgroupSize,
+        };
+        auto stage = makeShaderStageCreateInfo(VK_SHADER_STAGE_COMPUTE_BIT, shader, specialization);
+        if (requiredSubgroupSize != 0)
+        {
+            stage.pNext = &requiredSize;
+            stage.flags |= VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT;
+        }
         const auto createInfo = VkComputePipelineCreateInfo{
             .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
             .pNext = {},
             .flags = {},
-            .stage = makeShaderStageCreateInfo(VK_SHADER_STAGE_COMPUTE_BIT, shader, specialization),
+            .stage = stage,
             .layout = pipelineLayout,
             .basePipelineHandle = {},
             .basePipelineIndex = {},
@@ -1520,6 +1576,10 @@ namespace rachis::vulkan
         {
             return std::unexpected(std::move(valid.error()));
         }
+        if (auto valid = validateRequiredSubgroupSize(prepared); !valid)
+        {
+            return std::unexpected(std::move(valid.error()));
+        }
 
         IsolatedShaderModules isolated(device_, table_);
         const bool isolates = isolatesShaderModules(layout);
@@ -1537,8 +1597,10 @@ namespace rachis::vulkan
             return std::unexpected(std::move(lockedCache.error()));
         }
 
-        auto pipeline =
-            createNativeComputePipeline(shader, layout.pipelineLayout, isolates ? VK_NULL_HANDLE : lockedCache->native);
+        auto pipeline = createNativeComputePipeline(shader,
+                                                    layout.pipelineLayout,
+                                                    isolates ? VK_NULL_HANDLE : lockedCache->native,
+                                                    prepared.requiredSubgroupSize);
         if (!pipeline)
         {
             return std::unexpected(std::move(pipeline.error()));

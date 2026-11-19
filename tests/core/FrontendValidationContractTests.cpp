@@ -168,6 +168,7 @@ namespace
         };
         DeviceCapabilities caps{};
         AdapterInfo adapter{};
+        std::optional<rachis::ShaderWorkgroupSize> moduleWorkgroupSize{};
         std::size_t backendInvocations = 0;
 
         TrackingBackendDevice()
@@ -564,7 +565,7 @@ namespace
         }
         [[nodiscard]] Result<ShaderInterfaceSnapshot> shaderModuleInterface(ShaderModuleHandle) const override
         {
-            return ShaderInterfaceSnapshot{};
+            return ShaderInterfaceSnapshot{.workgroupSize = moduleWorkgroupSize};
         }
         [[nodiscard]] Status destroyShaderModule(ShaderModuleHandle) override
         {
@@ -2061,4 +2062,60 @@ TEST_CASE("Device frontend gates the draw index on shaderDrawIndex and on stages
     checkCode(device.createPipelineLayout(PipelineLayoutDesc{.drawIndex = true}), ErrorCode::deviceLost);
     checkCode(device.createShaderModule(moduleReadingDrawIndex(ShaderStage::pixel)), ErrorCode::deviceLost);
     CHECK(raw->backendInvocations == 6);
+}
+
+TEST_CASE("Device frontend checks a required subgroup size against the device and the workgroup before backend calls",
+          "[size:small][rhi][core]")
+{
+    auto backend = std::make_unique<TrackingBackendDevice>();
+    auto* raw = backend.get();
+    raw->caps.subgroupOperations = true;
+    raw->caps.subgroup = {.minSize = 16, .maxSize = 64, .requiredSizeStages = ShaderStage::compute};
+    raw->moduleWorkgroupSize = rachis::ShaderWorkgroupSize{64, 2, 1};
+    auto device = rachis::detail::DeviceAccess::make(std::move(backend));
+
+    const auto checkRejected = [&](std::uint32_t size, ErrorCode code, std::string_view message) {
+        CAPTURE(size);
+        const ComputePipelineDesc desc{.requiredSubgroupSize = size};
+        const auto pipeline = device.createComputePipeline(desc);
+        REQUIRE_FALSE(pipeline.has_value());
+        CHECK(pipeline.error().code == code);
+        CHECK(pipeline.error().message == message);
+        const auto compilation = device.beginComputePipelineCompilation(desc);
+        REQUIRE_FALSE(compilation.has_value());
+        CHECK(compilation.error().code == code);
+    };
+    constexpr std::string_view outsideRange = "The required subgroup size is outside this device's subgroup size range.";
+    checkRejected(
+        24, ErrorCode::invalidArgument, "ComputePipelineDesc::requiredSubgroupSize must be zero or a power of two.");
+    checkRejected(8, ErrorCode::unsupported, outsideRange);
+    checkRejected(128, ErrorCode::unsupported, outsideRange);
+    raw->moduleWorkgroupSize = rachis::ShaderWorkgroupSize{48, 2, 1};
+    checkRejected(32,
+                  ErrorCode::invalidArgument,
+                  "A compute pipeline that requires a subgroup size needs a workgroup width that is a multiple of "
+                  "that size.");
+    CHECK(raw->backendInvocations == 0);
+
+    for (const std::uint32_t size : {0U, 16U})
+    {
+        CAPTURE(size);
+        const ComputePipelineDesc desc{.requiredSubgroupSize = size};
+        CHECK(device.createComputePipeline(desc).has_value());
+        CHECK(device.beginComputePipelineCompilation(desc).has_value());
+    }
+    CHECK(raw->backendInvocations == 4);
+
+    raw->caps.subgroup.requiredSizeStages = ShaderStage::none;
+    checkRejected(16, ErrorCode::unsupported, "This device cannot require a subgroup size for compute pipelines.");
+    raw->caps.subgroup.requiredSizeStages = ShaderStage::compute;
+    raw->caps.subgroupOperations = false;
+    checkRejected(16, ErrorCode::unsupported, "This device cannot require a subgroup size for compute pipelines.");
+    CHECK(raw->backendInvocations == 4);
+
+    raw->state = DeviceOperationalState::lost;
+    const auto lost = device.createComputePipeline(ComputePipelineDesc{.requiredSubgroupSize = 16});
+    REQUIRE_FALSE(lost.has_value());
+    CHECK(lost.error().code == ErrorCode::deviceLost);
+    CHECK(raw->backendInvocations == 4);
 }

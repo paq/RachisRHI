@@ -12,6 +12,7 @@
 namespace
 {
 
+    using rachis::d3d12::dxil::readExpectedWaveLaneCounts;
     using rachis::d3d12::dxil::readStageSignature;
     using rachis::d3d12::dxil::SignaturePart;
     using rachis::detail::StageComponentType;
@@ -169,6 +170,45 @@ TEST_CASE("The DXIL signature reader rejects malformed containers", "[size:small
     const auto none = readStageSignature(withoutPsv, SignaturePart::input);
     REQUIRE(none.has_value());
     CHECK_FALSE(none->has_value());
+}
+
+TEST_CASE("The DXIL reader reads a compute shader's declared wave size from the PSV0 runtime info",
+          "[size:small][rhi][d3d12][subgroup]")
+{
+    constexpr std::size_t minimumOffset = 48 + 16;
+    constexpr std::size_t maximumOffset = 48 + 20;
+    auto bytes = container({}, {});
+
+    writeU32(bytes, minimumOffset, 0);
+    writeU32(bytes, maximumOffset, 0xFFFFFFFFU);
+    const auto undeclared = readExpectedWaveLaneCounts(bytes);
+    REQUIRE(undeclared.has_value());
+    CHECK_FALSE(undeclared->has_value());
+
+    writeU32(bytes, minimumOffset, 32);
+    writeU32(bytes, maximumOffset, 32);
+    const auto declared = readExpectedWaveLaneCounts(bytes);
+    REQUIRE(declared.has_value());
+    REQUIRE(declared->has_value());
+    CHECK((*declared)->minimum == 32);
+    CHECK((*declared)->maximum == 32);
+
+    auto withoutPsv = bytes;
+    withoutPsv[36] = std::byte{'X'};
+    const auto noPart = readExpectedWaveLaneCounts(withoutPsv);
+    REQUIRE(noPart.has_value());
+    CHECK_FALSE(noPart->has_value());
+
+    auto shortInfo = bytes;
+    writeU32(shortInfo, 44, 16);
+    const auto older = readExpectedWaveLaneCounts(shortInfo);
+    REQUIRE(older.has_value());
+    CHECK_FALSE(older->has_value());
+
+    CHECK_FALSE(readExpectedWaveLaneCounts(std::vector<std::byte>(8)).has_value());
+    auto truncatedInfo = bytes;
+    writeU32(truncatedInfo, 44, 4096);
+    CHECK_FALSE(readExpectedWaveLaneCounts(truncatedInfo).has_value());
 }
 
 TEST_CASE("The DXIL signature reader leaves out pixel inputs nothing reads", "[size:small][rhi][d3d12][stage-linkage]")

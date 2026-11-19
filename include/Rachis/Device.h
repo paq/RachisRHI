@@ -238,6 +238,8 @@ namespace rachis
     {
         std::uint32_t minSize = 0;
         std::uint32_t maxSize = 0;
+
+        ShaderStage requiredSizeStages = ShaderStage::none;
     };
 
     struct TessellationCapabilities final

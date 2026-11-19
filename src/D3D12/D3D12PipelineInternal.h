@@ -559,6 +559,7 @@ namespace rachis::d3d12
         std::uint32_t maxMultiviewViewCount = 0;
         bool rayTracing = false;
         RayTracingCapabilities rayTracingCapabilities;
+        SubgroupCapabilities subgroup;
         Microsoft::WRL::ComPtr<ID3D12Device1> pipelineLibraryDevice;
         Microsoft::WRL::ComPtr<ID3D12Device2> pipelineStateStreamDevice;
         Microsoft::WRL::ComPtr<ID3D12Device5> rayTracingDevice;

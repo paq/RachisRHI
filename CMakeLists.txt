@@ -3121,6 +3121,23 @@ if(rachis_build_tests)
                 ENTRY main
                 STAGE compute
                 SHADER_MODEL 6_6)
+            # SubgroupSize<N> declares [WaveSize(N)] for Direct3D 12, where the shader carries the subgroup size;
+            # SubgroupSizeAny declares none. Metal does not report required subgroup sizes yet.
+            foreach(size IN ITEMS 4 8 16 32 64 128)
+                rachis_add_shader(RachisRHITests
+                    NAME SubgroupSize${size}
+                    SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/SubgroupSize.hlsl"
+                    ENTRY main
+                    STAGE compute
+                    SHADER_MODEL 6_6
+                    DEFINES RACHIS_SUBGROUP_SIZE=${size})
+            endforeach()
+            rachis_add_shader(RachisRHITests
+                NAME SubgroupSizeAny
+                SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/SubgroupSize.hlsl"
+                ENTRY main
+                STAGE compute
+                SHADER_MODEL 6_6)
         endif()
         if(TARGET RachisCAbiShaders)
             add_dependencies(RachisRHITests RachisCAbiShaders)

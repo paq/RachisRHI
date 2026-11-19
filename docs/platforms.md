@@ -5,7 +5,7 @@ This page describes the host platforms RachisRHI targets, optional feature avail
 ## Contents
 
 - [Supported hosts](#supported-hosts)
-- [Optional features by backend](#optional-features-by-backend) ([64-bit atomics](#64-bit-atomics), [Acceleration-structure operations](#acceleration-structure-operations))
+- [Optional features by backend](#optional-features-by-backend) ([Required subgroup sizes](#required-subgroup-sizes), [64-bit atomics](#64-bit-atomics), [Acceleration-structure operations](#acceleration-structure-operations))
 - [Vulkan profile](#vulkan-profile)
 - [Fallback and validation](#fallback-and-validation)
 - [Direct3D 12 validation is process-wide](#direct3d-12-validation-is-process-wide)
@@ -59,8 +59,20 @@ The table below shows which backends *can* report each feature (subject to adapt
 | `dispatchIndirectCount` | Yes | Yes, with the `bufferDeviceAddress` and `shaderInt64` features | No |
 | `updateAfterBindBindingArrays` | Yes | Yes | Yes, variable-count arrays only |
 | `shaderInt64AtomicGroupShared`, `shaderInt64AtomicTypedResource`, `shaderInt64AtomicStorageBuffer` | Yes | Yes | No |
+| `subgroup.requiredSizeStages` (`ShaderStage::compute`) | Yes | Yes | No |
 
 On Vulkan, `multiDispatchIndirect` and `dispatchIndirectCount` are emulated; see [Indirect dispatch batches on Vulkan](#indirect-dispatch-batches-on-vulkan).
+
+### Required subgroup sizes
+
+`DeviceCapabilities::subgroup.requiredSizeStages` lists the stages whose pipelines accept a required subgroup size (see [Required subgroup size](using.md#required-subgroup-size)). Only `ShaderStage::compute` is reported:
+
+| Backend | Reports `ShaderStage::compute` when | Sizes |
+| --- | --- | --- |
+| Direct3D 12 | Wave operations and shader model 6.6 | `WaveLaneCountMin` to `WaveLaneCountMax` |
+| Vulkan | `subgroupSizeControl`, `computeFullSubgroups`, and compute in `requiredSubgroupSizeStages` | `minSubgroupSize` to `maxSubgroupSize` |
+
+On Vulkan, a pipeline with a required size also fails with `ErrorCode::unsupported` when its workgroup holds more invocations than `maxComputeWorkgroupSubgroups` subgroups of that size.
 
 ### 64-bit atomics
 

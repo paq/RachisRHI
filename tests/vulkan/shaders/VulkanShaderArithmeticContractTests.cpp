@@ -1,6 +1,13 @@
 #include "Rachis/Device.h"
 #include "RhiTestSupport.h"
 #include "ShaderInt64AtomicStorageBuffer.h"
+#include "SubgroupSize128.h"
+#include "SubgroupSize16.h"
+#include "SubgroupSize32.h"
+#include "SubgroupSize4.h"
+#include "SubgroupSize64.h"
+#include "SubgroupSize8.h"
+#include "SubgroupSizeAny.h"
 
 #ifdef _WINDOWS_
 #error Public Rachis headers must not include Windows.h.
@@ -12,6 +19,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstddef>
@@ -22,12 +30,148 @@
 #include <limits>
 #include <optional>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace
 {
 
     constexpr std::uint64_t atomicSum = (64U * 65U) / 2U;
+
+    constexpr std::array<std::uint32_t, 6> subgroupSizes{4, 8, 16, 32, 64, 128};
+    constexpr std::uint32_t laneCountGroupWidth = 128;
+    constexpr std::uint32_t laneCountGroupCount = 2;
+    constexpr std::uint32_t laneCountInvocations = laneCountGroupWidth * laneCountGroupCount;
+    constexpr std::uint64_t laneCountBytes = std::uint64_t{laneCountInvocations} * 2U * sizeof(std::uint32_t);
+
+    using LaneCounts = std::vector<std::array<std::uint32_t, 2>>;
+
+    [[nodiscard]] std::span<const std::byte> subgroupSizeShader(std::uint32_t size)
+    {
+        constexpr auto backend = rachis::Backend::vulkan;
+        switch (size)
+        {
+        case 4:
+            return rachis_shaders::SubgroupSize4(backend);
+        case 8:
+            return rachis_shaders::SubgroupSize8(backend);
+        case 16:
+            return rachis_shaders::SubgroupSize16(backend);
+        case 32:
+            return rachis_shaders::SubgroupSize32(backend);
+        case 64:
+            return rachis_shaders::SubgroupSize64(backend);
+        case 128:
+            return rachis_shaders::SubgroupSize128(backend);
+        default:
+            return rachis_shaders::SubgroupSizeAny(backend);
+        }
+    }
+
+    [[nodiscard]] rachis::Result<LaneCounts> runLaneCountKernel(rachis::Device& device,
+                                                               std::span<const std::byte> bytecode,
+                                                               std::uint32_t requiredSubgroupSize)
+    {
+        REQUIRE_FALSE(bytecode.empty());
+        auto shader = device.createShaderModule({
+            .stage = rachis::ShaderStage::compute,
+            .bytecode = bytecode,
+            .entryPoint = "main",
+            .label = "Vulkan subgroup size shader",
+            .shaderInterface = rachis::test::computeShaderInterface(
+                {laneCountGroupWidth, 1, 1},
+                std::array{rachis::ShaderBindingRequirement{0, 0, rachis::ShaderResourceType::storageBuffer, 1}}),
+        });
+        if (!shader)
+        {
+            UNSCOPED_INFO(shader.error().message);
+        }
+        REQUIRE(shader);
+        const std::array entries{
+            rachis::BindingLayoutEntry{0, rachis::BindingType::storageBuffer, rachis::ShaderStage::compute},
+        };
+        auto layout = device.createBindingLayout({.entries = entries});
+        REQUIRE(layout);
+        const std::array layouts{*layout};
+        auto pipelineLayout = device.createPipelineLayout({.bindingLayouts = layouts});
+        REQUIRE(pipelineLayout);
+        auto pipeline = device.createComputePipeline({
+            .layout = *pipelineLayout,
+            .computeShader = *shader,
+            .label = "Vulkan subgroup size pipeline",
+            .requiredSubgroupSize = requiredSubgroupSize,
+        });
+        if (!pipeline)
+        {
+            CHECK(device.destroyPipelineLayout(*pipelineLayout));
+            CHECK(device.destroyBindingLayout(*layout));
+            CHECK(device.destroyShaderModule(*shader));
+            return std::unexpected(std::move(pipeline.error()));
+        }
+
+        auto storage = device.createBuffer({
+            .size = laneCountBytes,
+            .usage = rachis::BufferUsage::storage | rachis::BufferUsage::copySource,
+            .label = "Vulkan subgroup size output",
+        });
+        auto readback = device.createBuffer({
+            .size = laneCountBytes,
+            .usage = rachis::BufferUsage::copyDestination,
+            .memoryType = rachis::MemoryType::readback,
+            .label = "Vulkan subgroup size readback",
+        });
+        REQUIRE(storage);
+        REQUIRE(readback);
+        const std::array writes{
+            rachis::BindingWrite{0, 0, rachis::BufferBinding{*storage, 0, laneCountBytes, 2U * sizeof(std::uint32_t)}},
+        };
+        auto set = rachis::test::createBindingSet(device, {.layout = *layout, .writes = writes});
+        REQUIRE(set);
+
+        auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+        REQUIRE(command);
+        REQUIRE(device
+                    .bufferBarrier(*command,
+                                   {
+                                       .buffer = *storage,
+                                       .stagesBefore = rachis::PipelineStage::all,
+                                       .stagesAfter = rachis::PipelineStage::computeShader,
+                                       .accessBefore = rachis::Access::common,
+                                       .accessAfter = rachis::Access::unorderedAccess,
+                                   })
+                    .has_value());
+        REQUIRE(device.bindComputePipeline(*command, *pipeline));
+        REQUIRE(device.bindComputeBindingSet(*command, 0, *set));
+        REQUIRE(device.dispatch(*command, laneCountGroupCount));
+        REQUIRE(device
+                    .bufferBarrier(*command,
+                                   {
+                                       .buffer = *storage,
+                                       .stagesBefore = rachis::PipelineStage::computeShader,
+                                       .stagesAfter = rachis::PipelineStage::copy,
+                                       .accessBefore = rachis::Access::unorderedAccess,
+                                       .accessAfter = rachis::Access::copySource,
+                                   })
+                    .has_value());
+        REQUIRE(device.copyBuffer(*command, {*storage, 0, *readback, 0, laneCountBytes}));
+        auto submitted = device.submit(std::move(*command));
+        REQUIRE(submitted);
+        REQUIRE(device.wait(*submitted));
+        auto mapped = device.mapBuffer(*readback);
+        REQUIRE(mapped);
+        LaneCounts lanes(laneCountInvocations);
+        std::memcpy(lanes.data(), mapped->data, laneCountBytes);
+        REQUIRE(device.unmapBuffer(*readback));
+
+        REQUIRE(device.destroyPipeline(*pipeline));
+        REQUIRE(device.destroyPipelineLayout(*pipelineLayout));
+        REQUIRE(device.destroyBindingSet(*set));
+        REQUIRE(device.destroyBindingLayout(*layout));
+        REQUIRE(device.destroyShaderModule(*shader));
+        REQUIRE(device.destroyBuffer(*storage));
+        REQUIRE(device.destroyBuffer(*readback));
+        return lanes;
+    }
 
     constexpr std::uint32_t storageAtomicGroupSize = 64;
     constexpr std::uint32_t storageAtomicGroupCount = 16;
@@ -960,6 +1104,65 @@ TEST_CASE("Vulkan storage-buffer 64-bit atomics keep the unsigned maximum and mi
     REQUIRE(device.destroyBuffer(*extremes));
     REQUIRE(device.destroyBuffer(*upload));
     REQUIRE(device.destroyBuffer(*readback));
+    CHECK(device.diagnosticCounts().errors == 0);
+}
+
+TEST_CASE("Vulkan compute pipelines that require a subgroup size run full subgroups of that size",
+          "[size:medium][requires:HardwareVulkan][rhi][vulkan][shader][subgroup][compute]")
+{
+    auto created = rachis::createDevice(vulkanDesc());
+    if (rachis::test::skipWithoutCreatedDevice(created))
+    {
+        return;
+    }
+    auto device = std::move(*created);
+    const auto capabilities = rachis::test::requireCapabilities(device);
+    const auto subgroup = capabilities.subgroup;
+    if (!rachis::hasAny(subgroup.requiredSizeStages, rachis::ShaderStage::compute))
+    {
+        auto rejected = runLaneCountKernel(device, subgroupSizeShader(32), 32);
+        REQUIRE_FALSE(rejected.has_value());
+        CHECK(rejected.error().code == rachis::ErrorCode::unsupported);
+        SKIP("This Vulkan device does not accept a required subgroup size for compute pipelines.");
+    }
+    CHECK(subgroup.requiredSizeStages == rachis::ShaderStage::compute);
+    INFO("Subgroup sizes " << subgroup.minSize << ".." << subgroup.maxSize);
+
+    std::size_t testedSizes = 0;
+    for (const auto size : subgroupSizes)
+    {
+        CAPTURE(size);
+        auto lanes = runLaneCountKernel(device, subgroupSizeShader(size), size);
+        if (size < subgroup.minSize || size > subgroup.maxSize)
+        {
+            REQUIRE_FALSE(lanes.has_value());
+            CHECK(lanes.error().code == rachis::ErrorCode::unsupported);
+            continue;
+        }
+        if (!lanes)
+        {
+            UNSCOPED_INFO(lanes.error().message);
+        }
+        REQUIRE(lanes.has_value());
+        ++testedSizes;
+        for (const auto& lane : *lanes)
+        {
+            CHECK(lane == std::array<std::uint32_t, 2>{size, size});
+        }
+    }
+    CHECK(testedSizes > 0);
+
+    const auto anySize = std::min(subgroup.maxSize, laneCountGroupWidth);
+    auto anyShader = runLaneCountKernel(device, rachis_shaders::SubgroupSizeAny(rachis::Backend::vulkan), anySize);
+    if (!anyShader)
+    {
+        UNSCOPED_INFO(anyShader.error().message);
+    }
+    REQUIRE(anyShader.has_value());
+    for (const auto& lane : *anyShader)
+    {
+        CHECK(lane == std::array<std::uint32_t, 2>{anySize, anySize});
+    }
     CHECK(device.diagnosticCounts().errors == 0);
 }
 

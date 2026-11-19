@@ -737,6 +737,8 @@ namespace rachis::d3d12
                 capabilities.subgroup = {
                     .minSize = options1.WaveLaneCountMin,
                     .maxSize = options1.WaveLaneCountMax,
+                    .requiredSizeStages =
+                        capabilities.shaderModel >= ApiVersion{6, 6} ? ShaderStage::compute : ShaderStage::none,
                 };
             }
         }
@@ -1600,7 +1602,8 @@ namespace rachis::d3d12
                                                    capabilities_.limits.maxFramebufferLayers,
                                                    capabilities_.maxMultiviewViewCount,
                                                    capabilities_.rayTracing,
-                                                   capabilities_.rayTracingLimits);
+                                                   capabilities_.rayTracingLimits,
+                                                   capabilities_.subgroup);
             if (!pipelines)
             {
                 return pipelines;

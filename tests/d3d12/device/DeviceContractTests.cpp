@@ -96,6 +96,10 @@ namespace
         {
             CHECK(capabilities.subgroup.maxSize == 0);
         }
+        const bool requiredComputeSize =
+            capabilities.subgroupOperations && capabilities.shaderModel >= rachis::ApiVersion{6, 6};
+        CHECK(capabilities.subgroup.requiredSizeStages ==
+              (requiredComputeSize ? rachis::ShaderStage::compute : rachis::ShaderStage::none));
     }
 
     void verifyRasterizationCapabilities(const rachis::DeviceCapabilities& capabilities)

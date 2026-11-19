@@ -216,7 +216,7 @@ rachis_add_shader(app
 )
 ```
 
-Raise it only for shaders that use a later feature, such as 64-bit atomics (6.6). On Direct3D 12, a shader runs only on a device whose `DeviceCapabilities::shaderModel` is at least the shader model it was built for.
+Raise it only for shaders that use a later feature, such as 64-bit atomics or `[WaveSize]` (6.6). On Direct3D 12, a shader runs only on a device whose `DeviceCapabilities::shaderModel` is at least the shader model it was built for.
 
 ### Shader languages
 
@@ -302,6 +302,28 @@ Graphics pipeline creation validates pixel shader inputs against the last enable
 - HLSL assigns locations in declaration order unless `[[vk::location(N)]]` overrides them on Vulkan (`[[vk::location]]` has no effect on DXIL/Metal). Matrices occupy one register per row in DXIL/Metal versus SPIR-V conventions unless decomposed consistently.
 - Metal additionally checks exact semantic names and exact scalar/vector types across stage boundaries.
 - For Direct3D 12 `SV_Position` and custom stage outputs, keep semantic names, types, and declaration order identical between paired stages.
+
+### Required subgroup size
+
+A compute kernel written for one subgroup size (wave size) can require it with `ComputePipelineDesc::requiredSubgroupSize`. Zero, the default, lets the device choose. `createComputePipeline` and `beginComputePipelineCompilation` check a non-zero size on every backend:
+
+- It must be a power of two (`ErrorCode::invalidArgument`).
+- `DeviceCapabilities::subgroup.requiredSizeStages` must include `ShaderStage::compute`, and the size must be from `subgroup.minSize` to `subgroup.maxSize` (`ErrorCode::unsupported`).
+- The compute shader's workgroup width (`x`) must be a multiple of the size (`ErrorCode::invalidArgument`).
+
+Every subgroup of such a pipeline is full: `WaveGetLaneCount()` and `WaveActiveCountBits(true)` both return the required size.
+
+On Direct3D 12 the wave size is part of the shader. The shader must declare `[WaveSize(N)]` with the required size, which needs `SHADER_MODEL 6_6` (see [Shader model](#shader-model)); pipeline creation fails with `ErrorCode::invalidArgument` if it declares no size or another size. A shader that declares a size outside `subgroup.minSize` to `subgroup.maxSize` fails with `ErrorCode::unsupported`, with or without `requiredSubgroupSize`. Vulkan takes the size from the pipeline and ignores `[WaveSize]` (`dxc` warns when it compiles one to SPIR-V), so declare it for Direct3D 12 only:
+
+```hlsl
+#if defined(RACHIS_D3D12)
+[WaveSize(32)]
+#endif
+[numthreads(128, 1, 1)]
+void cullMain(uint3 threadId : SV_DispatchThreadID)
+```
+
+Only compute pipelines take a required subgroup size: Direct3D 12 accepts `[WaveSize]` on compute shaders only, so mesh and task shaders run at the size the device picks.
 
 ---
 
