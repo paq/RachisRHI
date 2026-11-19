@@ -346,6 +346,7 @@ namespace rachis::vulkan
         updateAfterBindSupported_ = capabilities.updateAfterBindBindingArrays;
         maxVariableResourceDescriptors_ = capabilities.limits.maxVariableResourceDescriptors;
         maxVariableSamplerDescriptors_ = capabilities.limits.maxVariableSamplerDescriptors;
+        maxVariableBufferDescriptors_ = capabilities.limits.maxVariableBufferDescriptors;
         descriptorLimits_ = descriptorLimits;
         updateAfterBindLimits_ = updateAfterBindLimits;
         accelerationStructures_ = capabilities.rayTracing || capabilities.rayQuery;
@@ -994,6 +995,7 @@ namespace rachis::vulkan
         {
             const auto* variable = findEntry(record->entries, *record->variableBinding);
             const auto classCapacity = variable->type == BindingType::sampler ? maxVariableSamplerDescriptors_
+                                       : isBufferType(variable->type)         ? maxVariableBufferDescriptors_
                                                                               : maxVariableResourceDescriptors_;
             record->variableDescriptorCapacity =
                 variableDescriptorCapacity(record->entries,

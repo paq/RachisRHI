@@ -4146,6 +4146,7 @@ TEST_CASE("Vulkan variable-count arrays and pipeline layouts stay within per-cla
     caps.partiallyBoundBindingArrays = true;
     caps.variableDescriptorCountBindingArrays = true;
     caps.limits.maxVariableResourceDescriptors = 31;
+    caps.limits.maxVariableBufferDescriptors = 31;
     caps.limits.maxVariableSamplerDescriptors = 16;
     const rachis::vulkan::VulkanDescriptorLimits limits{
         .maxPerStageDescriptorSamplers = 16,
@@ -4275,6 +4276,7 @@ TEST_CASE("Vulkan variable-count arrays and pipeline layouts stay within per-cla
 
     rachis::DeviceCapabilities wideCaps = caps;
     wideCaps.limits.maxVariableResourceDescriptors = 65'536;
+    wideCaps.limits.maxVariableBufferDescriptors = 65'536;
     rachis::vulkan::VulkanBindingManager uniformLimited;
     uniformLimited.initialize(device,
                               &table,
@@ -4413,6 +4415,59 @@ TEST_CASE("Vulkan pipeline layouts count dynamic buffers against the dynamic per
     CHECK_FALSE(
         combined.createPipelineLayout({.bindingLayouts = std::array{*staticLayout, *dynamicLayout}}).has_value());
     combined.shutdown();
+    bindings.shutdown();
+    gDescriptorMock = nullptr;
+}
+
+TEST_CASE("Vulkan variable-count buffer arrays stay within the published buffer descriptor limit",
+          "[size:small][rhi][vulkan][vuid][bindings-mock]")
+{
+    MockDescriptorDispatch mock;
+    gDescriptorMock = &mock;
+    const auto table = makeMockDescriptorTable();
+    const auto device = fakeHandle<VkDevice>(0x45);
+    rachis::DeviceCapabilities caps{};
+    caps.partiallyBoundBindingArrays = true;
+    caps.variableDescriptorCountBindingArrays = true;
+    caps.limits.maxVariableResourceDescriptors = 1'000;
+    caps.limits.maxVariableBufferDescriptors = 12;
+    caps.limits.maxVariableSamplerDescriptors = 16;
+    rachis::vulkan::VulkanResourceAllocator resources;
+    rachis::vulkan::VulkanBindingManager bindings;
+    bindings.initialize(device, &table, caps);
+
+    for (const auto type : {rachis::BindingType::uniformBuffer,
+                            rachis::BindingType::readOnlyStorageBuffer,
+                            rachis::BindingType::storageBuffer,
+                            rachis::BindingType::sampledTexture})
+    {
+        CAPTURE(static_cast<int>(type));
+        const bool buffer = type != rachis::BindingType::sampledTexture;
+        const std::array entries{rachis::BindingLayoutEntry{
+            .binding = 0,
+            .type = type,
+            .visibility = rachis::ShaderStage::compute,
+            .count = rachis::unboundedBindingCount,
+            .flags = rachis::BindingFlag::partiallyBound | rachis::BindingFlag::variableDescriptorCount,
+        }};
+        const auto layout = bindings.createBindingLayout({.entries = entries});
+        REQUIRE(layout.has_value());
+        REQUIRE_FALSE(mock.setLayouts.empty());
+        CHECK(mock.setLayouts.back().back().descriptorCount == (buffer ? 12U : 1'000U));
+        const std::array sizes{rachis::BindingPoolSize{type, 2'000}};
+        const auto pool = bindings.createBindingPool({.maxBindingSets = 2, .sizes = sizes});
+        REQUIRE(pool.has_value());
+        const auto beyond =
+            bindings.createBindingSet(resources, {.layout = *layout, .variableDescriptorCount = 13, .pool = *pool});
+        CHECK(beyond.has_value() == !buffer);
+        if (!beyond)
+        {
+            CHECK(beyond.error().code == rachis::ErrorCode::invalidArgument);
+        }
+        const auto atLimit =
+            bindings.createBindingSet(resources, {.layout = *layout, .variableDescriptorCount = 12, .pool = *pool});
+        CHECK(atLimit.has_value());
+    }
     bindings.shutdown();
     gDescriptorMock = nullptr;
 }
@@ -4663,7 +4718,7 @@ TEST_CASE("Vulkan texture descriptors name the native layout of every texture la
     gMock = nullptr;
 }
 
-TEST_CASE("Vulkan publishes variable-count limits that sampler, storage-buffer and texture arrays can reach",
+TEST_CASE("Vulkan publishes variable-count limits that sampler, buffer and texture arrays can reach",
           "[size:small][rhi][vulkan][vuid][bindings-mock]")
 {
     rachis::vulkan::VulkanPhysicalDeviceRecord record{};
@@ -4729,7 +4784,9 @@ TEST_CASE("Vulkan publishes variable-count limits that sampler, storage-buffer a
             REQUIRE_FALSE(mock.setLayouts.back().empty());
             return mock.setLayouts.back().back().descriptorCount;
         };
-        CHECK(declaredLength(rachis::BindingType::storageBuffer) == published.limits.maxVariableResourceDescriptors);
+        CHECK(declaredLength(rachis::BindingType::storageBuffer) == published.limits.maxVariableBufferDescriptors);
+        CHECK(declaredLength(rachis::BindingType::readOnlyStorageBuffer) ==
+              published.limits.maxVariableBufferDescriptors);
         CHECK(declaredLength(rachis::BindingType::sampledTexture) == published.limits.maxVariableResourceDescriptors);
         CHECK(declaredLength(rachis::BindingType::storageTexture) == published.limits.maxVariableResourceDescriptors);
         CHECK(declaredLength(rachis::BindingType::sampler) == published.limits.maxVariableSamplerDescriptors);

@@ -354,6 +354,7 @@ namespace rachis::vulkan
         VulkanAccelerationManager* accelerationManager_ = nullptr;
         std::uint32_t maxVariableResourceDescriptors_ = 0;
         std::uint32_t maxVariableSamplerDescriptors_ = 0;
+        std::uint32_t maxVariableBufferDescriptors_ = 0;
         VulkanBufferBindingLimits bufferLimits_{};
         VulkanDescriptorLimits descriptorLimits_{};
         VulkanDescriptorLimits updateAfterBindLimits_{};
