@@ -848,6 +848,8 @@ namespace rachis::vulkan
         sharedExportRegistry,
         sharedImportRegistry,
         indirectArgumentRetention,
+        accelerationStructureRecord,
+        commandUses,
     };
 
     void injectVulkanBadAlloc(VulkanBadAllocPoint point, bool armed) noexcept;

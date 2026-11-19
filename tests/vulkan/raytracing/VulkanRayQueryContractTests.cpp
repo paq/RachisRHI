@@ -1753,4 +1753,75 @@ TEST_CASE("Vulkan in-place TLAS updates follow reads of the same TLAS in their o
     }
     checkNoDiagnostics(*device);
 }
+
+TEST_CASE("Vulkan BLAS storage stays leased while a built TLAS still references the destroyed BLAS",
+          "[size:medium][rhi][vulkan][ray-query][acceleration-structure]")
+{
+    auto device = createRayQueryDevice();
+    if (!device)
+    {
+        return;
+    }
+    {
+        TopLevelLeaseFixture fixture(*device);
+        fixture.build();
+
+        REQUIRE(device->destroyAccelerationStructure(fixture.bottomLevel()).has_value());
+        fixture.forgetBottomLevel();
+        device->collectGarbage();
+        const rachis::AccelerationStructureDesc reuse{
+            .type = rachis::AccelerationStructureType::bottomLevel,
+            .storage = fixture.bottomStorage(),
+            .label = "Vulkan BLAS reusing leased storage",
+        };
+        const auto overlapping = device->createAccelerationStructure(reuse);
+        REQUIRE_FALSE(overlapping.has_value());
+        CHECK(overlapping.error().code == rachis::ErrorCode::invalidArgument);
+
+        REQUIRE(device->destroyAccelerationStructure(fixture.topLevel(0)).has_value());
+        fixture.forgetTopLevel(0);
+        device->collectGarbage();
+        const auto reused = device->createAccelerationStructure(reuse);
+        REQUIRE(reused.has_value());
+        REQUIRE(device->destroyAccelerationStructure(*reused).has_value());
+    }
+    checkNoDiagnostics(*device);
+}
+
+TEST_CASE("Vulkan acceleration-structure creation that fails to allocate its record leaks no native object",
+          "[size:medium][rhi][vulkan][ray-query][acceleration-structure]")
+{
+    auto device = createRayQueryDevice();
+    if (!device)
+    {
+        return;
+    }
+    {
+        TopLevelLeaseFixture fixture(*device);
+        REQUIRE(device->destroyAccelerationStructure(fixture.bottomLevel()).has_value());
+        fixture.forgetBottomLevel();
+        device->collectGarbage();
+        const rachis::AccelerationStructureDesc desc{
+            .type = rachis::AccelerationStructureType::bottomLevel,
+            .storage = fixture.bottomStorage(),
+            .label = "Vulkan BLAS whose record allocation fails",
+        };
+
+        const auto liveBefore = rachis::vulkan::test::liveAccelerationStructures().load();
+        rachis::vulkan::injectVulkanBadAlloc(rachis::vulkan::VulkanBadAllocPoint::accelerationStructureRecord, true);
+        const auto failed = device->createAccelerationStructure(desc);
+        rachis::vulkan::injectVulkanBadAlloc(rachis::vulkan::VulkanBadAllocPoint::accelerationStructureRecord, false);
+        REQUIRE_FALSE(failed.has_value());
+        CHECK(failed.error().code == rachis::ErrorCode::outOfMemory);
+        CHECK(rachis::vulkan::test::liveAccelerationStructures().load() == liveBefore);
+
+        const auto created = device->createAccelerationStructure(desc);
+        REQUIRE(created.has_value());
+        CHECK(rachis::vulkan::test::liveAccelerationStructures().load() == liveBefore + 1);
+        REQUIRE(device->destroyAccelerationStructure(*created).has_value());
+        device->collectGarbage();
+        CHECK(rachis::vulkan::test::liveAccelerationStructures().load() == liveBefore);
+    }
+    checkNoDiagnostics(*device);
+}
 #endif

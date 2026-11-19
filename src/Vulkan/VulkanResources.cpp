@@ -155,7 +155,7 @@ namespace rachis::vulkan
     namespace
     {
 
-        thread_local std::array<bool, 4> injectedBadAllocs{};
+        thread_local std::array<bool, 6> injectedBadAllocs{};
 
         void throwInjectedBadAlloc(VulkanBadAllocPoint point)
         {

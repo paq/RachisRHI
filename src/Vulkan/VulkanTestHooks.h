@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 
 namespace rachis::vulkan::test
 {
@@ -55,6 +56,18 @@ namespace rachis::vulkan::test
     {
         static std::atomic_size_t s_value = 0;
         return s_value;
+    }
+
+    [[nodiscard]] inline std::atomic_size_t& liveAccelerationStructures() noexcept
+    {
+        static std::atomic_size_t s_value = 0;
+        return s_value;
+    }
+
+    [[nodiscard]] inline std::function<void()>& beforeTopLevelUpdatePublication() noexcept
+    {
+        thread_local std::function<void()> s_hook;
+        return s_hook;
     }
 
     [[nodiscard]] inline std::atomic_bool& hideMaintenance5() noexcept

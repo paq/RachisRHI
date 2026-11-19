@@ -110,6 +110,7 @@ namespace rachis::vulkan
             const VolkDeviceTable* table = nullptr;
             VkAccelerationStructureKHR accelerationStructure = VK_NULL_HANDLE;
             std::shared_ptr<void> storage;
+            std::shared_ptr<AccelerationStructureStorageLease> storageLease;
             mutable std::mutex mutex;
 
             ~AccelerationStructureKeepAlive();
@@ -126,7 +127,6 @@ namespace rachis::vulkan
             VkAccelerationStructureKHR accelerationStructure = VK_NULL_HANDLE;
             VkDeviceAddress deviceAddress = 0;
             std::shared_ptr<AccelerationStructureKeepAlive> keepAlive;
-            std::shared_ptr<AccelerationStructureStorageLease> storageLease;
             std::shared_ptr<VulkanAccelerationStructureVersionSlot> version =
                 std::make_shared<VulkanAccelerationStructureVersionSlot>();
             std::shared_ptr<detail::AccelerationStructureExecutionTracker> executionTracker =
@@ -159,9 +159,10 @@ namespace rachis::vulkan
         [[nodiscard]] std::shared_ptr<AccelerationStructureRecord> makeRecord(
             const AccelerationStructureDesc& desc,
             std::uint64_t size,
-            VkAccelerationStructureKHR native,
             std::shared_ptr<void> storageKeepAlive,
             std::shared_ptr<AccelerationStructureStorageLease> storageLease) const;
+        void adoptNativeAccelerationStructure(AccelerationStructureRecord& record,
+                                              VkAccelerationStructureKHR native) const noexcept;
         [[nodiscard]] Result<AccelerationStructureHandle> registerRecord(
             std::shared_ptr<AccelerationStructureRecord> record);
         [[nodiscard]] Status publishBuild(VulkanCommandBuffer& commandBuffer,

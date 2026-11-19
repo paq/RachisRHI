@@ -3,6 +3,10 @@
 #include "Common/VectorReserve.h"
 #include "Internal/VulkanDiagnostics.h"
 
+#ifdef RACHIS_TESTING
+#include "Vulkan/VulkanTestHooks.h"
+#endif
+
 #include <algorithm>
 #include <cstddef>
 #include <cstring>
@@ -883,17 +887,22 @@ namespace rachis::vulkan
     void VulkanAccelerationManager::AccelerationStructureKeepAlive::releaseNow() noexcept
     {
         std::shared_ptr<void> releasedStorage;
+        std::shared_ptr<AccelerationStructureStorageLease> releasedLease;
         {
             const std::scoped_lock lock(mutex);
             if (table != nullptr && table->vkDestroyAccelerationStructureKHR != nullptr && device != VK_NULL_HANDLE &&
                 accelerationStructure != VK_NULL_HANDLE)
             {
                 table->vkDestroyAccelerationStructureKHR(device, accelerationStructure, nullptr);
+#ifdef RACHIS_TESTING
+                test::liveAccelerationStructures().fetch_sub(1, std::memory_order_relaxed);
+#endif
             }
             accelerationStructure = VK_NULL_HANDLE;
             device = VK_NULL_HANDLE;
             table = nullptr;
             releasedStorage = std::move(storage);
+            releasedLease = std::move(storageLease);
         }
     }
 
@@ -1178,44 +1187,57 @@ namespace rachis::vulkan
             return std::unexpected(
                 makeVulkanError(vulkanResultErrorCode(created), created, "vkCreateAccelerationStructureKHR"));
         }
-        if (!desc.label.empty())
-        {
-            setVulkanObjectName(instanceTable_,
-                                device_,
-                                VK_OBJECT_TYPE_ACCELERATION_STRUCTURE_KHR,
-                                reinterpret_cast<std::uint64_t>(native),
-                                std::string(desc.label).c_str());
-        }
+#ifdef RACHIS_TESTING
+        test::liveAccelerationStructures().fetch_add(1, std::memory_order_relaxed);
+#endif
         return native;
     }
 
     std::shared_ptr<VulkanAccelerationManager::AccelerationStructureRecord> VulkanAccelerationManager::makeRecord(
         const AccelerationStructureDesc& desc,
         std::uint64_t size,
-        VkAccelerationStructureKHR native,
         std::shared_ptr<void> storageKeepAlive,
         std::shared_ptr<AccelerationStructureStorageLease> storageLease) const
     {
-        const VkAccelerationStructureDeviceAddressInfoKHR addressInfo{
-            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR,
-            .pNext = {},
-            .accelerationStructure = native,
-        };
+#ifdef RACHIS_TESTING
+        throwInjectedVulkanBadAlloc(VulkanBadAllocPoint::accelerationStructureRecord);
+#endif
         auto record = std::make_shared<AccelerationStructureRecord>();
         record->type = desc.type;
         record->storage = desc.storage;
         record->offset = desc.offset;
         record->size = size;
         record->label = std::string(desc.label);
-        record->accelerationStructure = native;
-        record->deviceAddress = table_->vkGetAccelerationStructureDeviceAddressKHR(device_, &addressInfo);
         record->keepAlive = std::make_shared<AccelerationStructureKeepAlive>();
         record->keepAlive->device = device_;
         record->keepAlive->table = table_;
-        record->keepAlive->accelerationStructure = native;
         record->keepAlive->storage = std::move(storageKeepAlive);
-        record->storageLease = std::move(storageLease);
+        record->keepAlive->storageLease = std::move(storageLease);
         return record;
+    }
+
+    void VulkanAccelerationManager::adoptNativeAccelerationStructure(AccelerationStructureRecord& record,
+                                                                     VkAccelerationStructureKHR native) const noexcept
+    {
+        {
+            const std::scoped_lock lock(record.keepAlive->mutex);
+            record.keepAlive->accelerationStructure = native;
+        }
+        record.accelerationStructure = native;
+        const VkAccelerationStructureDeviceAddressInfoKHR addressInfo{
+            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR,
+            .pNext = {},
+            .accelerationStructure = native,
+        };
+        record.deviceAddress = table_->vkGetAccelerationStructureDeviceAddressKHR(device_, &addressInfo);
+        if (!record.label.empty())
+        {
+            setVulkanObjectName(instanceTable_,
+                                device_,
+                                VK_OBJECT_TYPE_ACCELERATION_STRUCTURE_KHR,
+                                reinterpret_cast<std::uint64_t>(native),
+                                record.label.c_str());
+        }
     }
 
     Result<AccelerationStructureHandle> VulkanAccelerationManager::registerRecord(
@@ -1259,12 +1281,13 @@ namespace rachis::vulkan
         {
             return std::unexpected(std::move(lease.error()));
         }
+        auto record = makeRecord(desc, size, std::move(storage->keepAlive), std::move(*lease));
         auto native = createNativeAccelerationStructure(desc, storage->buffer, size);
         if (!native)
         {
             return std::unexpected(std::move(native.error()));
         }
-        auto record = makeRecord(desc, size, *native, std::move(storage->keepAlive), std::move(*lease));
+        adoptNativeAccelerationStructure(*record, *native);
         return registerRecord(std::move(record));
     }
 
