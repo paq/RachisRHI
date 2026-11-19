@@ -1691,7 +1691,7 @@ TEST_CASE("Vulkan copy queue uses a transfer-only family only when its image tra
     CHECK(laterUnitFamilies.transfer == 2);
 
     const std::array computeOnly{
-        mockQueueFamily(VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_TRANSFER_BIT, {1, 1, 1}),
+        mockQueueFamily(VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT, {1, 1, 1}),
         mockQueueFamily(VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT, {1, 1, 1}),
         mockQueueFamily(VK_QUEUE_TRANSFER_BIT, {16, 16, 8}),
     };
