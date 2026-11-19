@@ -450,6 +450,12 @@ namespace rachis::metal
         std::uint32_t metalIndex = 0;
     };
 
+    struct MetalArgumentBufferContents final
+    {
+        std::unordered_map<std::size_t, MetalBindingSlot> writtenInPlace;
+        std::unordered_map<const void*, std::uint32_t> residentElements;
+    };
+
     struct MetalBindingSetVersion final
     {
         std::shared_ptr<MetalBindingLayoutRecord> layout;
@@ -460,6 +466,7 @@ namespace rachis::metal
         std::uint32_t variableDescriptorCount = 0;
         __strong id<MTLBuffer> argumentBuffer;
         __strong id<MTLResidencySet> argumentResidency;
+        std::shared_ptr<MetalArgumentBufferContents> argumentContents;
     };
 
     struct MetalBindingSetRecord final

@@ -422,10 +422,60 @@ namespace rachis::metal
             return {};
         }
 
+        [[nodiscard]] id<MTLAllocation> metalArgumentElementAllocation(const MetalBindingSlot& slot) noexcept
+        {
+            if (std::holds_alternative<std::monostate>(slot.resource))
+            {
+                return nil;
+            }
+            if (metalIsBufferType(slot.type))
+            {
+                return slot.buffer;
+            }
+            if (slot.type == BindingType::sampledTexture || slot.type == BindingType::storageTexture)
+            {
+                return slot.texture;
+            }
+            return nil;
+        }
+
+        void metalAddArgumentElementResidency(MetalBindingSetVersion& version, id<MTLAllocation> allocation)
+        {
+            if (allocation == nil)
+            {
+                return;
+            }
+            auto& count = version.argumentContents->residentElements[(__bridge const void*)allocation];
+            if (count++ == 0)
+            {
+                [version.argumentResidency addAllocation:allocation];
+            }
+        }
+
+        void metalRemoveArgumentElementResidency(MetalBindingSetVersion& version, id<MTLAllocation> allocation)
+        {
+            if (allocation == nil)
+            {
+                return;
+            }
+            auto& counts = version.argumentContents->residentElements;
+            const auto found = counts.find((__bridge const void*)allocation);
+            if (found == counts.end())
+            {
+                return;
+            }
+            if (--found->second == 0)
+            {
+                counts.erase(found);
+                [version.argumentResidency removeAllocation:allocation];
+            }
+        }
+
         [[nodiscard]] Status metalPublishArgumentBuffer(id<MTLDevice> device, MetalBindingSetVersion& version)
         {
             version.argumentBuffer = nil;
             version.argumentResidency = nil;
+            version.argumentContents = nullptr;
             if (version.layout == nullptr || !version.layout->variableBinding.has_value())
             {
                 return {};
@@ -453,6 +503,8 @@ namespace rachis::metal
                     metalNsError(ErrorCode::outOfMemory, error, "newResidencySetWithDescriptor(binding array)"));
             }
             [residency addAllocation:buffer];
+            version.argumentResidency = residency;
+            version.argumentContents = std::make_shared<MetalArgumentBufferContents>();
             for (const auto& slot : version.slots)
             {
                 if (!metalIsArgumentBufferSlot(version, slot) || slot.arrayElement >= count ||
@@ -463,14 +515,14 @@ namespace rachis::metal
                 if (metalIsBufferType(slot.type) && slot.buffer != nil)
                 {
                     words[slot.arrayElement] = slot.gpuAddress + slot.offset;
-                    [residency addAllocation:slot.buffer];
+                    metalAddArgumentElementResidency(version, slot.buffer);
                 }
                 else if ((slot.type == BindingType::sampledTexture || slot.type == BindingType::storageTexture) &&
                          slot.texture != nil)
                 {
                     const MTLResourceID identifier = slot.texture.gpuResourceID;
                     std::memcpy(&words[slot.arrayElement], &identifier, sizeof(std::uint64_t));
-                    [residency addAllocation:slot.texture];
+                    metalAddArgumentElementResidency(version, slot.texture);
                 }
                 else if (slot.type == BindingType::sampler && slot.sampler != nil)
                 {
@@ -480,7 +532,6 @@ namespace rachis::metal
             }
             [residency commit];
             version.argumentBuffer = buffer;
-            version.argumentResidency = residency;
             return {};
         }
 
@@ -1332,10 +1383,16 @@ namespace rachis::metal
                 writes, [&](const BindingWrite& write) { return write.binding == *layout.variableBinding; });
         }
 
-        void metalWriteArgumentBufferElement(MetalBindingSetVersion& version, const MetalBindingSlot& slot)
+        void metalWriteArgumentBufferElement(MetalBindingSetVersion& version,
+                                             std::size_t slotIndex,
+                                             const MetalBindingSlot& previous)
         {
+            const auto& slot = version.slots[slotIndex];
             auto* const words = static_cast<std::uint64_t*>(version.argumentBuffer.contents);
             std::uint64_t word = 0;
+            metalAddArgumentElementResidency(version, metalArgumentElementAllocation(slot));
+            metalRemoveArgumentElementResidency(version, metalArgumentElementAllocation(previous));
+            version.argumentContents->writtenInPlace.insert_or_assign(slotIndex, slot);
             if (std::holds_alternative<std::monostate>(slot.resource))
             {
                 word = 0;
@@ -1343,14 +1400,12 @@ namespace rachis::metal
             else if (metalIsBufferType(slot.type) && slot.buffer != nil)
             {
                 word = slot.gpuAddress + slot.offset;
-                [version.argumentResidency addAllocation:slot.buffer];
             }
             else if ((slot.type == BindingType::sampledTexture || slot.type == BindingType::storageTexture) &&
                      slot.texture != nil)
             {
                 const MTLResourceID identifier = slot.texture.gpuResourceID;
                 std::memcpy(&word, &identifier, sizeof(word));
-                [version.argumentResidency addAllocation:slot.texture];
             }
             else if (slot.type == BindingType::sampler && slot.sampler != nil)
             {
@@ -1412,7 +1467,8 @@ namespace rachis::metal
             }
         }
 
-        if (metalWritesUpdateInPlace(*current->layout, writes) && previousVersion->argumentBuffer != nil)
+        if (metalWritesUpdateInPlace(*current->layout, writes) && previousVersion->argumentBuffer != nil &&
+            previousVersion->argumentContents != nullptr)
         {
             auto version = std::make_shared<MetalBindingSetVersion>(*previousVersion);
             version->slots = std::move(slots);
@@ -1428,14 +1484,23 @@ namespace rachis::metal
             {
                 return unchanged;
             }
+            std::vector<std::size_t> written;
+            written.reserve(writes.size());
             for (const auto& write : writes)
             {
                 const auto index = metalSlotIndex(
                     current->layout->entries, version->variableDescriptorCount, write.binding, write.arrayElement);
                 if (index.has_value())
                 {
-                    metalWriteArgumentBufferElement(*version, version->slots[*index]);
+                    written.push_back(*index);
                 }
+            }
+            std::ranges::sort(written);
+            const auto duplicates = std::ranges::unique(written);
+            written.erase(duplicates.begin(), duplicates.end());
+            for (const auto index : written)
+            {
+                metalWriteArgumentBufferElement(*version, index, previousVersion->slots[index]);
             }
             [version->argumentResidency commit];
             metalPublishStatistics(*native_, prepared.resource, prepared.sampler, prepared.resource, prepared.sampler);
