@@ -4349,6 +4349,74 @@ TEST_CASE("Vulkan descriptor quotas count only the shader stages the device enab
     gDescriptorMock = nullptr;
 }
 
+TEST_CASE("Vulkan pipeline layouts count dynamic buffers against the dynamic per-set limits only",
+          "[size:small][rhi][vulkan][vuid][bindings-mock]")
+{
+    using rachis::BindingType;
+    using rachis::ShaderStage;
+    MockDescriptorDispatch mock;
+    gDescriptorMock = &mock;
+    const auto table = makeMockDescriptorTable();
+    const auto device = fakeHandle<VkDevice>(0x44);
+    rachis::DeviceCapabilities caps{};
+    caps.partiallyBoundBindingArrays = true;
+    caps.updateAfterBindBindingArrays = true;
+    const rachis::vulkan::VulkanDescriptorLimits limits{
+        .maxPerStageDescriptorUniformBuffers = 5,
+        .maxPerStageDescriptorStorageBuffers = 5,
+        .maxDescriptorSetUniformBuffers = 4,
+        .maxDescriptorSetUniformBuffersDynamic = 1,
+        .maxDescriptorSetStorageBuffers = 4,
+        .maxDescriptorSetStorageBuffersDynamic = 1,
+    };
+    const rachis::vulkan::VulkanDescriptorLimits updateAfterBindLimits{
+        .maxPerStageDescriptorStorageBuffers = 5,
+        .maxDescriptorSetStorageBuffers = 4,
+        .maxDescriptorSetStorageBuffersDynamic = 1,
+    };
+    rachis::vulkan::VulkanBindingManager bindings;
+    bindings.initialize(device, &table, caps, nullptr, {}, limits, updateAfterBindLimits);
+    const auto create = [&](std::span<const rachis::BindingLayoutEntry> entries) {
+        auto layout = bindings.createBindingLayout({.entries = entries});
+        REQUIRE(layout.has_value());
+        return *layout;
+    };
+    const std::array staticUniforms{rachis::BindingLayoutEntry{0, BindingType::uniformBuffer, ShaderStage::compute, 4}};
+    const std::array dynamicUniform{
+        rachis::BindingLayoutEntry{0, BindingType::dynamicUniformBuffer, ShaderStage::compute, 1}};
+    const std::array updateAfterBindStorage{rachis::BindingLayoutEntry{
+        0, BindingType::storageBuffer, ShaderStage::compute, 4, rachis::BindingFlag::updateAfterBind}};
+    const std::array dynamicStorage{
+        rachis::BindingLayoutEntry{0, BindingType::dynamicStorageBuffer, ShaderStage::compute, 1}};
+    const std::array twoDynamicStorage{
+        rachis::BindingLayoutEntry{0, BindingType::dynamicStorageBuffer, ShaderStage::compute, 2}};
+    const std::array oneMoreStorage{rachis::BindingLayoutEntry{0, BindingType::storageBuffer, ShaderStage::compute, 1}};
+
+    CHECK(bindings.createPipelineLayout({.bindingLayouts = std::array{create(staticUniforms), create(dynamicUniform)}})
+              .has_value());
+    const auto updateAfterBind = create(updateAfterBindStorage);
+    CHECK(bindings.createPipelineLayout({.bindingLayouts = std::array{updateAfterBind, create(dynamicStorage)}})
+              .has_value());
+    CHECK_FALSE(
+        bindings.createPipelineLayout({.bindingLayouts = std::array{updateAfterBind, create(twoDynamicStorage)}})
+            .has_value());
+    CHECK_FALSE(bindings.createPipelineLayout({.bindingLayouts = std::array{updateAfterBind, create(oneMoreStorage)}})
+                    .has_value());
+    rachis::vulkan::VulkanDescriptorLimits stageLimited = limits;
+    stageLimited.maxPerStageDescriptorUniformBuffers = 4;
+    rachis::vulkan::VulkanBindingManager combined;
+    combined.initialize(device, &table, caps, nullptr, {}, stageLimited, updateAfterBindLimits);
+    const auto staticLayout = combined.createBindingLayout({.entries = staticUniforms});
+    const auto dynamicLayout = combined.createBindingLayout({.entries = dynamicUniform});
+    REQUIRE(staticLayout.has_value());
+    REQUIRE(dynamicLayout.has_value());
+    CHECK_FALSE(
+        combined.createPipelineLayout({.bindingLayouts = std::array{*staticLayout, *dynamicLayout}}).has_value());
+    combined.shutdown();
+    bindings.shutdown();
+    gDescriptorMock = nullptr;
+}
+
 TEST_CASE("Vulkan pipeline layouts give each shader stage one native push-constant range",
           "[size:small][rhi][vulkan][vuid][bindings-mock][push-constants]")
 {

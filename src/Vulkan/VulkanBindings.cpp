@@ -763,7 +763,6 @@ namespace rachis::vulkan
                 return;
             }
             const auto classIndex = static_cast<std::size_t>(*limitClass);
-            totals.pipeline[classIndex] += count;
             if (entry.type == BindingType::dynamicUniformBuffer)
             {
                 totals.uniformBuffersDynamic += count;
@@ -771,6 +770,10 @@ namespace rachis::vulkan
             else if (isDynamicBuffer(entry.type))
             {
                 totals.storageBuffersDynamic += count;
+            }
+            else
+            {
+                totals.pipeline[classIndex] += count;
             }
             for (std::size_t stage = 0; stage < shaderStageBitCount; ++stage)
             {
