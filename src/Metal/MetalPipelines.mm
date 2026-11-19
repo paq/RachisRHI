@@ -3002,8 +3002,16 @@ namespace rachis::metal
                 if (inputs.hasTask)
                 {
                     writer.writeShader(inputs.task);
+                    const auto task = metalWorkgroupMtlSize(inputs.task.snapshot);
+                    writer.write(static_cast<std::uint64_t>(task.width));
+                    writer.write(static_cast<std::uint64_t>(task.height));
+                    writer.write(static_cast<std::uint64_t>(task.depth));
                 }
                 writer.writeShader(inputs.mesh);
+                const auto mesh = metalWorkgroupMtlSize(inputs.mesh.snapshot);
+                writer.write(static_cast<std::uint64_t>(mesh.width));
+                writer.write(static_cast<std::uint64_t>(mesh.height));
+                writer.write(static_cast<std::uint64_t>(mesh.depth));
             }
             else
             {

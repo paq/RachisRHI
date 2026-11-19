@@ -745,3 +745,71 @@ TEST_CASE("Metal task and mesh modules reject workgroups beyond the stage limits
     REQUIRE(accepted.has_value());
     REQUIRE(device.destroyShaderModule(*accepted).has_value());
 }
+
+TEST_CASE("Metal mesh pipeline cache entries depend on the mesh workgroup size", "[size:large][rhi][metal][mesh]")
+{
+    auto created = rachis::createDevice(metalDesc());
+    REQUIRE(created);
+    auto device = std::move(*created);
+    if (!rachis::test::requireCapabilities(device).meshShaders)
+    {
+        SKIP("The Metal GPU is older than the Apple9 family.");
+    }
+    const auto cooked = loadPnms("MetalMeshShader.fixed.ms.pnms");
+    const auto pixelBytecode = loadPnms("MetalMeshShader.ps.pnms");
+    REQUIRE_FALSE(cooked.empty());
+    REQUIRE_FALSE(pixelBytecode.empty());
+    const auto widerBytecode = withThreadGroupSize(cooked, {2, 1, 1});
+    auto narrow = device.createShaderModule({
+        .stage = rachis::ShaderStage::mesh,
+        .bytecode = cooked,
+        .entryPoint = "meshFixed",
+        .shaderInterface = rachis::test::computeShaderInterface({1, 1, 1}),
+    });
+    auto wide = device.createShaderModule({
+        .stage = rachis::ShaderStage::mesh,
+        .bytecode = widerBytecode,
+        .entryPoint = "meshFixed",
+        .shaderInterface = rachis::test::computeShaderInterface({2, 1, 1}),
+    });
+    auto pixel = device.createShaderModule({
+        .stage = rachis::ShaderStage::pixel,
+        .bytecode = pixelBytecode,
+        .entryPoint = "meshPixel",
+    });
+    REQUIRE(narrow.has_value());
+    REQUIRE(wide.has_value());
+    REQUIRE(pixel.has_value());
+    auto layout = device.createPipelineLayout({});
+    REQUIRE(layout.has_value());
+    auto cache = device.createPipelineCache({.label = "Metal mesh workgroup cache"});
+    REQUIRE(cache.has_value());
+    const std::array colorTargets{rachis::ColorTargetState{.format = rachis::Format::rgba8Unorm}};
+    const auto pipelineWith = [&](rachis::ShaderModuleHandle mesh) {
+        return device.createGraphicsPipeline({
+            .layout = *layout,
+            .pixelShader = *pixel,
+            .meshShader = mesh,
+            .cullMode = rachis::CullMode::none,
+            .colorTargets = colorTargets,
+            .cache = *cache,
+            .cacheKey = {.high = 0x6d657368U, .low = 1},
+        });
+    };
+    auto first = pipelineWith(*narrow);
+    REQUIRE(first.has_value());
+    auto second = pipelineWith(*wide);
+    CHECK_FALSE(second.has_value());
+
+    REQUIRE(device.destroyPipeline(*first).has_value());
+    if (second.has_value())
+    {
+        REQUIRE(device.destroyPipeline(*second).has_value());
+    }
+    REQUIRE(device.destroyPipelineCache(*cache).has_value());
+    REQUIRE(device.destroyPipelineLayout(*layout).has_value());
+    for (const auto module : {*pixel, *wide, *narrow})
+    {
+        REQUIRE(device.destroyShaderModule(module).has_value());
+    }
+}
