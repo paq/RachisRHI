@@ -1368,26 +1368,25 @@ namespace rachis::vulkan
         for (std::uint32_t layer = range.baseArrayLayer; layer < range.baseArrayLayer + range.layerCount; ++layer)
         {
             const TextureSubresource subresource{.mipLevel = range.baseMipLevel, .arrayLayer = layer};
-            if (texture->submittedLayouts != nullptr)
+            if (texture->submittedLayouts == nullptr || state == nullptr)
             {
-                const auto cell = static_cast<std::size_t>(layer) * texture->desc.mipLevels + range.baseMipLevel;
-                const auto known = commandPublicLayout(state, LayoutCell{texture->submittedLayouts.get(), cell});
-                if (known.has_value() && *known != TextureLayout::unorderedAccess)
-                {
-                    return std::unexpected(Error{
-                        ErrorCode::invalidState,
-                        0,
-                        "clearStorageTexture requires the unorderedAccess layout, but this command buffer leaves a "
-                        "cleared subresource in another layout.",
-                    });
-                }
+                continue;
             }
-            if (recordedLayout(command, *texture, subresource) != VK_IMAGE_LAYOUT_GENERAL)
+            const auto cell = static_cast<std::size_t>(layer) * texture->desc.mipLevels + range.baseMipLevel;
+            const LayoutCell key{texture->submittedLayouts.get(), cell};
+            if (!state->writeIndex.contains(key))
+            {
+                continue;
+            }
+            const auto known = commandPublicLayout(state, key);
+            if ((known.has_value() && *known != TextureLayout::unorderedAccess) ||
+                recordedLayout(command, *texture, subresource) != VK_IMAGE_LAYOUT_GENERAL)
             {
                 return std::unexpected(Error{
                     ErrorCode::invalidState,
                     0,
-                    "clearStorageTexture requires the cleared subresources to be in the unorderedAccess layout.",
+                    "clearStorageTexture requires the unorderedAccess layout, but this command buffer leaves a "
+                    "cleared subresource in another layout.",
                 });
             }
         }

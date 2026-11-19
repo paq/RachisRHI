@@ -5337,4 +5337,45 @@ TEST_CASE("Vulkan storage clears that fail to allocate leave no layout requireme
     CHECK(recorded);
     CHECK(injectedFailures > 1);
 }
+
+TEST_CASE("Vulkan storage clears leave a first use to submission, where earlier command buffers of the batch count",
+          "[size:small][rhi][vulkan][vuid][layouts-mock][fill-and-clear]")
+{
+    using rachis::TextureLayout;
+    MockStorageClearFixture fixture;
+    {
+        auto initial = fixture.acquire();
+        REQUIRE(fixture.transition(initial, TextureLayout::undefined, TextureLayout::renderTarget));
+        REQUIRE(fixture.submit(std::move(initial)));
+    }
+
+    auto transition = fixture.acquire();
+    auto cleared = fixture.acquire();
+    REQUIRE(fixture.transition(transition, TextureLayout::renderTarget, TextureLayout::unorderedAccess));
+    const auto recorded = fixture.clear(cleared);
+    REQUIRE(recorded.has_value());
+    std::array ordered{std::move(transition), std::move(cleared)};
+    REQUIRE(fixture.queueManager.submit(ordered, {}).has_value());
+    CHECK(fixture.mock.clearColorImages == 1);
+
+    auto toRenderTarget = fixture.acquire();
+    REQUIRE(fixture.transition(toRenderTarget, TextureLayout::unorderedAccess, TextureLayout::renderTarget));
+    REQUIRE(fixture.submit(std::move(toRenderTarget)));
+    auto alone = fixture.acquire();
+    REQUIRE(fixture.clear(alone).has_value());
+    std::array unordered{std::move(alone)};
+    const auto rejected = fixture.queueManager.submit(unordered, {});
+    REQUIRE_FALSE(rejected.has_value());
+    CHECK(rejected.error().code == rachis::ErrorCode::invalidState);
+
+    auto inside = fixture.acquire();
+    REQUIRE(fixture.transition(inside, TextureLayout::renderTarget, TextureLayout::shaderResource));
+    const auto conflicting = fixture.clear(inside);
+    REQUIRE_FALSE(conflicting.has_value());
+    CHECK(conflicting.error().code == rachis::ErrorCode::invalidState);
+    REQUIRE(fixture.transition(inside, TextureLayout::shaderResource, TextureLayout::unorderedAccess));
+    REQUIRE(fixture.clear(inside).has_value());
+    CHECK(fixture.submit(std::move(inside)));
+    CHECK(fixture.mock.clearColorImages == 3);
+}
 #endif
