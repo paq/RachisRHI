@@ -477,11 +477,25 @@ namespace rachis::metal
         __strong id<MTLResidencySet> residency = nil;
     };
 
+    struct MetalArgumentEra final
+    {
+        std::vector<std::shared_ptr<void>> replaced;
+        std::shared_ptr<MetalArgumentEra> next;
+
+        MetalArgumentEra() = default;
+        MetalArgumentEra(const MetalArgumentEra&) = delete;
+        MetalArgumentEra& operator=(const MetalArgumentEra&) = delete;
+        MetalArgumentEra(MetalArgumentEra&&) = delete;
+        MetalArgumentEra& operator=(MetalArgumentEra&&) = delete;
+        ~MetalArgumentEra();
+    };
+
     struct MetalArgumentBufferContents final
     {
         std::mutex mutex;
         std::vector<MetalBindingSlot> elements;
         std::unordered_map<const void*, std::uint32_t> residentElements;
+        std::weak_ptr<MetalArgumentEra> era;
         std::uint64_t generation = 0;
     };
 
@@ -1620,6 +1634,8 @@ namespace rachis::metal
         const MetalBindingSetRecord& record);
     [[nodiscard]] Status retainMetalBindingSetRetentions(
         MetalCommandBuffer& command, std::span<std::shared_ptr<MetalBindingSetCommandRetention>> retentions);
+    [[nodiscard]] Status retainMetalBindingSetElements(MetalCommandBuffer& command,
+                                                       const MetalBindingSetVersion& version);
     [[nodiscard]] Status metalRecordingReady(const MetalCommandBuffer& native);
     [[nodiscard]] Result<std::shared_ptr<MetalCommandPoolState>> metalRecordingPool(const MetalCommandBuffer& native);
 

@@ -1320,6 +1320,10 @@ namespace rachis::metal
             {
                 return kept;
             }
+            if (auto elements = retainMetalBindingSetElements(*native, *version); !elements)
+            {
+                return elements;
+            }
         }
         if (auto reserved = metalReserveBindingSetResidency(*entry, versions.size()); !reserved)
         {
@@ -2750,6 +2754,10 @@ namespace rachis::metal
             if (!kept)
             {
                 return kept;
+            }
+            if (auto elements = retainMetalBindingSetElements(*native, *version); !elements)
+            {
+                return elements;
             }
         }
         if (entry->boundGraphicsVersions.size() < firstSet + versions.size())

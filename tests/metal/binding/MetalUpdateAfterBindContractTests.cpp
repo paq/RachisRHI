@@ -377,10 +377,13 @@ TEST_CASE("Metal commands recorded before an update-after-bind write keep the wr
     REQUIRE(device.destroyBindingSet(*set).has_value());
     REQUIRE(device.destroyBuffer(replacement).has_value());
     REQUIRE(device.destroyBuffer(original).has_value());
-    const auto retainedReplacement = memoryEntry(device, replacementLabel);
-    REQUIRE(retainedReplacement.has_value());
-    CHECK_FALSE(retainedReplacement->logicalAlive);
-    CHECK_FALSE(memoryEntry(device, originalLabel).has_value());
+    for (const auto label : {replacementLabel, originalLabel})
+    {
+        CAPTURE(label);
+        const auto entry = memoryEntry(device, label);
+        REQUIRE(entry.has_value());
+        CHECK_FALSE(entry->logicalAlive);
+    }
 
     auto submitted = device.submit(std::move(*command));
     REQUIRE(submitted.has_value());
@@ -696,6 +699,168 @@ TEST_CASE("Metal unretained command pools keep the argument buffer a recorded co
     REQUIRE(device.destroyBuffer(replacement).has_value());
     REQUIRE(device.destroyBuffer(secondValue).has_value());
     REQUIRE(device.destroyBuffer(firstValue).has_value());
+    REQUIRE(device.destroyBuffer(*results).has_value());
+    REQUIRE(device.destroyShaderModule(shader).has_value());
+}
+
+TEST_CASE("Metal commands keep elements written in place alive when a later update replaces them",
+          "[size:large][rhi][metal][binding][lifetime]")
+{
+    auto created = rachis::createDevice(metalDesc());
+    REQUIRE(created);
+    auto device = std::move(*created);
+    REQUIRE(rachis::test::requireCapabilities(device).updateAfterBindBindingArrays);
+
+    const auto shader = updateAfterBindShader(device);
+    const auto entries = updateAfterBindEntries();
+    auto layout = device.createBindingLayout({.entries = entries});
+    REQUIRE(layout.has_value());
+    const std::array layouts{*layout};
+    const std::array pushRanges{rachis::PushConstantRange{rachis::ShaderStage::compute, 0, 2 * sizeof(std::uint32_t)}};
+    auto pipelineLayout = device.createPipelineLayout({.bindingLayouts = layouts, .pushConstantRanges = pushRanges});
+    REQUIRE(pipelineLayout.has_value());
+    auto pipeline = device.createComputePipeline({.layout = *pipelineLayout, .computeShader = shader});
+    REQUIRE(pipeline.has_value());
+    const std::array<std::uint32_t, 4> zeros{};
+    auto results = device.createBuffer({
+        .size = sizeof(zeros),
+        .usage = rachis::BufferUsage::storage,
+        .memoryType = rachis::MemoryType::upload,
+    });
+    REQUIRE(results.has_value());
+    auto mappedResults = device.mapBuffer(*results);
+    REQUIRE(mappedResults.has_value());
+    std::memcpy(mappedResults->data, zeros.data(), sizeof(zeros));
+    REQUIRE(device.unmapBuffer(*results).has_value());
+
+    constexpr std::string_view firstLabel = "Metal in-place first element";
+    constexpr std::string_view secondLabel = "Metal in-place second element";
+    constexpr std::string_view thirdLabel = "Metal in-place third element";
+    const auto reader = valueBuffer(device, 777);
+    const auto first = valueBuffer(device, 100, firstLabel);
+    const std::array writes{
+        rachis::BindingWrite{
+            .binding = 0,
+            .resource = rachis::BufferBinding{.buffer = *results, .structureByteStride = sizeof(std::uint32_t)},
+        },
+        elementWrite(0, first),
+        elementWrite(1, reader),
+    };
+    auto set = rachis::test::createBindingSet(device, {.layout = *layout, .writes = writes, .variableDescriptorCount = 2});
+    REQUIRE(set.has_value());
+    const auto recordReadOfSecondElement = [&](rachis::CommandBuffer& command) {
+        REQUIRE(device.bindComputePipeline(command, *pipeline).has_value());
+        REQUIRE(device.bindComputeBindingSet(command, 0, *set).has_value());
+        const std::array<std::uint32_t, 2> read{1, 0};
+        REQUIRE(device.setComputePushConstants(command, 0, std::as_bytes(std::span(read))).has_value());
+        REQUIRE(device.dispatch(command, 1).has_value());
+    };
+    const auto requireRetained = [&](std::string_view label) {
+        CAPTURE(label);
+        const auto entry = memoryEntry(device, label);
+        REQUIRE(entry.has_value());
+        CHECK_FALSE(entry->logicalAlive);
+    };
+
+    SECTION("A command keeps every element it could see until it completes")
+    {
+        auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+        REQUIRE(command.has_value());
+        recordReadOfSecondElement(*command);
+
+        const auto second = valueBuffer(device, 200, secondLabel);
+        const std::array beforeSubmit{elementWrite(0, second)};
+        REQUIRE(device.updateBindingSet(*set, beforeSubmit).has_value());
+
+        const ScopedGateRelease heldFeedback{std::make_shared<rachis::metal::MetalCommitFeedbackGate>()};
+        rachis::metal::holdNextCommitFeedback(heldFeedback.gate);
+        auto submitted = device.submit(std::move(*command));
+        REQUIRE(submitted.has_value());
+        const auto third = valueBuffer(device, 300, thirdLabel);
+        const std::array whilePending{elementWrite(0, third)};
+        REQUIRE(device.updateBindingSet(*set, whilePending).has_value());
+        CHECK(device.queryTimelinePoint(*submitted) == rachis::TimelinePointStatus::pending);
+
+        REQUIRE(device.destroyBindingSet(*set).has_value());
+        for (const auto buffer : {first, second, third})
+        {
+            REQUIRE(device.destroyBuffer(buffer).has_value());
+        }
+        device.collectGarbage();
+        for (const auto label : {firstLabel, secondLabel, thirdLabel})
+        {
+            requireRetained(label);
+        }
+
+        heldFeedback.gate->release();
+        REQUIRE(device.wait(*submitted).has_value());
+        for (const auto label : {firstLabel, secondLabel, thirdLabel})
+        {
+            CAPTURE(label);
+            CHECK_FALSE(memoryEntry(device, label).has_value());
+        }
+        auto mapped = device.mapBuffer(*results);
+        REQUIRE(mapped.has_value());
+        std::uint32_t observed = 0;
+        std::memcpy(&observed, mapped->data, sizeof(observed));
+        REQUIRE(device.unmapBuffer(*results).has_value());
+        CHECK(observed == 777);
+    }
+
+    SECTION("Commands bound after an update do not keep the element it replaced")
+    {
+        const auto second = valueBuffer(device, 200, secondLabel);
+        const std::array replace{elementWrite(0, second)};
+        REQUIRE(device.updateBindingSet(*set, replace).has_value());
+        auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+        REQUIRE(command.has_value());
+        recordReadOfSecondElement(*command);
+        REQUIRE(device.destroyBuffer(first).has_value());
+        CHECK_FALSE(memoryEntry(device, firstLabel).has_value());
+
+        const auto third = valueBuffer(device, 300, thirdLabel);
+        const std::array replaceAgain{elementWrite(0, third)};
+        REQUIRE(device.updateBindingSet(*set, replaceAgain).has_value());
+        REQUIRE(device.destroyBuffer(second).has_value());
+        requireRetained(secondLabel);
+
+        auto submitted = device.submit(std::move(*command));
+        REQUIRE(submitted.has_value());
+        REQUIRE(device.wait(*submitted).has_value());
+        CHECK_FALSE(memoryEntry(device, secondLabel).has_value());
+        REQUIRE(device.destroyBindingSet(*set).has_value());
+        REQUIRE(device.destroyBuffer(third).has_value());
+    }
+
+    SECTION("Commands from unretained pools do not keep replaced elements alive")
+    {
+        auto pool = device.createCommandPool({
+            .queueType = rachis::QueueType::compute,
+            .maxCommandBuffers = 1,
+            .label = "Metal unretained in-place pool",
+            .flags = rachis::CommandPoolFlag::unretainedResources,
+        });
+        REQUIRE(pool.has_value());
+        {
+            auto command = device.acquireCommandBuffer(*pool);
+            REQUIRE(command.has_value());
+            recordReadOfSecondElement(*command);
+            const auto second = valueBuffer(device, 200, secondLabel);
+            const std::array replace{elementWrite(0, second)};
+            REQUIRE(device.updateBindingSet(*set, replace).has_value());
+            REQUIRE(device.destroyBuffer(first).has_value());
+            CHECK_FALSE(memoryEntry(device, firstLabel).has_value());
+            REQUIRE(device.destroyBindingSet(*set).has_value());
+            REQUIRE(device.destroyBuffer(second).has_value());
+        }
+        REQUIRE(device.destroyCommandPool(*pool).has_value());
+    }
+
+    CHECK(device.diagnosticCounts().errors == 0);
+    REQUIRE(device.destroyPipeline(*pipeline).has_value());
+    REQUIRE(device.destroyPipelineLayout(*pipelineLayout).has_value());
+    REQUIRE(device.destroyBindingLayout(*layout).has_value());
+    REQUIRE(device.destroyBuffer(reader).has_value());
     REQUIRE(device.destroyBuffer(*results).has_value());
     REQUIRE(device.destroyShaderModule(shader).has_value());
 }

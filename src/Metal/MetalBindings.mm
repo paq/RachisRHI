@@ -88,6 +88,52 @@ namespace rachis::metal
         return {};
     }
 
+    MetalArgumentEra::~MetalArgumentEra()
+    {
+        auto later = std::move(next);
+        while (later != nullptr && later.use_count() == 1)
+        {
+            auto following = std::move(later->next);
+            later.reset();
+            later = std::move(following);
+        }
+    }
+
+    Status retainMetalBindingSetElements(MetalCommandBuffer& command, const MetalBindingSetVersion& version)
+    {
+        if (version.argumentContents == nullptr ||
+            (command.owner() != nullptr && hasAny(command.owner()->flags, CommandPoolFlag::unretainedResources)))
+        {
+            return {};
+        }
+        auto& contents = *version.argumentContents;
+        std::shared_ptr<MetalArgumentEra> era;
+        {
+            const std::scoped_lock lock(contents.mutex);
+            era = contents.era.lock();
+            if (era == nullptr || !era->replaced.empty())
+            {
+                try
+                {
+                    auto next = std::make_shared<MetalArgumentEra>();
+                    if (era != nullptr)
+                    {
+                        era->next = next;
+                    }
+                    era = std::move(next);
+                }
+                catch (const std::bad_alloc&)
+                {
+                    return std::unexpected(
+                        metalSelectionError(ErrorCode::outOfMemory,
+                                            "Failed to track the Metal binding-array elements a command can read."));
+                }
+                contents.era = era;
+            }
+        }
+        return retainMetalApplicationResource(command, std::move(era));
+    }
+
     namespace
     {
 
@@ -1459,6 +1505,7 @@ namespace rachis::metal
             std::vector<const void*> keys;
             std::vector<MetalResidencyChange> changes;
             std::vector<const void*> inserted;
+            std::shared_ptr<MetalArgumentEra> era;
         };
 
         [[nodiscard]] Status metalStageElementWrites(MetalDeviceNative& native,
@@ -1533,8 +1580,13 @@ namespace rachis::metal
             std::ranges::sort(prepared.keys);
             const auto duplicates = std::ranges::unique(prepared.keys);
             prepared.keys.erase(duplicates.begin(), duplicates.end());
+            prepared.era = contents.era.lock();
             try
             {
+                if (prepared.era != nullptr)
+                {
+                    prepared.era->replaced.reserve(prepared.era->replaced.size() + prepared.staged.size());
+                }
                 for (const auto* const key : prepared.keys)
                 {
                     const auto [found, inserted] = contents.residentElements.try_emplace(key, 0U);
@@ -1575,6 +1627,10 @@ namespace rachis::metal
                 }
                 std::swap(element, write.slot);
                 words[write.element] = metalArgumentWord(element);
+                if (prepared.era != nullptr && write.slot.keepAlive != nullptr)
+                {
+                    prepared.era->replaced.push_back(std::move(write.slot.keepAlive));
+                }
             }
             bool residencyChanged = false;
             for (const auto& change : prepared.changes)
