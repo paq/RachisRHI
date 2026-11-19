@@ -39,6 +39,10 @@ namespace
         return stream ? result : std::vector<std::byte>{};
     }
 
+    constexpr std::size_t conditionalDispatchCount = 4;
+    constexpr std::uint64_t outputWordSpacing = 16;
+    constexpr std::uint64_t outputSize = conditionalDispatchCount * outputWordSpacing;
+
 } // namespace
 
 TEST_CASE("conditional execution gates dispatches, rejects copies, and retains its predicate resource",
@@ -100,13 +104,13 @@ TEST_CASE("conditional execution gates dispatches, rejects copies, and retains i
     REQUIRE(device.destroyBuffer(*stalePredicate).has_value());
 
     auto output = device.createBuffer({
-        .size = sizeof(std::uint32_t),
+        .size = outputSize,
         .usage = rachis::BufferUsage::copyDestination | rachis::BufferUsage::storage | rachis::BufferUsage::copySource,
         .memoryType = rachis::MemoryType::deviceLocal,
         .label = "Conditional-execution output",
     });
     auto readback = device.createBuffer({
-        .size = sizeof(std::uint32_t),
+        .size = outputSize,
         .usage = rachis::BufferUsage::copyDestination,
         .memoryType = rachis::MemoryType::readback,
         .label = "Conditional-execution readback",
@@ -139,19 +143,25 @@ TEST_CASE("conditional execution gates dispatches, rejects copies, and retains i
     };
     auto bindingLayout = device.createBindingLayout({.entries = bindingEntries});
     REQUIRE(bindingLayout.has_value());
-    const std::array writes{
-        rachis::BindingWrite{
-            .binding = 0,
-            .resource =
-                rachis::BufferBinding{
-                    .buffer = *output,
-                    .size = sizeof(std::uint32_t),
-                    .structureByteStride = sizeof(std::uint32_t),
-                },
-        },
-    };
-    auto bindingSet = rachis::test::createBindingSet(device, {.layout = *bindingLayout, .writes = writes});
-    REQUIRE(bindingSet.has_value());
+    std::array<rachis::BindingSetHandle, conditionalDispatchCount> bindingSets{};
+    for (std::size_t index = 0; index < bindingSets.size(); ++index)
+    {
+        const std::array writes{
+            rachis::BindingWrite{
+                .binding = 0,
+                .resource =
+                    rachis::BufferBinding{
+                        .buffer = *output,
+                        .offset = index * outputWordSpacing,
+                        .size = sizeof(std::uint32_t),
+                        .structureByteStride = sizeof(std::uint32_t),
+                    },
+            },
+        };
+        auto bindingSet = rachis::test::createBindingSet(device, {.layout = *bindingLayout, .writes = writes});
+        REQUIRE(bindingSet.has_value());
+        bindingSets[index] = *bindingSet;
+    }
     const std::array bindingLayouts{*bindingLayout};
     auto pipelineLayout = device.createPipelineLayout({.bindingLayouts = bindingLayouts});
     REQUIRE(pipelineLayout.has_value());
@@ -264,14 +274,6 @@ TEST_CASE("conditional execution gates dispatches, rejects copies, and retains i
                                })
                 .has_value());
     REQUIRE(device
-                .copyBuffer(*command,
-                            {
-                                .source = *predicateSeed,
-                                .destination = *output,
-                                .size = sizeof(std::uint32_t),
-                            })
-                .has_value());
-    REQUIRE(device
                 .bufferBarrier(*command,
                                {
                                    .buffer = *output,
@@ -281,10 +283,22 @@ TEST_CASE("conditional execution gates dispatches, rejects copies, and retains i
                                    .accessAfter = rachis::Access::unorderedAccess,
                                })
                 .has_value());
+    REQUIRE(device.fillBuffer(*command, *output, 0, rachis::wholeResource, 0).has_value());
+    REQUIRE(device
+                .bufferBarrier(*command,
+                               {
+                                   .buffer = *output,
+                                   .stagesBefore = rachis::PipelineStage::computeShader,
+                                   .stagesAfter = rachis::PipelineStage::computeShader,
+                                   .accessBefore = rachis::Access::unorderedAccess,
+                                   .accessAfter = rachis::Access::unorderedAccess,
+                               })
+                .has_value());
     REQUIRE(device.bindComputePipeline(*command, *pipeline).has_value());
-    REQUIRE(device.bindComputeBindingSet(*command, 0, *bindingSet).has_value());
 
+    std::size_t dispatchIndex = 0;
     const auto conditionalDispatch = [&](std::uint64_t offset, rachis::PredicateOperation operation) {
+        REQUIRE(device.bindComputeBindingSet(*command, 0, bindingSets[dispatchIndex++]).has_value());
         REQUIRE(
             device.beginConditionalExecution(*command, {.buffer = *predicate, .offset = offset, .operation = operation})
                 .has_value());
@@ -321,14 +335,17 @@ TEST_CASE("conditional execution gates dispatches, rejects copies, and retains i
                             {
                                 .source = *output,
                                 .destination = *readback,
-                                .size = sizeof(std::uint32_t),
+                                .size = outputSize,
                             })
                 .has_value());
 
     REQUIRE(device.destroyPipeline(*pipeline).has_value());
     REQUIRE(device.destroyPipelineLayout(*pipelineLayout).has_value());
     REQUIRE(device.destroyShaderModule(*shader).has_value());
-    REQUIRE(device.destroyBindingSet(*bindingSet).has_value());
+    for (const auto bindingSet : bindingSets)
+    {
+        REQUIRE(device.destroyBindingSet(bindingSet).has_value());
+    }
     REQUIRE(device.destroyBindingLayout(*bindingLayout).has_value());
     REQUIRE(device.destroyBuffer(*predicate).has_value());
     REQUIRE(device.destroyBuffer(*predicateSeed).has_value());
@@ -342,9 +359,12 @@ TEST_CASE("conditional execution gates dispatches, rejects copies, and retains i
 
     auto mapped = device.mapBuffer(*readback);
     REQUIRE(mapped.has_value());
-    std::uint32_t dispatchCount = 0;
-    std::memcpy(&dispatchCount, mapped->data, sizeof(dispatchCount));
-    CHECK(dispatchCount == 2);
+    std::array<std::uint32_t, conditionalDispatchCount> dispatched{};
+    for (std::size_t index = 0; index < dispatched.size(); ++index)
+    {
+        std::memcpy(&dispatched[index], mapped->data + index * outputWordSpacing, sizeof(std::uint32_t));
+    }
+    CHECK(dispatched == std::array<std::uint32_t, conditionalDispatchCount>{0, 1, 0, 1});
     REQUIRE(device.unmapBuffer(*readback).has_value());
     REQUIRE(device.destroyBuffer(*readback).has_value());
 
