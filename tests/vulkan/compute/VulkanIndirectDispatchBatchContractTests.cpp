@@ -384,6 +384,38 @@ namespace
 
 } // namespace
 
+TEST_CASE("The Vulkan GPU-counted dispatch pass accesses memory with no more than 4-byte alignment",
+          "[size:small][rhi][vulkan][compute][indirect][batch]")
+{
+    constexpr std::uint32_t opLoad = 61;
+    constexpr std::uint32_t opStore = 62;
+    constexpr std::uint32_t alignedAccess = 0x2;
+    const auto bytes = loadBytes(std::filesystem::path(RACHIS_SPIRV_DIR) / "CountedDispatchArguments.spv");
+    REQUIRE(bytes.size() > 5 * sizeof(std::uint32_t));
+    REQUIRE(bytes.size() % sizeof(std::uint32_t) == 0);
+    std::vector<std::uint32_t> words(bytes.size() / sizeof(std::uint32_t));
+    std::memcpy(words.data(), bytes.data(), bytes.size());
+
+    std::size_t alignedAccesses = 0;
+    for (std::size_t offset = 5; offset < words.size();)
+    {
+        const auto opcode = words[offset] & 0xFFFFU;
+        const auto wordCount = words[offset] >> 16U;
+        REQUIRE(wordCount != 0);
+        REQUIRE(offset + wordCount <= words.size());
+        const std::size_t accessOperand = opcode == opLoad ? 4 : (opcode == opStore ? 3 : 0);
+        if (accessOperand != 0 && wordCount > accessOperand && (words[offset + accessOperand] & alignedAccess) != 0)
+        {
+            REQUIRE(wordCount > accessOperand + 1);
+            CAPTURE(opcode, offset);
+            CHECK(words[offset + accessOperand + 1] <= sizeof(std::uint32_t));
+            ++alignedAccesses;
+        }
+        offset += wordCount;
+    }
+    CHECK(alignedAccesses >= 5);
+}
+
 TEST_CASE("Vulkan fixed indirect compute batches execute every record and reject invalid arguments",
           "[size:medium][rhi][vulkan][compute][indirect][batch]")
 {

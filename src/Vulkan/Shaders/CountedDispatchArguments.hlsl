@@ -5,8 +5,8 @@
 void main(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
     const uint64_t parameters = (uint64_t(parametersHigh) << 32) | uint64_t(parametersLow);
-    const uint4 sources = vk::RawBufferLoad<uint4>(parameters, 16);
-    const uint4 destination = vk::RawBufferLoad<uint4>(parameters + 16, 16);
+    const uint4 sources = vk::RawBufferLoad<uint4>(parameters, 4);
+    const uint4 destination = vk::RawBufferLoad<uint4>(parameters + 16, 4);
     const uint groupsPerRow = vk::RawBufferLoad<uint>(parameters + 32, 4);
     const uint64_t arguments = uint64_t(sources.x) | (uint64_t(sources.y) << 32);
     const uint64_t countAddress = uint64_t(sources.z) | (uint64_t(sources.w) << 32);

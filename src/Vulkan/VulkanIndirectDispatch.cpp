@@ -82,7 +82,7 @@ namespace rachis::vulkan
             {
                 return std::unexpected(std::move(resolved.error()));
             }
-            if (resolved->deviceAddress == 0)
+            if (resolved->deviceAddress == 0 || resolved->deviceAddress % sizeof(std::uint32_t) != 0)
             {
                 return std::unexpected(Error{ErrorCode::unsupported, 0, unaddressable});
             }
@@ -218,7 +218,8 @@ namespace rachis::vulkan
                                                       .memoryType = MemoryType::deviceLocal,
                                                       .label = "Vulkan GPU-counted dispatch parameters",
                                                   },
-                                                  "GPU-counted indirect dispatch parameters have no device address.");
+                                                  "GPU-counted indirect dispatch parameters have no 4-byte aligned "
+                                                  "device address.");
             if (!buffer)
             {
                 return std::unexpected(std::move(buffer.error()));
@@ -333,7 +334,8 @@ namespace rachis::vulkan
                                         .memoryType = MemoryType::deviceLocal,
                                         .label = "Vulkan GPU-counted dispatch records",
                                     },
-                                    "GPU-counted indirect dispatch records have no Vulkan device address.");
+                                    "GPU-counted indirect dispatch records have no 4-byte aligned Vulkan "
+                                    "device address.");
         if (!records)
         {
             return std::unexpected(std::move(records.error()));
