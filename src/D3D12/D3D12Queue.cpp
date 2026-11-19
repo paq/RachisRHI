@@ -81,6 +81,37 @@ namespace rachis::d3d12
             return sequence.next();
         }
 
+        class PublicationSubmissionLock final
+        {
+        public:
+            explicit PublicationSubmissionLock(const InPlaceDescriptorPublication& publication)
+                : publication_(&publication), lock_(publication.mutex)
+            {
+                publication_->submissions.fetch_add(1, std::memory_order_acq_rel);
+            }
+
+            ~PublicationSubmissionLock()
+            {
+                if (publication_ != nullptr)
+                {
+                    publication_->submissions.fetch_sub(1, std::memory_order_acq_rel);
+                }
+            }
+
+            PublicationSubmissionLock(PublicationSubmissionLock&& other) noexcept
+                : publication_(std::exchange(other.publication_, nullptr)), lock_(std::move(other.lock_))
+            {
+            }
+
+            PublicationSubmissionLock& operator=(PublicationSubmissionLock&&) = delete;
+            PublicationSubmissionLock(const PublicationSubmissionLock&) = delete;
+            PublicationSubmissionLock& operator=(const PublicationSubmissionLock&) = delete;
+
+        private:
+            const InPlaceDescriptorPublication* publication_ = nullptr;
+            std::shared_lock<std::shared_mutex> lock_;
+        };
+
         struct PoolEntry final
         {
             ComPtr<ID3D12CommandAllocator> allocator;
@@ -2155,7 +2186,11 @@ namespace rachis::d3d12
                                                                      const SubmissionBatch& batch,
                                                                      std::span<const TimelinePoint> waits)
     {
-        const HRESULT closeFailure = closeCommandLists(batch.entries);
+        HRESULT closeFailure = closeCommandLists(batch.entries);
+        if (SUCCEEDED(closeFailure) && test::nextSubmissionCloseFailure().exchange(false, std::memory_order_relaxed))
+        {
+            closeFailure = E_FAIL;
+        }
         if (FAILED(closeFailure))
         {
             quarantineBatchEntries(state, batch, BatchRetentions::release);
@@ -2233,25 +2268,26 @@ namespace rachis::d3d12
             });
         }
 
-        std::vector<std::shared_lock<std::shared_mutex>> publicationLocks;
+        std::vector<std::shared_ptr<const InPlaceDescriptorPublication>> publications;
+        std::vector<PublicationSubmissionLock> publicationLocks;
         std::vector<std::vector<ResidencyLease>> inPlaceLeases;
         try
         {
-            std::vector<const InPlaceDescriptorPublication*> publications;
             for (const auto* native : nativeCommands)
             {
                 for (const auto& reference : native->entry()->inPlaceResidencies)
                 {
-                    publications.push_back(reference.publication.get());
+                    publications.push_back(reference.publication);
                 }
             }
-            std::ranges::sort(publications);
-            const auto duplicates = std::ranges::unique(publications);
+            std::ranges::sort(publications, {}, &std::shared_ptr<const InPlaceDescriptorPublication>::get);
+            const auto duplicates =
+                std::ranges::unique(publications, {}, &std::shared_ptr<const InPlaceDescriptorPublication>::get);
             publications.erase(duplicates.begin(), duplicates.end());
             publicationLocks.reserve(publications.size());
-            for (const auto* publication : publications)
+            for (const auto& publication : publications)
             {
-                publicationLocks.emplace_back(publication->mutex);
+                publicationLocks.emplace_back(*publication);
             }
             inPlaceLeases.resize(nativeCommands.size());
         }

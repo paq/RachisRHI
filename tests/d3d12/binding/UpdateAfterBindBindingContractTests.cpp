@@ -854,6 +854,32 @@ TEST_CASE("an update-after-bind write in place waits for a submission that is re
     checkCleanDiagnostics(device);
 }
 
+TEST_CASE("a refused submission unlocks the update-after-bind publications it releases",
+          "[size:medium][rhi][binding][compute][warp]")
+{
+    auto device = createWarpDevice();
+    REQUIRE(rachis::test::requireCapabilities(device).updateAfterBindBindingArrays);
+    LargeArrayFixture fixture(device, rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind);
+
+    const std::array selections{Selection{.element = 0, .slot = 0}};
+    auto command = fixture.record(selections);
+    REQUIRE(update(device,
+                   fixture.set(),
+                   0,
+                   0,
+                   rachis::BufferBinding{fixture.results(), resultRangeSize, resultRangeSize, sizeof(std::uint32_t)})
+                .has_value());
+
+    const auto before = rachis::d3d12::test::lockedPublicationDestructionCount().load(std::memory_order_relaxed);
+    rachis::d3d12::test::nextSubmissionCloseFailure().store(true, std::memory_order_relaxed);
+    auto refused = device.submit(std::move(command));
+    rachis::d3d12::test::nextSubmissionCloseFailure().store(false, std::memory_order_relaxed);
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error().code == rachis::ErrorCode::validationError);
+    CHECK(rachis::d3d12::test::lockedPublicationDestructionCount().load(std::memory_order_relaxed) == before);
+    device.collectGarbage();
+}
+
 TEST_CASE("unretained command pools do not keep update-after-bind elements written in place alive",
           "[size:medium][rhi][binding][compute][warp]")
 {

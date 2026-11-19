@@ -1,12 +1,14 @@
 #pragma once
 
 #include "Common/InPlaceBindingRetention.h"
+#include "D3D12/D3D12TestHooks.h"
 #include "Rachis/Error.h"
 #include "Rachis/Resource.h"
 
 #include <d3d12.h>
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -64,7 +66,22 @@ namespace rachis::d3d12
 
     struct InPlaceDescriptorPublication final
     {
+        InPlaceDescriptorPublication() = default;
+        InPlaceDescriptorPublication(const InPlaceDescriptorPublication&) = delete;
+        InPlaceDescriptorPublication& operator=(const InPlaceDescriptorPublication&) = delete;
+        InPlaceDescriptorPublication(InPlaceDescriptorPublication&&) = delete;
+        InPlaceDescriptorPublication& operator=(InPlaceDescriptorPublication&&) = delete;
+
+        ~InPlaceDescriptorPublication()
+        {
+            if (submissions.load(std::memory_order_acquire) != 0)
+            {
+                test::lockedPublicationDestructionCount().fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+
         mutable std::shared_mutex mutex;
+        mutable std::atomic_uint32_t submissions = 0;
         InPlaceResidencyLog residencies;
     };
 

@@ -57,6 +57,18 @@ namespace rachis::d3d12::test
         return s_value;
     }
 
+    [[nodiscard]] inline std::atomic_bool& nextSubmissionCloseFailure() noexcept
+    {
+        static std::atomic_bool s_value = false;
+        return s_value;
+    }
+
+    [[nodiscard]] inline std::atomic_uint64_t& lockedPublicationDestructionCount() noexcept
+    {
+        static std::atomic_uint64_t s_value = 0;
+        return s_value;
+    }
+
     [[nodiscard]] inline std::atomic_uint64_t& bindingSetVersionCopyCount() noexcept
     {
         static std::atomic_uint64_t s_value = 0;
