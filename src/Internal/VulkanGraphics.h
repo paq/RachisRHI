@@ -154,7 +154,7 @@ namespace rachis::vulkan
                                                    TextureHandle image);
         void suspendConditionalRendering(VulkanCommandBuffer& commandBuffer) const noexcept;
         void resumeConditionalRendering(VulkanCommandBuffer& commandBuffer) const noexcept;
-        void restoreComputeBindings(VulkanCommandBuffer& commandBuffer) const noexcept;
+        void restoreComputePipeline(VulkanCommandBuffer& commandBuffer) const noexcept;
 
         VkDevice device_ = VK_NULL_HANDLE;
         const VolkDeviceTable* table_ = nullptr;

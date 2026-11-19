@@ -1125,18 +1125,6 @@ namespace rachis::vulkan
             return {};
         }
 
-        void mirrorComputePushConstants(VulkanCommandBuffer& commandBuffer,
-                                        const validation_detail::PushConstantSubrange& subrange,
-                                        std::uint32_t offset,
-                                        std::span<const std::byte> data) noexcept
-        {
-            if (hasAny(subrange.stages, ShaderStage::compute))
-            {
-                std::ranges::copy(data.subspan(subrange.offset - offset, subrange.size),
-                                  commandBuffer.computePushConstants().begin() + subrange.offset);
-            }
-        }
-
     } // namespace
 
     void VulkanGraphicsEncoder::initialize(VkDevice device,
@@ -1549,7 +1537,6 @@ namespace rachis::vulkan
                                        subrange.offset,
                                        subrange.size,
                                        data.data() + (subrange.offset - offset));
-            mirrorComputePushConstants(commandBuffer, subrange, offset, data);
         }
         return {};
     }
@@ -2308,11 +2295,10 @@ namespace rachis::vulkan
                                        subrange.size,
                                        data.data() + (subrange.offset - offset));
         }
-        std::ranges::copy(data, commandBuffer.computePushConstants().begin() + offset);
         return {};
     }
 
-    void VulkanGraphicsEncoder::restoreComputeBindings(VulkanCommandBuffer& commandBuffer) const noexcept
+    void VulkanGraphicsEncoder::restoreComputePipeline(VulkanCommandBuffer& commandBuffer) const noexcept
     {
         auto* const pipeline =
             static_cast<const VulkanNativePipeline*>(commandBuffer.computeState().pipelineOwner.get());
@@ -2321,29 +2307,6 @@ namespace rachis::vulkan
             return;
         }
         table_->vkCmdBindPipeline(commandBuffer.native(), VK_PIPELINE_BIND_POINT_COMPUTE, pipeline->pipeline);
-        const auto words = validation_detail::computeWordStageUnion(pipeline->nativePushConstantRanges);
-        const auto& shadow = commandBuffer.computePushConstants();
-        for (std::size_t first = 0; first < words.size();)
-        {
-            const auto stages = words[first];
-            auto end = first + 1;
-            while (end < words.size() && words[end] == stages)
-            {
-                ++end;
-            }
-            if (hasAny(stages, ShaderStage::compute))
-            {
-                const auto offset = static_cast<std::uint32_t>(first * validation_detail::pushConstantWordBytes);
-                table_->vkCmdPushConstants(
-                    commandBuffer.native(),
-                    pipeline->layout,
-                    nativePushConstantStages(capabilities_, stages),
-                    offset,
-                    static_cast<std::uint32_t>((end - first) * validation_detail::pushConstantWordBytes),
-                    shadow.data() + offset);
-            }
-            first = end;
-        }
     }
 
     void VulkanGraphicsEncoder::suspendConditionalRendering(VulkanCommandBuffer& commandBuffer) const noexcept
@@ -2567,11 +2530,12 @@ namespace rachis::vulkan
                 "GPU-counted indirect dispatch requires device-addressable argument and count buffers.",
             });
         }
-        if (auto prepared = countedDispatch_->prepare(); !prepared)
+        const auto queueType = commandBuffer.queueType();
+        if (auto prepared = countedDispatch_->prepare(queueType); !prepared)
         {
             return prepared;
         }
-        auto records = countedDispatch_->allocateRecords(desc.maxDispatchCount);
+        auto records = countedDispatch_->allocateRecords(queueType, desc.maxDispatchCount);
         if (!records)
         {
             return std::unexpected(std::move(records.error()));
@@ -2579,7 +2543,7 @@ namespace rachis::vulkan
         auto* retained = retainSink(commandBuffer);
         try
         {
-            detail::reserveAdditional(commandBuffer.retained(), retained != nullptr ? 3U : 1U);
+            detail::reserveAdditional(commandBuffer.retained(), retained != nullptr ? 4U : 2U);
         }
         catch (const std::bad_alloc&)
         {
@@ -2592,6 +2556,7 @@ namespace rachis::vulkan
 
         suspendConditionalRendering(commandBuffer);
         countedDispatch_->record(commandBuffer.native(),
+                                 queueType,
                                  VulkanCountedDispatchSource{
                                      .arguments = arguments->argumentAddress + desc.argumentOffset,
                                      .count = arguments->countAddress + desc.countOffset,
@@ -2599,7 +2564,7 @@ namespace rachis::vulkan
                                      .maxCount = desc.maxDispatchCount,
                                  },
                                  *records);
-        restoreComputeBindings(commandBuffer);
+        restoreComputePipeline(commandBuffer);
         resumeConditionalRendering(commandBuffer);
         for (std::uint32_t index = 0; index < desc.maxDispatchCount; ++index)
         {
@@ -2607,6 +2572,7 @@ namespace rachis::vulkan
                 commandBuffer.native(), records->buffer, static_cast<VkDeviceSize>(index) * countedDispatchRecordSize);
         }
         commandBuffer.retained().push_back(std::move(records->keepAlive));
+        commandBuffer.retained().push_back(std::move(records->parametersKeepAlive));
         if (retained != nullptr)
         {
             retained->push_back(std::move(arguments->keepAlive));
@@ -3272,7 +3238,6 @@ namespace rachis::vulkan
                                        subrange.offset,
                                        subrange.size,
                                        data.data() + (subrange.offset - offset));
-            mirrorComputePushConstants(commandBuffer, subrange, offset, data);
         }
         return {};
     }

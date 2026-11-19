@@ -277,10 +277,6 @@ namespace rachis::vulkan
                                                  std::uint32_t queryIndex) noexcept;
         void recordQuerySlotWriteWithoutLocalReset(const std::shared_ptr<VulkanSubmittedQueryPoolState>& poolState,
                                                    std::uint32_t queryIndex) noexcept;
-        [[nodiscard]] std::array<std::byte, maxPushConstantBytes>& computePushConstants() noexcept
-        {
-            return computePushConstants_;
-        }
         [[nodiscard]] std::optional<VulkanConditionalRendering>& conditionalRendering() noexcept
         {
             return conditionalRendering_;
@@ -300,7 +296,6 @@ namespace rachis::vulkan
         std::uint64_t accelerationStructureRecordingId_ = 0;
         std::weak_ptr<VulkanCommandUses> commandUses_;
         std::vector<VulkanCommandQueryPoolUse> queryPoolUses_;
-        std::array<std::byte, maxPushConstantBytes> computePushConstants_{};
         std::optional<VulkanConditionalRendering> conditionalRendering_;
     };
 

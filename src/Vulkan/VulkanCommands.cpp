@@ -396,7 +396,6 @@ namespace rachis::vulkan
         commandUses_.reset();
         retained_.clear();
         queryPoolUses_.clear();
-        computePushConstants_ = {};
         conditionalRendering_.reset();
         accelerationStructureRecordingId_ = 0;
     }

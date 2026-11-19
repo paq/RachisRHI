@@ -3,6 +3,7 @@
 #include "Internal/VulkanResources.h"
 #include "Rachis/Device.h"
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -27,6 +28,7 @@ namespace rachis::vulkan
         VkBuffer buffer = VK_NULL_HANDLE;
         VkDeviceAddress address = 0;
         std::shared_ptr<void> keepAlive;
+        std::shared_ptr<void> parametersKeepAlive;
     };
 
     class VulkanCountedDispatchPass final
@@ -46,13 +48,25 @@ namespace rachis::vulkan
                         std::uint32_t maxWorkgroupCountX) noexcept;
         void shutdown() noexcept;
 
-        [[nodiscard]] Status prepare();
-        [[nodiscard]] Result<VulkanCountedDispatchRecords> allocateRecords(std::uint32_t maxCount);
+        [[nodiscard]] Status prepare(QueueType queueType);
+        [[nodiscard]] Result<VulkanCountedDispatchRecords> allocateRecords(QueueType queueType, std::uint32_t maxCount);
         void record(VkCommandBuffer command,
+                    QueueType queueType,
                     const VulkanCountedDispatchSource& source,
                     const VulkanCountedDispatchRecords& records) const noexcept;
 
     private:
+        struct QueueParameters final
+        {
+            VkBuffer buffer = VK_NULL_HANDLE;
+            VkDeviceAddress address = 0;
+            std::shared_ptr<void> keepAlive;
+            VkPipeline pipeline = VK_NULL_HANDLE;
+        };
+
+        [[nodiscard]] static std::size_t queueSlot(QueueType queueType) noexcept;
+        [[nodiscard]] Status prepareSharedLocked();
+        [[nodiscard]] Status prepareQueueLocked(QueueParameters& parameters);
         void destroyLocked() noexcept;
 
         VkDevice device_ = VK_NULL_HANDLE;
@@ -62,7 +76,7 @@ namespace rachis::vulkan
         mutable std::mutex mutex_{};
         VkShaderModule module_ = VK_NULL_HANDLE;
         VkPipelineLayout layout_ = VK_NULL_HANDLE;
-        VkPipeline pipeline_ = VK_NULL_HANDLE;
+        std::array<QueueParameters, 2> queues_{};
     };
 
 } // namespace rachis::vulkan

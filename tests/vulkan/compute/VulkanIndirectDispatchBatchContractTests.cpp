@@ -607,6 +607,52 @@ TEST_CASE("Vulkan GPU-counted indirect compute batches execute the GPU count and
     checkNoDiagnostics(device);
 }
 
+TEST_CASE("Vulkan GPU-counted indirect dispatch keeps the push constants of an earlier pipeline",
+          "[size:medium][rhi][vulkan][compute][indirect][batch]")
+{
+    auto created = rachis::createDevice(rachis::test::vulkanDeviceDesc());
+    if (rachis::test::skipWithoutCreatedDevice(created))
+    {
+        return;
+    }
+    auto device = std::move(*created);
+    const auto capabilities = rachis::test::requireCapabilities(device);
+    REQUIRE(capabilities.indirectDispatch);
+    if (rachis::test::skipUnlessReferenceDesktopAdvertises(capabilities.dispatchIndirectCount, "dispatchIndirectCount"))
+    {
+        return;
+    }
+    {
+        DispatchBatchFixture fixture(device);
+        auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+        REQUIRE(command.has_value());
+        fixture.clearOutput(*command);
+
+        constexpr std::uint32_t addend = 5;
+        const std::array constants{0U, addend};
+        fixture.bindCounter(*command, constants);
+        REQUIRE(device.dispatch(*command, 1).has_value());
+        fixture.orderOutput(*command);
+
+        fixture.bindIncrement(*command);
+        REQUIRE(device.dispatchIndirect(*command, fixture.countedBatch()).has_value());
+        fixture.orderOutput(*command);
+
+        fixture.bindCounter(*command, {});
+        REQUIRE(device.dispatch(*command, 1).has_value());
+        fixture.orderOutput(*command);
+
+        const auto values = fixture.finish(std::move(*command));
+        CHECK(values.front() == 2 * addend + gpuCount);
+        std::array<std::uint32_t, valueCount - 1> rest{};
+        std::ranges::copy(std::span(values).subspan(1), rest.begin());
+        std::array<std::uint32_t, valueCount - 1> expectedRest{};
+        expectedRest.fill(2 * addend);
+        CHECK(rest == expectedRest);
+    }
+    checkNoDiagnostics(device);
+}
+
 TEST_CASE("Vulkan GPU-counted indirect dispatch clamps the count to maxDispatchCount and reads it on the GPU",
           "[size:medium][rhi][vulkan][compute][indirect][batch]")
 {
