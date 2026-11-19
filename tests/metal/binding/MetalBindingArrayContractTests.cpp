@@ -876,3 +876,151 @@ TEST_CASE("Metal submissions keep folded binding arrays locked until they commit
     REQUIRE(device.destroyBuffer(results).has_value());
     REQUIRE(device.destroyShaderModule(*shader).has_value());
 }
+
+TEST_CASE("Metal validates bound binding arrays of draws that an empty scissor skips",
+          "[size:large][rhi][metal][binding]")
+{
+    auto created = rachis::createDevice(metalDesc());
+    REQUIRE(created);
+    auto device = std::move(*created);
+    constexpr std::uint32_t compiledCapacity = 4;
+    constexpr std::uint32_t targetSize = 8;
+
+    const auto cooked = loadPnms("MetalGraphicsBindingArray.vs.pnms");
+    const auto pixelBytes = loadPnms("MetalGraphicsBindingArray.ps.pnms");
+    REQUIRE_FALSE(cooked.empty());
+    REQUIRE_FALSE(pixelBytes.empty());
+    const auto payload = rachis::metal::unpackShaderManifest(cooked);
+    REQUIRE(payload.has_value());
+    std::string json(reinterpret_cast<const char*>(payload->json.data()), payload->json.size());
+    const std::string cookedCapacity = "\"capacity\": 500000";
+    const auto found = json.find(cookedCapacity);
+    REQUIRE(found != std::string::npos);
+    json.replace(found, cookedCapacity.size(), "\"capacity\": " + std::to_string(compiledCapacity));
+    const auto vertexBytes = rachis::metal::packShaderManifest(std::as_bytes(std::span(json)), payload->metallib);
+
+    const std::array requirements{rachis::ShaderBindingRequirement{
+        0, 0, rachis::ShaderResourceType::readOnlyStorageBuffer, rachis::unboundedBindingCount}};
+    auto vertex = device.createShaderModule({
+        .stage = rachis::ShaderStage::vertex,
+        .bytecode = vertexBytes,
+        .entryPoint = "arrayVertex",
+        .shaderInterface = {.bindings = requirements},
+    });
+    auto pixel = device.createShaderModule({
+        .stage = rachis::ShaderStage::pixel,
+        .bytecode = pixelBytes,
+        .entryPoint = "arrayPixel",
+    });
+    REQUIRE(vertex.has_value());
+    REQUIRE(pixel.has_value());
+    const std::array entries{rachis::BindingLayoutEntry{
+        .binding = 0,
+        .type = rachis::BindingType::readOnlyStorageBuffer,
+        .visibility = rachis::ShaderStage::vertex,
+        .count = rachis::unboundedBindingCount,
+        .flags = rachis::BindingFlag::variableDescriptorCount | rachis::BindingFlag::partiallyBound,
+    }};
+    auto layout = device.createBindingLayout({.entries = entries});
+    REQUIRE(layout.has_value());
+    const std::array layouts{*layout};
+    auto pipelineLayout = device.createPipelineLayout({.bindingLayouts = layouts});
+    REQUIRE(pipelineLayout.has_value());
+    const std::array colorTargets{rachis::ColorTargetState{.format = rachis::Format::rgba8Unorm}};
+    auto pipeline = device.createGraphicsPipeline({
+        .layout = *pipelineLayout,
+        .vertexShader = *vertex,
+        .pixelShader = *pixel,
+        .cullMode = rachis::CullMode::none,
+        .colorTargets = colorTargets,
+    });
+    REQUIRE(pipeline.has_value());
+
+    auto target = device.createTexture({
+        .width = targetSize,
+        .height = targetSize,
+        .format = rachis::Format::rgba8Unorm,
+        .usage = rachis::TextureUsage::renderTarget,
+    });
+    REQUIRE(target.has_value());
+    auto targetView = device.createTextureView({.texture = *target, .usage = rachis::TextureViewUsage::renderTarget});
+    REQUIRE(targetView.has_value());
+    const std::array<std::uint32_t, 1> scale{1};
+    const auto scales = createFilledBuffer(device, std::as_bytes(std::span(scale)), rachis::BufferUsage::storage);
+    const std::array<rachis::DrawIndirectArguments, 1> drawArguments{
+        rachis::DrawIndirectArguments{.vertexCount = 3, .instanceCount = 1}};
+    const auto argumentBuffer =
+        createFilledBuffer(device, std::as_bytes(std::span(drawArguments)), rachis::BufferUsage::indirect);
+    const std::array writes{rachis::BindingWrite{
+        .binding = 0,
+        .resource = rachis::BufferBinding{.buffer = scales, .structureByteStride = sizeof(std::uint32_t)},
+    }};
+
+    const auto drawWith = [&](std::uint32_t count, bool emptyScissor, bool indirect) {
+        auto set = rachis::test::createBindingSet(
+            device, {.layout = *layout, .writes = writes, .variableDescriptorCount = count});
+        REQUIRE(set.has_value());
+        auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::graphics);
+        REQUIRE(command.has_value());
+        REQUIRE(device
+                    .textureBarrier(*command,
+                                    {
+                                        .texture = *target,
+                                        .stagesAfter = rachis::PipelineStage::renderTarget,
+                                        .accessAfter = rachis::Access::renderTarget,
+                                        .layoutAfter = rachis::TextureLayout::renderTarget,
+                                    })
+                    .has_value());
+        const std::array attachments{rachis::ColorAttachment{
+            .view = *targetView,
+            .loadOperation = rachis::LoadOperation::clear,
+        }};
+        REQUIRE(device.beginRendering(*command, {.colorAttachments = attachments}).has_value());
+        REQUIRE(device.bindGraphicsPipeline(*command, *pipeline).has_value());
+        REQUIRE(device.bindGraphicsBindingSet(*command, 0, *set).has_value());
+        REQUIRE(device
+                    .setViewport(*command,
+                                 {
+                                     .width = static_cast<float>(targetSize),
+                                     .height = static_cast<float>(targetSize),
+                                     .maxDepth = 1.0F,
+                                 })
+                    .has_value());
+        const rachis::ScissorRect scissor = emptyScissor ? rachis::ScissorRect{.x = static_cast<std::int32_t>(targetSize),
+                                                                               .width = targetSize,
+                                                                               .height = targetSize}
+                                                         : rachis::ScissorRect{.width = targetSize, .height = targetSize};
+        REQUIRE(device.setScissor(*command, scissor).has_value());
+        auto drawn = indirect ? device.drawIndirect(*command, {.argumentBuffer = argumentBuffer, .maxDrawCount = 1})
+                              : device.draw(*command, 3);
+        REQUIRE(device.endRendering(*command).has_value());
+        auto submitted = device.submit(std::move(*command));
+        REQUIRE(submitted.has_value());
+        REQUIRE(device.wait(*submitted).has_value());
+        REQUIRE(device.destroyBindingSet(*set).has_value());
+        return drawn;
+    };
+
+    for (const bool indirect : {false, true})
+    {
+        for (const bool emptyScissor : {false, true})
+        {
+            CAPTURE(indirect, emptyScissor);
+            const auto oversized = drawWith(compiledCapacity * 2, emptyScissor, indirect);
+            REQUIRE_FALSE(oversized.has_value());
+            CHECK(oversized.error().code == rachis::ErrorCode::invalidArgument);
+            CHECK(drawWith(compiledCapacity, emptyScissor, indirect).has_value());
+        }
+    }
+    CHECK(device.diagnosticCounts().errors == 0);
+
+    REQUIRE(device.destroyPipeline(*pipeline).has_value());
+    REQUIRE(device.destroyPipelineLayout(*pipelineLayout).has_value());
+    REQUIRE(device.destroyBindingLayout(*layout).has_value());
+    REQUIRE(device.destroyBuffer(argumentBuffer).has_value());
+    REQUIRE(device.destroyBuffer(scales).has_value());
+    REQUIRE(device.destroyTextureView(*targetView).has_value());
+    REQUIRE(device.destroyTexture(*target).has_value());
+    REQUIRE(device.destroyShaderModule(*pixel).has_value());
+    REQUIRE(device.destroyShaderModule(*vertex).has_value());
+}

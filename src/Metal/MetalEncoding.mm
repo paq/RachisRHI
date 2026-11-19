@@ -271,6 +271,46 @@ namespace rachis::metal
             return {};
         }
 
+        [[nodiscard]] Status metalValidateStageResources(
+            id<MTLDevice> device,
+            const MetalResolvedStageBindings& stageBindings,
+            std::span<const std::shared_ptr<MetalBindingSetVersion>> versions)
+        {
+            MetalArgumentTableCapacity capacity{};
+            return metalMeasureResourceSlots(device, capacity, stageBindings, versions);
+        }
+
+        [[nodiscard]] Status metalValidateGraphicsResources(id<MTLDevice> device,
+                                                            const MetalCommandEntry& entry,
+                                                            const MetalPipelineRecord& pipeline)
+        {
+            const std::span<const std::shared_ptr<MetalBindingSetVersion>> versions{entry.boundGraphicsVersions};
+            if (pipeline.mesh)
+            {
+                if (pipeline.hasObjectShader)
+                {
+                    if (auto valid = metalValidateStageResources(device, pipeline.objectStageBindings, versions);
+                        !valid)
+                    {
+                        return valid;
+                    }
+                }
+                if (auto valid = metalValidateStageResources(device, pipeline.meshStageBindings, versions); !valid)
+                {
+                    return valid;
+                }
+            }
+            else if (auto valid = metalValidateStageResources(device, pipeline.vertexStageBindings, versions); !valid)
+            {
+                return valid;
+            }
+            if (pipeline.hasPixelShader)
+            {
+                return metalValidateStageResources(device, pipeline.pixelStageBindings, versions);
+            }
+            return {};
+        }
+
         void metalWriteBindingSlot(id<MTL4ArgumentTable> table, const MetalBindingSlot& slot, std::uint32_t targetIndex)
         {
             if (metalIsBufferType(slot.type) && slot.buffer != nil)
@@ -3286,7 +3326,7 @@ namespace rachis::metal
         auto* entry = native->entry();
         if (metalDrawScissoredOut(*entry, *pipeline))
         {
-            return {};
+            return metalValidateGraphicsResources(device, *entry, *pipeline);
         }
         auto applied = metalApplyGraphicsDrawState(device, *entry, *pipeline);
         if (!applied)
@@ -3362,7 +3402,7 @@ namespace rachis::metal
         }
         if (metalDrawScissoredOut(*entry, *pipeline))
         {
-            return {};
+            return metalValidateGraphicsResources(device, *entry, *pipeline);
         }
         auto applied = metalApplyGraphicsDrawState(device, *entry, *pipeline);
         if (!applied)
@@ -3482,7 +3522,7 @@ namespace rachis::metal
         }
         if (layout.maxRecords == 0 || metalDrawScissoredOut(*entry, *pipeline))
         {
-            return {};
+            return metalValidateGraphicsResources(inputs->device, *entry, *pipeline);
         }
         if (auto kept = metalRetainIndirectRecords(*native, *entry, inputs->records); !kept)
         {
@@ -3563,7 +3603,7 @@ namespace rachis::metal
         }
         if (layout.maxRecords == 0 || metalDrawScissoredOut(*entry, *pipeline))
         {
-            return {};
+            return metalValidateGraphicsResources(inputs->device, *entry, *pipeline);
         }
         if (auto kept = metalRetainIndirectRecords(*native, *entry, inputs->records); !kept)
         {
@@ -3700,7 +3740,7 @@ namespace rachis::metal
         }
         if (metalDrawScissoredOut(*entry, *pipeline))
         {
-            return {};
+            return metalValidateGraphicsResources(device, *entry, *pipeline);
         }
         auto applied = metalApplyGraphicsDrawState(device, *entry, *pipeline);
         if (!applied)
@@ -3767,7 +3807,7 @@ namespace rachis::metal
         }
         if (layout.maxRecords == 0 || metalDrawScissoredOut(*entry, *pipeline))
         {
-            return {};
+            return metalValidateGraphicsResources(inputs->device, *entry, *pipeline);
         }
         if (auto kept = metalRetainIndirectRecords(*native, *entry, inputs->records); !kept)
         {
