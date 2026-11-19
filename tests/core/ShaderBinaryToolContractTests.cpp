@@ -738,6 +738,44 @@ TEST_CASE("RachisShaderBinaryTool reflect-interface reports the draw index of ta
     }
 }
 
+TEST_CASE("RachisShaderBinaryTool reflect-interface rejects a draw-index read the bytecode proves in a pixel shader",
+          "[size:small][rhi][shader][tooling][draw-index]")
+{
+    ScopedTempDirectory const temp;
+    constexpr std::string_view json = R"({"parameters": [], "entryPoints": [{"name": "main", "stage": "pixel"}]})";
+    const auto reflection = temp.path / "d3d12.json";
+    writeBinaryFile(reflection, asBytes(json));
+    const auto header = temp.path / "PixelProbe.interface.h";
+    const auto run = [&](std::span<const std::array<std::uint32_t, 4>> resources) {
+        const auto dxil = temp.path / "pixel.dxil";
+        writeBinaryFile(dxil, dxilWithResources(resources));
+        return runShaderBinaryTool(temp.path,
+                                   {"reflect-interface",
+                                    "--name",
+                                    "PixelProbe",
+                                    "--stage",
+                                    "pixel",
+                                    "--entry",
+                                    "main",
+                                    "--output",
+                                    header.string(),
+                                    "--reflection",
+                                    "d3d12=" + reflection.string(),
+                                    "--bytecode",
+                                    "d3d12=" + dxil.string()});
+    };
+    const std::array<std::array<std::uint32_t, 4>, 1> drawIndexResource{{{2U, 5U, 0U, 0U}}};
+    const auto reads = run(drawIndexResource);
+    CHECK(reads.status != 0);
+    CHECK(reads.stderrText.contains("the pixel entry point 'main' reads the draw index"));
+
+    const std::array<std::array<std::uint32_t, 4>, 1> otherResource{{{2U, 0U, 0U, 0U}}};
+    const auto plain = run(otherResource);
+    INFO("stderr=" << plain.stderrText);
+    REQUIRE(plain.status == 0);
+    CHECK(readTextFile(header).contains("inline constexpr bool drawIndex = false;"));
+}
+
 TEST_CASE("RachisShaderBinaryTool CLI validates flags and writes binary artifacts",
           "[size:small][rhi][shader][tooling]")
 {
