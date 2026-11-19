@@ -3,12 +3,14 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -43,12 +45,15 @@ namespace
         return stream ? bytes : std::vector<std::byte>{};
     }
 
-    [[nodiscard]] rachis::BufferHandle valueBuffer(rachis::Device& device, std::uint32_t value)
+    [[nodiscard]] rachis::BufferHandle valueBuffer(rachis::Device& device,
+                                                   std::uint32_t value,
+                                                   std::string_view label = {})
     {
         auto buffer = device.createBuffer({
             .size = sizeof(std::uint32_t),
             .usage = rachis::BufferUsage::storage,
             .memoryType = rachis::MemoryType::upload,
+            .label = label,
         });
         REQUIRE(buffer.has_value());
         auto mapped = device.mapBuffer(*buffer);
@@ -56,6 +61,19 @@ namespace
         std::memcpy(mapped->data, &value, sizeof(value));
         REQUIRE(device.unmapBuffer(*buffer).has_value());
         return *buffer;
+    }
+
+    [[nodiscard]] std::optional<rachis::ResourceMemoryEntry> memoryEntry(const rachis::Device& device,
+                                                                         std::string_view label)
+    {
+        const auto snapshot = device.captureResourceMemorySnapshot();
+        REQUIRE(snapshot.has_value());
+        const auto found = std::ranges::find(snapshot->entries, label, &rachis::ResourceMemoryEntry::label);
+        if (found == snapshot->entries.end())
+        {
+            return std::nullopt;
+        }
+        return *found;
     }
 
 } // namespace
@@ -250,7 +268,9 @@ TEST_CASE("Metal commands recorded before an update-after-bind write keep the wr
     std::memcpy(mappedResults->data, zeros.data(), sizeof(zeros));
     REQUIRE(device.unmapBuffer(*results).has_value());
 
-    const auto original = valueBuffer(device, 100);
+    constexpr std::string_view originalLabel = "Metal in-place original";
+    constexpr std::string_view replacementLabel = "Metal in-place replacement";
+    const auto original = valueBuffer(device, 100, originalLabel);
     const std::array writes{
         rachis::BindingWrite{
             .binding = 0,
@@ -279,7 +299,7 @@ TEST_CASE("Metal commands recorded before an update-after-bind write keep the wr
     REQUIRE(device.setComputePushConstants(*command, 0, std::as_bytes(std::span(read))).has_value());
     REQUIRE(device.dispatch(*command, 1).has_value());
 
-    const auto replacement = valueBuffer(device, 888);
+    const auto replacement = valueBuffer(device, 888, replacementLabel);
     const std::array update{rachis::BindingWrite{
         .binding = 1,
         .arrayElement = 0,
@@ -289,10 +309,19 @@ TEST_CASE("Metal commands recorded before an update-after-bind write keep the wr
     REQUIRE(device.destroyBindingSet(*set).has_value());
     REQUIRE(device.destroyBuffer(replacement).has_value());
     REQUIRE(device.destroyBuffer(original).has_value());
+    for (const auto label : {replacementLabel, originalLabel})
+    {
+        CAPTURE(label);
+        const auto entry = memoryEntry(device, label);
+        REQUIRE(entry.has_value());
+        CHECK_FALSE(entry->logicalAlive);
+    }
 
     auto submitted = device.submit(std::move(*command));
     REQUIRE(submitted.has_value());
     REQUIRE(device.wait(*submitted).has_value());
+    CHECK_FALSE(memoryEntry(device, replacementLabel).has_value());
+    CHECK_FALSE(memoryEntry(device, originalLabel).has_value());
 
     auto mapped = device.mapBuffer(*results);
     REQUIRE(mapped.has_value());
