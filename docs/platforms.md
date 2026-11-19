@@ -199,7 +199,7 @@ Core Vulkan dispatches one indirect record per call and has no GPU-counted dispa
 ## Draw index on Vulkan
 
 - **Task and mesh pipelines:** Vulkan defines `DrawIndex` only in the first stage of a task and mesh pipeline. `createGraphicsPipeline` fails with `ErrorCode::unsupported` when the mesh shader of a pipeline with a task shader reads the draw index. Read `rachisDrawIndex()` in the task shader and pass it to the mesh shader in the task payload. A mesh pipeline without a task shader reads the draw index in its mesh shader.
-- **Reflection:** A SPIR-V module reads the draw index when its entry point, or a function it calls, loads an input that is the `DrawIndex` builtin or the `DrawIndex` member of an input block. A `DrawIndex` variable that the entry point lists in its interface but never loads does not count. `createShaderModule` and the shader tool's reflection use the same rule.
+- **Reflection:** A SPIR-V module reads the draw index when its entry point, or a function it calls, loads an input that is the `DrawIndex` builtin or the `DrawIndex` member of an input block, directly or through a pointer that `OpCopyObject` copied. A `DrawIndex` variable that the entry point lists in its interface but never loads does not count. `createShaderModule` and the shader tool's reflection use the same rule.
 
 ## Conditional execution on Vulkan
 
