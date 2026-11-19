@@ -2069,6 +2069,8 @@ namespace rachis::vulkan
                                                            std::span<const BindingWrite> writes)
     {
         const auto prepared = countWrittenDescriptorsByTable(current->layout->entries, writes);
+        const auto published =
+            countLogicalDescriptorsByTable(current->layout->entries, version->variableDescriptorCount);
 
         auto updated = std::make_shared<BindingSetRecord>();
         updated->layout = current->layout;
@@ -2129,10 +2131,6 @@ namespace rachis::vulkan
                 }
                 nextLease.armed = true;
             }
-            const DescriptorTableCounts published{
-                .resource = current->layout->resourceDescriptorCount,
-                .sampler = current->layout->samplerDescriptorCount,
-            };
             recordPublishedDescriptors(statistics_, prepared, published);
             retired = std::exchange(*stored, std::move(updated));
         }

@@ -629,4 +629,75 @@ TEST_CASE("Vulkan unretained command pools do not keep update-after-bind element
     REQUIRE(device.destroyCommandPool(*pool).has_value());
     checkCleanDiagnostics(device);
 }
+
+TEST_CASE("Vulkan binding set updates count every variable descriptor they republish",
+          "[size:medium][rhi][vulkan][binding]")
+{
+    auto created = rachis::createDevice(rachis::test::vulkanDeviceDesc());
+    if (rachis::test::skipWithoutCreatedDevice(created))
+    {
+        return;
+    }
+    auto device = std::move(*created);
+    const auto capabilities = rachis::test::requireCapabilities(device);
+    if (rachis::test::skipUnlessReferenceDesktopAdvertises(capabilities.variableDescriptorCountBindingArrays,
+                                                           "variableDescriptorCountBindingArrays"))
+    {
+        return;
+    }
+    auto values = device.createBuffer({
+        .size = 64 * sliceSize,
+        .usage = rachis::BufferUsage::storage,
+        .label = "Vulkan variable-count statistics values",
+    });
+    REQUIRE(values.has_value());
+
+    constexpr std::uint32_t variableCount = 64;
+    const std::array entries{
+        rachis::BindingLayoutEntry{0, rachis::BindingType::storageBuffer, rachis::ShaderStage::compute, 1},
+        rachis::BindingLayoutEntry{1,
+                                   rachis::BindingType::readOnlyStorageBuffer,
+                                   rachis::ShaderStage::compute,
+                                   rachis::unboundedBindingCount,
+                                   rachis::BindingFlag::partiallyBound | rachis::BindingFlag::variableDescriptorCount},
+    };
+    auto layout = device.createBindingLayout({.entries = entries});
+    REQUIRE(layout.has_value());
+    const std::array sizes{
+        rachis::BindingPoolSize{rachis::BindingType::storageBuffer, 2},
+        rachis::BindingPoolSize{rachis::BindingType::readOnlyStorageBuffer, 2 * variableCount},
+    };
+    auto pool = device.createBindingPool({.maxBindingSets = 1, .sizes = sizes});
+    REQUIRE(pool.has_value());
+    std::vector<rachis::BindingWrite> writes{
+        rachis::BindingWrite{0, 0, rachis::BufferBinding{*values, 0, sliceSize, sizeof(std::uint32_t)}},
+    };
+    for (std::uint32_t element = 0; element < variableCount; ++element)
+    {
+        writes.push_back(rachis::BindingWrite{1, element, slice(*values, element)});
+    }
+    const auto beforeCreate = device.bindingUpdateStatistics();
+    auto set = device.createBindingSet({
+        .layout = *layout,
+        .writes = writes,
+        .variableDescriptorCount = variableCount,
+        .pool = *pool,
+    });
+    REQUIRE(set.has_value());
+    CHECK(resourceDelta(beforeCreate, device.bindingUpdateStatistics()).published == variableCount + 1);
+
+    const auto beforeReplace = device.bindingUpdateStatistics();
+    REQUIRE(update(device, *set, 0, 0, rachis::BufferBinding{*values, sliceSize, sliceSize, sizeof(std::uint32_t)})
+                .has_value());
+    const auto replaced = resourceDelta(beforeReplace, device.bindingUpdateStatistics());
+    CHECK(replaced.prepared == 1);
+    CHECK(replaced.tablePublishes == 1);
+    CHECK(replaced.published == variableCount + 1);
+
+    REQUIRE(device.destroyBindingSet(*set).has_value());
+    REQUIRE(device.destroyBindingPool(*pool).has_value());
+    REQUIRE(device.destroyBindingLayout(*layout).has_value());
+    REQUIRE(device.destroyBuffer(*values).has_value());
+    checkCleanDiagnostics(device);
+}
 #endif
