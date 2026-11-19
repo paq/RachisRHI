@@ -262,6 +262,28 @@ namespace rachis::d3d12
                 });
         }
 
+        void recordAccelerationStructureInPlaceUpdateBarrier(
+            const AccelerationStructureCommandLists& commandLists) noexcept
+        {
+            const D3D12_GLOBAL_BARRIER barrier{
+                .SyncBefore = D3D12_BARRIER_SYNC_ALL_SHADING |
+                              D3D12_BARRIER_SYNC_BUILD_RAYTRACING_ACCELERATION_STRUCTURE |
+                              D3D12_BARRIER_SYNC_COPY_RAYTRACING_ACCELERATION_STRUCTURE |
+                              D3D12_BARRIER_SYNC_EMIT_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO,
+                .SyncAfter = D3D12_BARRIER_SYNC_BUILD_RAYTRACING_ACCELERATION_STRUCTURE,
+                .AccessBefore = D3D12_BARRIER_ACCESS_RAYTRACING_ACCELERATION_STRUCTURE_READ,
+                .AccessAfter = D3D12_BARRIER_ACCESS_RAYTRACING_ACCELERATION_STRUCTURE_WRITE,
+            };
+            recordAccelerationStructureGlobalBarrier(commandLists, barrier);
+            test::lastAccelerationStructureInPlaceUpdateBarrier() = test::GlobalBarrierSnapshot{
+                .syncBefore = static_cast<std::uint32_t>(barrier.SyncBefore),
+                .syncAfter = static_cast<std::uint32_t>(barrier.SyncAfter),
+                .accessBefore = static_cast<std::uint32_t>(barrier.AccessBefore),
+                .accessAfter = static_cast<std::uint32_t>(barrier.AccessAfter),
+                .legacyUnorderedAccess = commandLists.enhanced == nullptr,
+            };
+        }
+
         void recordAccelerationStructureCopyBarrier(const AccelerationStructureCommandLists& commandLists) noexcept
         {
             recordAccelerationStructureGlobalBarrier(
@@ -1775,6 +1797,10 @@ namespace rachis::d3d12
             return retained;
         }
 
+        if (inPlace)
+        {
+            recordAccelerationStructureInPlaceUpdateBarrier(*commandLists);
+        }
         commandLists->rayTracing->BuildRaytracingAccelerationStructure(&native, 0, nullptr);
         recordAccelerationStructureBuildBarrier(*commandLists);
         target->destination->currentVersion = std::move(version);
@@ -2059,6 +2085,10 @@ namespace rachis::d3d12
             return retained;
         }
 
+        if (inPlace)
+        {
+            recordAccelerationStructureInPlaceUpdateBarrier(*commandLists);
+        }
         commandLists->rayTracing->BuildRaytracingAccelerationStructure(&native, 0, nullptr);
         recordAccelerationStructureBuildBarrier(*commandLists);
         target->destination->currentVersion = std::move(version);

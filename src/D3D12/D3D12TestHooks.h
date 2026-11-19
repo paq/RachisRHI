@@ -175,9 +175,16 @@ namespace rachis::d3d12::test
         std::uint32_t syncAfter = 0;
         std::uint32_t accessBefore = 0;
         std::uint32_t accessAfter = 0;
+        bool legacyUnorderedAccess = false;
     };
 
     [[nodiscard]] inline std::optional<GlobalBarrierSnapshot>& lastAccelerationStructureGlobalBarrier() noexcept
+    {
+        static thread_local std::optional<GlobalBarrierSnapshot> s_value;
+        return s_value;
+    }
+
+    [[nodiscard]] inline std::optional<GlobalBarrierSnapshot>& lastAccelerationStructureInPlaceUpdateBarrier() noexcept
     {
         static thread_local std::optional<GlobalBarrierSnapshot> s_value;
         return s_value;

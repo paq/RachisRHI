@@ -102,6 +102,24 @@ namespace
         CHECK(barrier.accessAfter == (accelerationStructureReadAccess | unorderedAccess));
     }
 
+    void checkAccelerationStructureInPlaceUpdateBarrier(const char* operation, bool expected)
+    {
+        INFO(operation);
+        auto& recorded = rachis::d3d12::test::lastAccelerationStructureInPlaceUpdateBarrier();
+        REQUIRE(recorded.has_value() == expected);
+        if (!expected)
+        {
+            return;
+        }
+        const auto barrier = *recorded;
+        recorded.reset();
+        CHECK(barrier.syncBefore == (allShadingSync | buildSync | accelerationStructureCopySync | postbuildInfoSync));
+        CHECK(barrier.syncAfter == buildSync);
+        CHECK(barrier.accessBefore == accelerationStructureReadAccess);
+        CHECK(barrier.accessAfter == accelerationStructureWriteAccess);
+        CHECK_FALSE(barrier.legacyUnorderedAccess);
+    }
+
     void checkAccelerationStructureCopyBarrier(const char* operation)
     {
         INFO(operation);
@@ -3254,6 +3272,7 @@ TEST_CASE("enhanced acceleration-structure barriers order postbuild queries and 
         },
     };
     rachis::d3d12::test::lastAccelerationStructureGlobalBarrier().reset();
+    rachis::d3d12::test::lastAccelerationStructureInPlaceUpdateBarrier().reset();
 
     auto buildCommand = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
     REQUIRE(buildCommand.has_value());
@@ -3266,6 +3285,7 @@ TEST_CASE("enhanced acceleration-structure barriers order postbuild queries and 
                                                        })
                 .has_value());
     checkAccelerationStructureBuildBarrier("BLAS build");
+    checkAccelerationStructureInPlaceUpdateBarrier("BLAS build", false);
     REQUIRE(device
                 .updateBottomLevelAccelerationStructureInPlace(*buildCommand,
                                                                {
@@ -3275,6 +3295,7 @@ TEST_CASE("enhanced acceleration-structure barriers order postbuild queries and 
                                                                })
                 .has_value());
     checkAccelerationStructureBuildBarrier("BLAS in-place update");
+    checkAccelerationStructureInPlaceUpdateBarrier("BLAS in-place update", true);
     REQUIRE(device
                 .updateBottomLevelAccelerationStructure(*buildCommand,
                                                         {
@@ -3285,6 +3306,7 @@ TEST_CASE("enhanced acceleration-structure barriers order postbuild queries and 
                                                         })
                 .has_value());
     checkAccelerationStructureBuildBarrier("BLAS update");
+    checkAccelerationStructureInPlaceUpdateBarrier("BLAS update", false);
     REQUIRE(device
                 .buildTopLevelAccelerationStructure(*buildCommand,
                                                     {
@@ -3295,6 +3317,7 @@ TEST_CASE("enhanced acceleration-structure barriers order postbuild queries and 
                                                     })
                 .has_value());
     checkAccelerationStructureBuildBarrier("TLAS build");
+    checkAccelerationStructureInPlaceUpdateBarrier("TLAS build", false);
     REQUIRE(device
                 .updateTopLevelAccelerationStructureInPlace(*buildCommand,
                                                             {
@@ -3305,6 +3328,7 @@ TEST_CASE("enhanced acceleration-structure barriers order postbuild queries and 
                                                             })
                 .has_value());
     checkAccelerationStructureBuildBarrier("TLAS in-place update");
+    checkAccelerationStructureInPlaceUpdateBarrier("TLAS in-place update", true);
     REQUIRE(device
                 .updateTopLevelAccelerationStructure(*buildCommand,
                                                      {
@@ -3316,6 +3340,7 @@ TEST_CASE("enhanced acceleration-structure barriers order postbuild queries and 
                                                      })
                 .has_value());
     checkAccelerationStructureBuildBarrier("TLAS update");
+    checkAccelerationStructureInPlaceUpdateBarrier("TLAS update", false);
     REQUIRE(device.writeAccelerationStructureCompactedSize(*buildCommand, *compactionPool, 0, bottomLevel).has_value());
     REQUIRE(device.writeAccelerationStructureSerializationInfo(*buildCommand, *serializationPool, 0, bottomLevel)
                 .has_value());
