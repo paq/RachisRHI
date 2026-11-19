@@ -572,7 +572,8 @@ namespace rachis::metal
         {
             const auto flags = static_cast<std::uint8_t>(entry.flags);
             const auto allowedFlags = static_cast<std::uint8_t>(BindingFlag::partiallyBound) |
-                                      static_cast<std::uint8_t>(BindingFlag::variableDescriptorCount);
+                                      static_cast<std::uint8_t>(BindingFlag::variableDescriptorCount) |
+                                      static_cast<std::uint8_t>(BindingFlag::updateAfterBind);
             const bool variable = hasAny(entry.flags, BindingFlag::variableDescriptorCount);
             const bool unbounded = entry.count == unboundedBindingCount;
             if (entry.count == 0 ||
@@ -599,6 +600,12 @@ namespace rachis::metal
             {
                 return std::unexpected(detail::unsupportedBackendOperation(
                     "Metal", "acceleration-structure and sampler-feedback bindings"));
+            }
+            if (hasAny(entry.flags, BindingFlag::updateAfterBind) && !variable)
+            {
+                return std::unexpected(metalSelectionError(
+                    ErrorCode::unsupported,
+                    "Metal supports BindingFlag::updateAfterBind only on variable-count binding arrays."));
             }
             if (metalIsDynamicBuffer(entry.type) && entry.flags != BindingFlag::none)
             {
@@ -1306,6 +1313,55 @@ namespace rachis::metal
 
     } // namespace
 
+    namespace
+    {
+
+        [[nodiscard]] bool metalWritesUpdateInPlace(const MetalBindingLayoutRecord& layout,
+                                                    std::span<const BindingWrite> writes) noexcept
+        {
+            if (!layout.variableBinding.has_value())
+            {
+                return false;
+            }
+            const auto* entry = metalFindEntry(layout.entries, *layout.variableBinding);
+            if (entry == nullptr || !hasAny(entry->flags, BindingFlag::updateAfterBind))
+            {
+                return false;
+            }
+            return std::ranges::all_of(
+                writes, [&](const BindingWrite& write) { return write.binding == *layout.variableBinding; });
+        }
+
+        void metalWriteArgumentBufferElement(MetalBindingSetVersion& version, const MetalBindingSlot& slot)
+        {
+            auto* const words = static_cast<std::uint64_t*>(version.argumentBuffer.contents);
+            std::uint64_t word = 0;
+            if (std::holds_alternative<std::monostate>(slot.resource))
+            {
+                word = 0;
+            }
+            else if (metalIsBufferType(slot.type) && slot.buffer != nil)
+            {
+                word = slot.gpuAddress + slot.offset;
+                [version.argumentResidency addAllocation:slot.buffer];
+            }
+            else if ((slot.type == BindingType::sampledTexture || slot.type == BindingType::storageTexture) &&
+                     slot.texture != nil)
+            {
+                const MTLResourceID identifier = slot.texture.gpuResourceID;
+                std::memcpy(&word, &identifier, sizeof(word));
+                [version.argumentResidency addAllocation:slot.texture];
+            }
+            else if (slot.type == BindingType::sampler && slot.sampler != nil)
+            {
+                const MTLResourceID identifier = slot.sampler.gpuResourceID;
+                std::memcpy(&word, &identifier, sizeof(word));
+            }
+            words[slot.arrayElement] = word;
+        }
+
+    } // namespace
+
     Status MetalDevice::updateBindingSet(BindingSetHandle set, std::span<const BindingWrite> writes)
     {
         if (auto blocked = requireActive(); !blocked)
@@ -1354,6 +1410,40 @@ namespace rachis::metal
             {
                 return applied;
             }
+        }
+
+        if (metalWritesUpdateInPlace(*current->layout, writes) && previousVersion->argumentBuffer != nil)
+        {
+            auto version = std::make_shared<MetalBindingSetVersion>(*previousVersion);
+            version->slots = std::move(slots);
+            const auto prepared = metalCountWrittenDescriptors(current->layout->entries, writes);
+            std::scoped_lock const lock(mutex_);
+            if (native_ == nullptr || native_->device == nil)
+            {
+                return std::unexpected(
+                    metalSelectionError(ErrorCode::invalidState, "Metal updateBindingSet requires an active device."));
+            }
+            if (auto unchanged = metalRequireCurrentBindingSetVersion(*native_, set, current, previousVersion);
+                !unchanged)
+            {
+                return unchanged;
+            }
+            for (const auto& write : writes)
+            {
+                const auto index = metalSlotIndex(current->layout->entries,
+                                                  version->variableDescriptorCount,
+                                                  write.binding,
+                                                  write.arrayElement);
+                if (index.has_value())
+                {
+                    metalWriteArgumentBufferElement(*version, version->slots[*index]);
+                }
+            }
+            [version->argumentResidency commit];
+            metalPublishStatistics(
+                *native_, prepared.resource, prepared.sampler, prepared.resource, prepared.sampler);
+            current->version = std::move(version);
+            return {};
         }
 
         const auto counts = metalDescriptorCounts(current->layout->entries, previousVersion->variableDescriptorCount);

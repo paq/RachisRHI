@@ -1325,6 +1325,7 @@ if(RACHIS_ENABLE_METAL AND rachis_build_tests)
     rachis_rhi_slang_metallib(MetalMeshShader.missing.ps.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalMeshShader.slang" meshPixelMissing)
     rachis_rhi_slang_metallib(MetalIndirectCount.cs.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalIndirectCount.slang" countMain)
     rachis_rhi_slang_metallib(MetalBindingArrays.cs.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalBindingArrays.slang" bindingArraysMain)
+    rachis_rhi_slang_metallib(MetalUpdateAfterBind.cs.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalUpdateAfterBind.slang" updateAfterBindMain)
     rachis_cook_slang_metallib(
         SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/GraphicsTriangle.hlsl"
         ENTRY inputVertex
@@ -1355,6 +1356,8 @@ if(RACHIS_ENABLE_METAL AND rachis_build_tests)
             "${rachis_rhi_metallib_dir}/MetalIndirectCount.cs.pnms"
             "${rachis_rhi_metallib_dir}/MetalBindingArrays.cs.metallib"
             "${rachis_rhi_metallib_dir}/MetalBindingArrays.cs.pnms"
+            "${rachis_rhi_metallib_dir}/MetalUpdateAfterBind.cs.metallib"
+            "${rachis_rhi_metallib_dir}/MetalUpdateAfterBind.cs.pnms"
             "${rachis_rhi_metallib_dir}/GraphicsTriangle.input.vs.metallib"
             "${rachis_rhi_metallib_dir}/GraphicsTriangle.input.vs.pnms"
             "${rachis_rhi_metallib_dir}/GraphicsTriangle.ps.metallib"
@@ -2851,6 +2854,7 @@ if(rachis_build_tests)
             tests/d3d12/internals/D3D12SwapchainLeaseTests.cpp
             tests/metal/binding/MetalBindingArrayContractTests.cpp
             tests/metal/binding/MetalBindingContractTests.cpp
+            tests/metal/binding/MetalUpdateAfterBindContractTests.cpp
             tests/metal/commands/MetalBarrierContractTests.cpp
             tests/metal/commands/MetalCommandPoolContractTests.cpp
             tests/metal/commands/MetalQueueContractTests.cpp

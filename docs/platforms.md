@@ -57,7 +57,7 @@ The table below shows which backends *can* report each feature (subject to adapt
 | `conditionalExecution` | Yes | Yes, with `VK_EXT_conditional_rendering` | No |
 | `multiDispatchIndirect` | Yes | Yes | No |
 | `dispatchIndirectCount` | Yes | Yes, with the `bufferDeviceAddress` and `shaderInt64` features | No |
-| `updateAfterBindBindingArrays` | Yes | Yes | No |
+| `updateAfterBindBindingArrays` | Yes | Yes | Yes, variable-count arrays only |
 
 On Vulkan, `multiDispatchIndirect` and `dispatchIndirectCount` are emulated; see [Indirect dispatch batches on Vulkan](#indirect-dispatch-batches-on-vulkan).
 
@@ -247,7 +247,7 @@ A binding layout entry with `BindingFlag::updateAfterBind` changes its elements 
 | --- | --- | --- |
 | Direct3D 12 | Always | The usual shader-visible heap budget (`maxBindingPoolResourceDescriptors`). Descriptor ranges of these entries are volatile in the root signature, so the GPU reads each descriptor when a shader uses it. |
 | Vulkan | The device supports `descriptorBindingPartiallyBound`, `descriptorBindingUpdateUnusedWhilePending`, and `descriptorBindingSampledImageUpdateAfterBind`, `descriptorBindingStorageImageUpdateAfterBind`, and `descriptorBindingStorageBufferUpdateAfterBind` | See below |
-| Metal | Never | — |
+| Metal | Always | Only on variable-count entries, which live in an argument buffer (see [Variable-count binding arrays](#variable-count-binding-arrays)). The flag on a fixed-size entry fails `createBindingLayout` with `ErrorCode::unsupported`. |
 
 On Vulkan:
 - **Pipeline layouts:** When a pipeline layout holds a set with an update-after-bind entry, the descriptors of all its sets must fit the device's update-after-bind limits (`maxPerStageDescriptorUpdateAfterBind*`, `maxPerStageUpdateAfterBindResources`, and `maxDescriptorSetUpdateAfterBind*`), and the sets without such an entry must still fit the regular limits. `createPipelineLayout` fails with `ErrorCode::unsupported` otherwise.
