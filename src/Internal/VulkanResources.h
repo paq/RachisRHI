@@ -847,9 +847,11 @@ namespace rachis::vulkan
         nativeKeepAlive,
         sharedExportRegistry,
         sharedImportRegistry,
+        indirectArgumentRetention,
     };
 
     void injectVulkanBadAlloc(VulkanBadAllocPoint point, bool armed) noexcept;
+    void throwInjectedVulkanBadAlloc(VulkanBadAllocPoint point);
 #endif
 
 } // namespace rachis::vulkan

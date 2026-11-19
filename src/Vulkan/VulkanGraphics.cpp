@@ -555,6 +555,45 @@ namespace rachis::vulkan
             bool counted = false;
         };
 
+        [[nodiscard]] Status reserveIndirectArgumentRetention(std::vector<std::shared_ptr<void>>* retained,
+                                                              const ValidatedIndirectArguments& arguments)
+        {
+            if (retained == nullptr)
+            {
+                return {};
+            }
+            try
+            {
+#ifdef RACHIS_TESTING
+                throwInjectedVulkanBadAlloc(VulkanBadAllocPoint::indirectArgumentRetention);
+#endif
+                detail::reserveAdditional(*retained, arguments.countKeepAlive != nullptr ? 2U : 1U);
+            }
+            catch (const std::bad_alloc&)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::outOfMemory,
+                    0,
+                    "The indirect argument and count buffers could not be retained.",
+                });
+            }
+            return {};
+        }
+
+        void retainIndirectArguments(std::vector<std::shared_ptr<void>>* retained,
+                                     ValidatedIndirectArguments& arguments) noexcept
+        {
+            if (retained == nullptr)
+            {
+                return;
+            }
+            retained->push_back(std::move(arguments.keepAlive));
+            if (arguments.countKeepAlive != nullptr)
+            {
+                retained->push_back(std::move(arguments.countKeepAlive));
+            }
+        }
+
         [[nodiscard]] Result<VulkanResourceAllocator::ResolvedBindingBuffer> resolveIndirectArgumentBuffer(
             const VulkanResourceAllocator& resources, BufferHandle argumentBuffer, std::uint64_t argumentOffset)
         {
@@ -2041,6 +2080,11 @@ namespace rachis::vulkan
         {
             return {};
         }
+        auto* const retained = retainSink(commandBuffer);
+        if (auto reserved = reserveIndirectArgumentRetention(retained, *arguments); !reserved)
+        {
+            return reserved;
+        }
         if (arguments->counted)
         {
             table_->vkCmdDrawIndirectCount(commandBuffer.native(),
@@ -2059,14 +2103,7 @@ namespace rachis::vulkan
                                       desc.maxDrawCount,
                                       arguments->stride);
         }
-        if (auto* retained = retainSink(commandBuffer); retained != nullptr)
-        {
-            retained->push_back(std::move(arguments->keepAlive));
-            if (arguments->countKeepAlive)
-            {
-                retained->push_back(std::move(arguments->countKeepAlive));
-            }
-        }
+        retainIndirectArguments(retained, *arguments);
         return {};
     }
 
@@ -2127,6 +2164,11 @@ namespace rachis::vulkan
         {
             return {};
         }
+        auto* const retained = retainSink(commandBuffer);
+        if (auto reserved = reserveIndirectArgumentRetention(retained, *arguments); !reserved)
+        {
+            return reserved;
+        }
         if (arguments->counted)
         {
             table_->vkCmdDrawIndexedIndirectCount(commandBuffer.native(),
@@ -2145,14 +2187,7 @@ namespace rachis::vulkan
                                              desc.maxDrawCount,
                                              arguments->stride);
         }
-        if (auto* retained = retainSink(commandBuffer); retained != nullptr)
-        {
-            retained->push_back(std::move(arguments->keepAlive));
-            if (arguments->countKeepAlive)
-            {
-                retained->push_back(std::move(arguments->countKeepAlive));
-            }
-        }
+        retainIndirectArguments(retained, *arguments);
         return {};
     }
 
@@ -2508,6 +2543,11 @@ namespace rachis::vulkan
         }
         if (!arguments->counted)
         {
+            auto* const retained = retainSink(commandBuffer);
+            if (auto reserved = reserveIndirectArgumentRetention(retained, *arguments); !reserved)
+            {
+                return reserved;
+            }
             for (std::uint32_t index = 0; index < desc.maxDispatchCount; ++index)
             {
                 table_->vkCmdDispatchIndirect(commandBuffer.native(),
@@ -2515,10 +2555,7 @@ namespace rachis::vulkan
                                               desc.argumentOffset +
                                                   static_cast<VkDeviceSize>(index) * arguments->stride);
             }
-            if (auto* retained = retainSink(commandBuffer); retained != nullptr)
-            {
-                retained->push_back(std::move(arguments->keepAlive));
-            }
+            retainIndirectArguments(retained, *arguments);
             return {};
         }
 
@@ -3092,6 +3129,11 @@ namespace rachis::vulkan
         {
             return {};
         }
+        auto* const retained = retainSink(commandBuffer);
+        if (auto reserved = reserveIndirectArgumentRetention(retained, *arguments); !reserved)
+        {
+            return reserved;
+        }
         if (arguments->counted)
         {
             table_->vkCmdDrawMeshTasksIndirectCountEXT(commandBuffer.native(),
@@ -3110,14 +3152,7 @@ namespace rachis::vulkan
                                                   desc.maxDispatchCount,
                                                   arguments->stride);
         }
-        if (auto* retained = retainSink(commandBuffer); retained != nullptr)
-        {
-            retained->push_back(std::move(arguments->keepAlive));
-            if (arguments->countKeepAlive)
-            {
-                retained->push_back(std::move(arguments->countKeepAlive));
-            }
-        }
+        retainIndirectArguments(retained, *arguments);
         return {};
     }
 
