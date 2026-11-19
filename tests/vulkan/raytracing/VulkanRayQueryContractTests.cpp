@@ -762,6 +762,183 @@ TEST_CASE("Vulkan rejected TLAS rebuilds leave no instance uploads behind", "[si
     CHECK(diagnostics.corruptions == 0);
 }
 
+TEST_CASE("Vulkan TLAS builds and updates reject CPU instances whose fields do not fit the native record",
+          "[size:medium][rhi][vulkan][ray-query]")
+{
+    auto created = rachis::createDevice(vulkanDesc());
+    if (rachis::test::skipWithoutCreatedDevice(created))
+    {
+        return;
+    }
+    auto device = std::move(*created);
+    const auto capabilities = rachis::test::requireCapabilities(device);
+    if (!capabilities.rayTracing && !capabilities.rayQuery)
+    {
+        SKIP("The Vulkan adapter does not advertise acceleration structures.");
+    }
+
+    const std::array vertices{
+        std::array{-1.0F, -1.0F, 0.0F},
+        std::array{0.0F, 1.0F, 0.0F},
+        std::array{1.0F, -1.0F, 0.0F},
+    };
+    auto vertexBuffer = device.createBuffer({
+        .size = sizeof(vertices),
+        .usage = rachis::BufferUsage::accelerationStructureBuildInput,
+        .memoryType = rachis::MemoryType::upload,
+        .label = "Vulkan TLAS instance-field vertices",
+    });
+    REQUIRE(vertexBuffer.has_value());
+    REQUIRE(device.writeBuffer(*vertexBuffer, 0, std::as_bytes(std::span(vertices))).has_value());
+    const std::array geometry{
+        rachis::AccelerationStructureGeometry{
+            .data =
+                rachis::AccelerationStructureTriangleGeometry{
+                    .vertexBuffer = *vertexBuffer,
+                    .vertexCount = 3,
+                    .vertexStride = sizeof(vertices[0]),
+                    .vertexFormat = rachis::AccelerationStructureVertexFormat::float32x3,
+                },
+            .flags = rachis::AccelerationStructureGeometryFlag::opaque,
+        },
+    };
+    const rachis::BottomLevelAccelerationStructureBuildInput bottomInput{.geometries = geometry};
+    auto bottomSizes = device.queryBottomLevelAccelerationStructureBuildSizes(bottomInput);
+    auto topSizes = device.queryTopLevelAccelerationStructureBuildSizes({
+        .instanceCount = 1,
+        .flags = rachis::AccelerationStructureBuildFlag::allowUpdate,
+    });
+    REQUIRE(bottomSizes.has_value());
+    REQUIRE(topSizes.has_value());
+    auto bottomStorage = device.createBuffer({
+        .size = bottomSizes->accelerationStructureSize,
+        .usage = rachis::BufferUsage::accelerationStructureStorage,
+        .memoryType = rachis::MemoryType::deviceLocal,
+    });
+    auto topStorage = device.createBuffer({
+        .size = topSizes->accelerationStructureSize,
+        .usage = rachis::BufferUsage::accelerationStructureStorage,
+        .memoryType = rachis::MemoryType::deviceLocal,
+    });
+    auto scratch = device.createBuffer({
+        .size = (std::max)({bottomSizes->buildScratchSize, topSizes->buildScratchSize, topSizes->updateScratchSize}),
+        .usage = rachis::BufferUsage::accelerationStructureScratch,
+        .memoryType = rachis::MemoryType::deviceLocal,
+    });
+    REQUIRE(bottomStorage.has_value());
+    REQUIRE(topStorage.has_value());
+    REQUIRE(scratch.has_value());
+    auto bottomLevel = device.createAccelerationStructure({
+        .type = rachis::AccelerationStructureType::bottomLevel,
+        .storage = *bottomStorage,
+    });
+    auto topLevel = device.createAccelerationStructure({
+        .type = rachis::AccelerationStructureType::topLevel,
+        .storage = *topStorage,
+    });
+    REQUIRE(bottomLevel.has_value());
+    REQUIRE(topLevel.has_value());
+
+    const auto nan = std::numeric_limits<float>::quiet_NaN();
+    const auto infinity = std::numeric_limits<float>::infinity();
+    const rachis::AccelerationStructureInstance valid{
+        .bottomLevel = *bottomLevel,
+        .instanceId = 0x00FF'FFFFU,
+        .instanceMask = 0xFFU,
+        .hitGroupOffset = 0x00FF'FFFFU,
+        .flags = rachis::AccelerationStructureInstanceFlag::forceOpaque,
+    };
+    auto wideId = valid;
+    wideId.instanceId = 0x0100'0000U;
+    auto wideMask = valid;
+    wideMask.instanceMask = 0x100U;
+    auto wideOffset = valid;
+    wideOffset.hitGroupOffset = 0x0100'0000U;
+    auto bothOpacities = valid;
+    bothOpacities.flags = rachis::AccelerationStructureInstanceFlag::forceOpaque |
+                          rachis::AccelerationStructureInstanceFlag::forceNonOpaque;
+    auto unknownFlag = valid;
+    unknownFlag.flags = static_cast<rachis::AccelerationStructureInstanceFlag>(0x80U);
+    auto notANumber = valid;
+    notANumber.transform[3] = nan;
+    auto infinite = valid;
+    infinite.transform[0] = infinity;
+    const std::array invalid{wideId, wideMask, wideOffset, bothOpacities, unknownFlag, notANumber, infinite};
+
+    auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+    REQUIRE(command.has_value());
+    REQUIRE(device
+                .buildBottomLevelAccelerationStructure(*command,
+                                                       {
+                                                           .destination = *bottomLevel,
+                                                           .input = bottomInput,
+                                                           .scratch = *scratch,
+                                                       })
+                .has_value());
+    const auto buildTop = [&](const rachis::AccelerationStructureInstance& instance) {
+        return device.buildTopLevelAccelerationStructure(
+            *command,
+            {
+                .destination = *topLevel,
+                .instances = std::span(&instance, 1),
+                .flags = rachis::AccelerationStructureBuildFlag::allowUpdate,
+                .scratch = *scratch,
+            });
+    };
+    for (std::size_t index = 0; index < invalid.size(); ++index)
+    {
+        CAPTURE(index);
+        auto rejected = buildTop(invalid[index]);
+        REQUIRE_FALSE(rejected.has_value());
+        CHECK(rejected.error().code == rachis::ErrorCode::invalidArgument);
+    }
+    REQUIRE(buildTop(valid).has_value());
+    auto built = device.submit(std::move(*command));
+    REQUIRE(built.has_value());
+    REQUIRE(device.wait(*built).has_value());
+
+    auto update = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+    REQUIRE(update.has_value());
+    for (std::size_t index = 0; index < invalid.size(); ++index)
+    {
+        CAPTURE(index);
+        auto rejected = device.updateTopLevelAccelerationStructureInPlace(
+            *update,
+            {
+                .target = *topLevel,
+                .instances = std::span(&invalid[index], 1),
+                .flags = rachis::AccelerationStructureBuildFlag::allowUpdate,
+                .scratch = *scratch,
+            });
+        REQUIRE_FALSE(rejected.has_value());
+        CHECK(rejected.error().code == rachis::ErrorCode::invalidArgument);
+    }
+    REQUIRE(device
+                .updateTopLevelAccelerationStructureInPlace(
+                    *update,
+                    {
+                        .target = *topLevel,
+                        .instances = std::span(&valid, 1),
+                        .flags = rachis::AccelerationStructureBuildFlag::allowUpdate,
+                        .scratch = *scratch,
+                    })
+                .has_value());
+    auto updated = device.submit(std::move(*update));
+    REQUIRE(updated.has_value());
+    REQUIRE(device.wait(*updated).has_value());
+
+    REQUIRE(device.waitIdle().has_value());
+    REQUIRE(device.destroyAccelerationStructure(*topLevel).has_value());
+    REQUIRE(device.destroyAccelerationStructure(*bottomLevel).has_value());
+    REQUIRE(device.destroyBuffer(*scratch).has_value());
+    REQUIRE(device.destroyBuffer(*topStorage).has_value());
+    REQUIRE(device.destroyBuffer(*bottomStorage).has_value());
+    REQUIRE(device.destroyBuffer(*vertexBuffer).has_value());
+    const auto diagnostics = device.diagnosticCounts();
+    CHECK(diagnostics.errors == 0);
+    CHECK(diagnostics.corruptions == 0);
+}
+
 TEST_CASE("Vulkan acceleration-structure builds record aligned scratch addresses after small allocations",
           "[size:medium][rhi][vulkan][ray-query]")
 {

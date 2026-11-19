@@ -8,6 +8,7 @@
 #endif
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <iterator>
@@ -167,14 +168,32 @@ namespace rachis::vulkan
                    static_cast<std::uint64_t>(count - 1U) <= (resourceSize - offset - elementSize) / stride;
         }
 
+        [[nodiscard]] constexpr bool validInstanceFlags(AccelerationStructureInstanceFlag flags) noexcept
+        {
+            constexpr auto allowed = AccelerationStructureInstanceFlag::triangleCullDisable |
+                                     AccelerationStructureInstanceFlag::triangleFrontCounterClockwise |
+                                     AccelerationStructureInstanceFlag::forceOpaque |
+                                     AccelerationStructureInstanceFlag::forceNonOpaque;
+            return (static_cast<std::uint8_t>(flags) & ~static_cast<std::uint8_t>(allowed)) == 0 &&
+                   !(hasAny(flags, AccelerationStructureInstanceFlag::forceOpaque) &&
+                     hasAny(flags, AccelerationStructureInstanceFlag::forceNonOpaque));
+        }
+
+        [[nodiscard]] bool validTopLevelInstance(const AccelerationStructureInstance& instance) noexcept
+        {
+            return instance.instanceId <= 0x00ff'ffffU && instance.instanceMask <= 0xffU &&
+                   instance.hitGroupOffset <= 0x00ff'ffffU && validInstanceFlags(instance.flags) &&
+                   std::ranges::all_of(instance.transform, [](float value) { return std::isfinite(value); });
+        }
+
         [[nodiscard]] VkAccelerationStructureInstanceKHR nativeInstance(const AccelerationStructureInstance& instance,
                                                                         VkDeviceAddress bottomLevelAddress) noexcept
         {
             VkAccelerationStructureInstanceKHR native{};
             std::memcpy(&native.transform, instance.transform.data(), sizeof(instance.transform));
-            native.instanceCustomIndex = instance.instanceId & 0x00ffffffU;
-            native.mask = instance.instanceMask & 0xffU;
-            native.instanceShaderBindingTableRecordOffset = instance.hitGroupOffset & 0x00ffffffU;
+            native.instanceCustomIndex = instance.instanceId;
+            native.mask = instance.instanceMask;
+            native.instanceShaderBindingTableRecordOffset = instance.hitGroupOffset;
             native.flags = static_cast<std::uint8_t>(nativeInstanceFlags(instance.flags));
             native.accelerationStructureReference = bottomLevelAddress;
             return native;
@@ -606,6 +625,15 @@ namespace rachis::vulkan
             prepared.dependencyTrackers.reserve(instances.size());
             for (const auto& instance : instances)
             {
+                if (!validTopLevelInstance(instance))
+                {
+                    return std::unexpected(Error{
+                        ErrorCode::invalidArgument,
+                        0,
+                        "A TLAS instance needs an instanceId and hitGroupOffset below 2^24, an instanceMask below "
+                        "2^8, known flags without both forceOpaque and forceNonOpaque, and a finite transform.",
+                    });
+                }
                 auto bottom = accelerationStructures.resolve(instance.bottomLevel);
                 if (!bottom || bottom->type != AccelerationStructureType::bottomLevel || bottom->deviceAddress == 0 ||
                     bottom->version == nullptr)
