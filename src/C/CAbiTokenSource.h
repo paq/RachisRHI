@@ -28,6 +28,9 @@ namespace rachis::cabi::detail
     using SwapchainPresentHook = void (*)(rachis_handle swapchain, void* userData) noexcept;
     void setSwapchainPresentHookForTesting(SwapchainPresentHook hook, void* userData) noexcept;
 
+    using TimelineWaitHook = void (*)(rachis_handle timeline, void* userData) noexcept;
+    void setTimelineWaitHookForTesting(TimelineWaitHook hook, void* userData) noexcept;
+
     enum class NativeCall : std::uint8_t
     {
         createObject,

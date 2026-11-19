@@ -117,10 +117,17 @@ namespace
         void* userData = nullptr;
     };
 
+    struct TimelineWaitHookState final
+    {
+        rachis::cabi::detail::TimelineWaitHook hook = nullptr;
+        void* userData = nullptr;
+    };
+
     std::mutex testHookMutex;
     CommandRecordingHookState commandRecordingHookState;
     SwapchainPresentHookState swapchainPresentHookState;
     NativeCallHookState nativeCallHookState;
+    TimelineWaitHookState timelineWaitHookState;
 
     void invokeCommandRecordingHook(rachis_handle command) noexcept
     {
@@ -132,6 +139,19 @@ namespace
         if (snapshot.hook != nullptr)
         {
             snapshot.hook(command, snapshot.userData);
+        }
+    }
+
+    void invokeTimelineWaitHook(rachis_handle timeline) noexcept
+    {
+        TimelineWaitHookState snapshot;
+        {
+            const std::scoped_lock lock(testHookMutex);
+            snapshot = timelineWaitHookState;
+        }
+        if (snapshot.hook != nullptr)
+        {
+            snapshot.hook(timeline, snapshot.userData);
         }
     }
 
@@ -2540,6 +2560,9 @@ extern "C"
                 }
                 point = *entry;
             }
+#ifdef RACHIS_TESTING
+            invokeTimelineWaitHook(timeline);
+#endif
             return result(error, device->native.wait(point));
         });
     }
@@ -4470,6 +4493,12 @@ namespace rachis::cabi::detail
     {
         const std::scoped_lock lock(testHookMutex);
         swapchainPresentHookState = SwapchainPresentHookState{.hook = hook, .userData = userData};
+    }
+
+    void setTimelineWaitHookForTesting(TimelineWaitHook hook, void* userData) noexcept
+    {
+        const std::scoped_lock lock(testHookMutex);
+        timelineWaitHookState = TimelineWaitHookState{.hook = hook, .userData = userData};
     }
 
     void setNativeCallHookForTesting(NativeCallHook hook, void* userData) noexcept

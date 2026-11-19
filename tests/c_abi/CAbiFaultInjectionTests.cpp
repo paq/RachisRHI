@@ -1598,6 +1598,95 @@ TEST_CASE("C ABI allows concurrent command recording across pools under shared l
     requireOk(rachis_buffer_destroy(device.get(), sharedReadback, &error), error);
 }
 
+TEST_CASE("C ABI timeline waits leave the device to other threads",
+          RACHIS_CABI_DEVICE_SIZE RACHIS_CABI_DEVICE_REQUIRES "[rachis][cabi][concurrency]")
+{
+    auto error = makeError();
+    auto device = createDevice(error);
+    const auto pool = createPool(device.get(), RACHIS_QUEUE_COPY, error);
+    rachis_handle command = 0;
+    requireOk(rachis_command_acquire(device.get(), pool, &command, &error), error);
+    rachis_handle timeline = 0;
+    requireOk(rachis_command_submit(device.get(), command, &timeline, &error), error);
+
+    struct WaitContext final
+    {
+        std::mutex mutex;
+        std::condition_variable cv;
+        rachis_handle timeline = 0;
+        bool waiting = false;
+        bool release = false;
+        bool callsFinished = false;
+    } ctx;
+    ctx.timeline = timeline;
+    rachis::cabi::detail::setTimelineWaitHookForTesting(
+        [](rachis_handle waited, void* userData) noexcept {
+            auto& context = *static_cast<WaitContext*>(userData);
+            std::unique_lock lock(context.mutex);
+            if (waited != context.timeline)
+            {
+                return;
+            }
+            context.waiting = true;
+            context.cv.notify_all();
+            context.cv.wait(lock, [&] { return context.release; });
+        },
+        &ctx);
+    const auto releaseWaiter = [&] {
+        {
+            const std::scoped_lock lock(ctx.mutex);
+            ctx.release = true;
+        }
+        ctx.cv.notify_all();
+    };
+
+    rachis_status waitStatus = RACHIS_STATUS_NOT_READY;
+    std::thread waiter([&] {
+        auto waitError = makeError();
+        waitStatus = rachis_timeline_wait(device.get(), timeline, &waitError);
+    });
+    {
+        std::unique_lock lock(ctx.mutex);
+        const bool entered = ctx.cv.wait_for(lock, std::chrono::seconds(10), [&] { return ctx.waiting; });
+        CHECK(entered);
+    }
+
+    std::vector<rachis_status> statuses;
+    std::thread caller([&] {
+        auto callError = makeError();
+        statuses.push_back(rachis_timeline_release(device.get(), timeline, &callError));
+        rachis_handle buffer = 0;
+        rachis_buffer_desc bufferDesc{};
+        bufferDesc.struct_size = sizeof(bufferDesc);
+        bufferDesc.abi_version = RACHIS_ABI_VERSION;
+        bufferDesc.size = 256;
+        bufferDesc.usage = RACHIS_BUFFER_COPY_SOURCE;
+        bufferDesc.memory_type = RACHIS_MEMORY_UPLOAD;
+        statuses.push_back(rachis_buffer_create(device.get(), &bufferDesc, &buffer, &callError));
+        statuses.push_back(rachis_buffer_destroy(device.get(), buffer, &callError));
+        {
+            const std::scoped_lock lock(ctx.mutex);
+            ctx.callsFinished = true;
+        }
+        ctx.cv.notify_all();
+    });
+    {
+        std::unique_lock lock(ctx.mutex);
+        const bool finished = ctx.cv.wait_for(lock, std::chrono::seconds(10), [&] { return ctx.callsFinished; });
+        INFO("Calls on another thread must not wait for a timeline wait in progress.");
+        CHECK(finished);
+    }
+    releaseWaiter();
+    caller.join();
+    waiter.join();
+    rachis::cabi::detail::setTimelineWaitHookForTesting(nullptr, nullptr);
+
+    CHECK(waitStatus == RACHIS_STATUS_OK);
+    CHECK(statuses == std::vector<rachis_status>{RACHIS_STATUS_OK, RACHIS_STATUS_OK, RACHIS_STATUS_OK});
+    CHECK(rachis_timeline_wait(device.get(), timeline, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    requireOk(rachis_command_pool_destroy(device.get(), pool, &error), error);
+}
+
 TEST_CASE("C ABI submit waits for recording already in progress but not for recording that starts or repeats after it",
           RACHIS_CABI_DEVICE_SIZE RACHIS_CABI_DEVICE_REQUIRES "[rachis][cabi][concurrency]")
 {
