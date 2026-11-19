@@ -8,6 +8,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <utility>
 
@@ -37,6 +38,16 @@ namespace
     private:
         bool previous_ = false;
     };
+
+    void printDiagnostic(const rachis::DiagnosticMessage& message, void*) noexcept
+    {
+        static_cast<void>(std::fprintf(stderr, "D3D12 [%u]: ", static_cast<unsigned int>(message.nativeId)));
+        if (!message.description.empty())
+        {
+            static_cast<void>(std::fwrite(message.description.data(), 1, message.description.size(), stderr));
+        }
+        static_cast<void>(std::fputc('\n', stderr));
+    }
 
     struct LayoutScope final
     {
@@ -305,5 +316,72 @@ TEST_CASE("D3D12 texture barriers must name the current layout of every subresou
     }
 
     const auto counts = device.diagnosticCounts();
+    CHECK(counts.corruptions == 0);
+}
+
+TEST_CASE("D3D12 a discard recorded after a storage clear starts from the clear's layout",
+          "[size:medium][rhi][d3d12][warp][barrier][layout][clear]")
+{
+    const bool legacy = GENERATE(false, true);
+    CAPTURE(legacy);
+    const ForceLegacyBarriers forced(legacy);
+    auto desc = rachis::test::d3d12WarpDeviceDesc();
+    desc.diagnosticCallback = &printDiagnostic;
+    auto created = rachis::createDevice(desc);
+    REQUIRE(created.has_value());
+    auto device = std::move(*created);
+    REQUIRE(rachis::test::requireCapabilities(device).enhancedBarriers == !legacy);
+
+    auto texture = device.createTexture({
+        .width = 4,
+        .height = 4,
+        .format = rachis::Format::rgba8Unorm,
+        .usage =
+            rachis::TextureUsage::copySource | rachis::TextureUsage::copyDestination | rachis::TextureUsage::storage,
+        .label = "D3D12 clear-then-discard texture",
+    });
+    REQUIRE(texture.has_value());
+    auto view = device.createTextureView({
+        .texture = *texture,
+        .usage = rachis::TextureViewUsage::storage,
+        .dimension = rachis::TextureViewDimension::texture2D,
+    });
+    REQUIRE(view.has_value());
+
+    auto clearing = acquire(device);
+    REQUIRE(device
+                .clearStorageTexture(clearing,
+                                     *view,
+                                     {
+                                         .type = rachis::StorageTextureClearType::float32,
+                                         .float32 = {0.25F, 0.5F, 0.75F, 1.0F},
+                                     })
+                .has_value());
+    auto discard = layoutBarrier(*texture, TextureLayout::undefined, TextureLayout::copyDestination);
+    discard.stagesBefore = rachis::PipelineStage::all;
+    REQUIRE(device.textureBarrier(clearing, discard).has_value());
+    REQUIRE(device
+                .textureBarrier(clearing,
+                                layoutBarrier(*texture, TextureLayout::copyDestination, TextureLayout::copySource))
+                .has_value());
+
+    auto entering = acquire(device);
+    REQUIRE(
+        device.textureBarrier(entering, layoutBarrier(*texture, TextureLayout::common, TextureLayout::unorderedAccess))
+            .has_value());
+    submitAndWait(device, std::move(entering));
+    submitAndWait(device, std::move(clearing));
+
+    auto leaving = acquire(device);
+    REQUIRE(
+        device
+            .textureBarrier(leaving, layoutBarrier(*texture, TextureLayout::copySource, TextureLayout::copyDestination))
+            .has_value());
+    submitAndWait(device, std::move(leaving));
+
+    REQUIRE(device.destroyTextureView(*view).has_value());
+    REQUIRE(device.destroyTexture(*texture).has_value());
+    const auto counts = device.diagnosticCounts();
+    CHECK(counts.errors == 0);
     CHECK(counts.corruptions == 0);
 }

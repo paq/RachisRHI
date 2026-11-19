@@ -689,6 +689,7 @@ namespace rachis::d3d12
             std::size_t use = 0;
             std::vector<std::uint32_t> subresources;
             TextureLayout layout = TextureLayout::undefined;
+            std::optional<D3D12_RESOURCE_STATES> legacyState;
         };
 
         [[nodiscard]] Result<TextureLayoutUse> prepareTextureLayoutUse(QueueManager& queues,
@@ -696,6 +697,8 @@ namespace rachis::d3d12
                                                                        const TextureRecord& texture,
                                                                        const TextureSubresourceRange& subresources,
                                                                        TextureLayout layout,
+                                                                       Access access,
+                                                                       bool enhancedBarriers,
                                                                        std::string_view operation);
 
         void commitTextureLayoutUse(const TextureLayoutUse& use) noexcept;

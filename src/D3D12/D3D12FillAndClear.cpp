@@ -283,6 +283,8 @@ namespace rachis::d3d12
                                                  *texture,
                                                  storageViewSubresources(texture->desc, view.viewDesc),
                                                  TextureLayout::unorderedAccess,
+                                                 Access::unorderedAccess,
+                                                 impl_->enhancedBarriers,
                                                  "clearStorageTexture");
         if (!layoutUse)
         {

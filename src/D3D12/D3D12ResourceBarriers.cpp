@@ -1956,6 +1956,8 @@ namespace rachis::d3d12
                                                                       const TextureRecord& texture,
                                                                       const TextureSubresourceRange& subresources,
                                                                       TextureLayout layout,
+                                                                      Access access,
+                                                                      bool enhancedBarriers,
                                                                       std::string_view operation)
     {
         auto range = nativeTextureRange(texture, subresources);
@@ -1978,6 +1980,10 @@ namespace rachis::d3d12
                 .recording = *recording,
                 .layout = layout,
             };
+            if (!enhancedBarriers)
+            {
+                prepared.legacyState = legacyTextureState(layout, access, commandBuffer.queueType());
+            }
             prepared.subresources.reserve(subresourceCount(*range));
             forEachTextureSubresource(
                 texture, *range, [&](std::uint32_t subresource) { prepared.subresources.push_back(subresource); });
@@ -2021,6 +2027,10 @@ namespace rachis::d3d12
         for (const auto subresource : use.subresources)
         {
             tracked.recordLayout(subresource, use.layout, use.layout);
+            if (use.legacyState.has_value())
+            {
+                tracked.transition(subresource, *use.legacyState, *use.legacyState, false);
+            }
         }
     }
 
