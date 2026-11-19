@@ -509,6 +509,8 @@ namespace rachis::metal
     {
         std::shared_ptr<MetalBindingPoolSetLease> poolSet;
         std::shared_ptr<MetalBindingPoolVersionLease> versionLease;
+        std::shared_ptr<MetalArgumentBufferNative> argumentNative;
+        __strong id<MTL4ArgumentTable> table = nil;
         MetalBindingSetCommandRetention() = default;
         MetalBindingSetCommandRetention(const MetalBindingSetCommandRetention&) = delete;
         MetalBindingSetCommandRetention& operator=(const MetalBindingSetCommandRetention&) = delete;

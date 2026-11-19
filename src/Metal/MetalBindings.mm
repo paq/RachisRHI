@@ -58,6 +58,8 @@ namespace rachis::metal
         if (record.version != nullptr)
         {
             retention->versionLease = record.version->versionLease;
+            retention->argumentNative = record.version->argumentNative;
+            retention->table = record.version->table;
         }
         if (record.poolSet != nullptr && record.poolSet->state != nullptr)
         {
