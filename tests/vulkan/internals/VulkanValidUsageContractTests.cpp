@@ -5147,7 +5147,7 @@ namespace
             commands.initialize(device, &table, queueHandles, kDeviceToken, &resources);
             REQUIRE(queueManager.initialize(device, &table, queueHandles, kDeviceToken).has_value());
             auto created =
-                commands.createCommandPool({.queueType = rachis::QueueType::graphics, .maxCommandBuffers = 16});
+                commands.createCommandPool({.queueType = rachis::QueueType::graphics, .maxCommandBuffers = 1024});
             REQUIRE(created.has_value());
             pool = *created;
             auto adopted = resources.adoptSwapchainImage(
