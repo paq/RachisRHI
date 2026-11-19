@@ -21,6 +21,7 @@
 #include <memory>
 #include <optional>
 #include <ranges>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -672,7 +673,8 @@ namespace rachis::vulkan
                 return std::unexpected(Error{
                     ErrorCode::unsupported,
                     0,
-                    "The indirect draw count exceeds the device's maxDrawIndirectCount limit.",
+                    "The indirect record count " + std::to_string(maxCount) +
+                        " exceeds the device's maxDrawIndirectCount limit of " + std::to_string(maxIndirectCount) + ".",
                 });
             }
             return {};
