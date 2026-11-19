@@ -1298,6 +1298,41 @@ void rachis::metal::setFailNextPipelineCacheSerialize(bool fail) noexcept
     metalTestingState().failNextPipelineCacheSerialize = fail;
 }
 
+void rachis::metal::setFailNextDrawIndexTableGrowth(bool fail) noexcept
+{
+    std::scoped_lock const lock(metalTestingState().mutex);
+    metalTestingState().failNextDrawIndexTableGrowth = fail;
+}
+
+void rachis::metal::setFailPushConstantSliceAfter(std::int64_t successes) noexcept
+{
+    std::scoped_lock const lock(metalTestingState().mutex);
+    metalTestingState().failPushConstantSliceAfter = successes;
+}
+
+bool rachis::metal::consumeInjectedMetalDrawIndexTableGrowthFailure() noexcept
+{
+    std::scoped_lock const lock(metalTestingState().mutex);
+    return std::exchange(metalTestingState().failNextDrawIndexTableGrowth, false);
+}
+
+bool rachis::metal::consumeInjectedMetalPushConstantSliceFailure() noexcept
+{
+    std::scoped_lock const lock(metalTestingState().mutex);
+    auto& remaining = metalTestingState().failPushConstantSliceAfter;
+    if (remaining < 0)
+    {
+        return false;
+    }
+    if (remaining == 0)
+    {
+        remaining = -1;
+        return true;
+    }
+    --remaining;
+    return false;
+}
+
 void rachis::metal::setPipelineCacheTemporaryDirectory(std::string_view directory)
 {
     std::scoped_lock const lock(metalTestingState().mutex);

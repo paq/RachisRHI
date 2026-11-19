@@ -909,9 +909,15 @@ namespace rachis::metal
                     capacity *= 2U;
                 }
                 capacity = std::max(capacity, entry.drawIndex + 1U);
-                id<MTLBuffer> const table =
+                id<MTLBuffer> table =
                     [device newBufferWithLength:static_cast<NSUInteger>(capacity) * sizeof(std::uint32_t)
                                         options:MTLResourceStorageModeShared];
+#ifdef RACHIS_TESTING
+                if (capacity > kMetalDrawIndexTableMinimum && consumeInjectedMetalDrawIndexTableGrowthFailure())
+                {
+                    table = nil;
+                }
+#endif
                 if (table == nil)
                 {
                     return std::unexpected(
@@ -949,13 +955,48 @@ namespace rachis::metal
             return {};
         }
 
-        void metalResetDrawIndex(MetalCommandEntry& entry, const MetalPipelineRecord& pipeline) noexcept
+        void metalResetDrawIndex(MetalCommandEntry& entry) noexcept
         {
-            if (pipeline.readsDrawIndex && entry.drawIndex != 0)
+            if (entry.drawIndex != 0)
             {
                 entry.drawIndex = 0;
                 entry.vertexTableDirty = true;
             }
+        }
+
+        class MetalDrawIndexRestore final
+        {
+        public:
+            explicit MetalDrawIndexRestore(MetalCommandEntry& entry) noexcept : entry_(&entry)
+            {
+            }
+
+            ~MetalDrawIndexRestore()
+            {
+                metalResetDrawIndex(*entry_);
+            }
+
+            MetalDrawIndexRestore(const MetalDrawIndexRestore&) = delete;
+            MetalDrawIndexRestore& operator=(const MetalDrawIndexRestore&) = delete;
+            MetalDrawIndexRestore(MetalDrawIndexRestore&&) = delete;
+            MetalDrawIndexRestore& operator=(MetalDrawIndexRestore&&) = delete;
+
+        private:
+            MetalCommandEntry* entry_ = nullptr;
+        };
+
+        [[nodiscard]] Status metalReserveDrawIndices(id<MTLDevice> device,
+                                                     MetalCommandEntry& entry,
+                                                     const MetalPipelineRecord& pipeline,
+                                                     std::uint32_t maxRecords)
+        {
+            if (!pipeline.readsDrawIndex || maxRecords <= 1)
+            {
+                return {};
+            }
+            const MetalDrawIndexRestore restore(entry);
+            entry.drawIndex = maxRecords - 1U;
+            return metalPrepareDrawIndex(device, entry);
         }
 
         [[nodiscard]] Status metalApplyGraphicsDrawState(id<MTLDevice> device,
@@ -3358,17 +3399,21 @@ namespace rachis::metal
                 ErrorCode::invalidState,
                 "Draw requires complete rendering, pipeline, binding, vertex, viewport, and scissor state."));
         }
-        if (layout.maxRecords == 0 || metalDrawScissoredOut(*entry, *pipeline))
-        {
-            return {};
-        }
         if (auto prefixed = metalRequireDrawIndexPrefix(*pipeline, layout); !prefixed)
         {
             return prefixed;
         }
+        if (layout.maxRecords == 0 || metalDrawScissoredOut(*entry, *pipeline))
+        {
+            return {};
+        }
         if (auto kept = metalRetainIndirectRecords(*native, *entry, inputs->records); !kept)
         {
             return kept;
+        }
+        if (auto reserved = metalReserveDrawIndices(inputs->device, *entry, *pipeline, layout.maxRecords); !reserved)
+        {
+            return reserved;
         }
         auto span = metalClampRenderRecords(inputs->device, *entry, inputs->pipelines, layout, inputs->records, 1, 1);
         if (!span)
@@ -3379,6 +3424,7 @@ namespace rachis::metal
         {
             return applied;
         }
+        const MetalDrawIndexRestore restore(*entry);
         const auto primitive = metalPrimitiveType(pipeline->graphicsState->topology);
         for (std::uint32_t record = 0; record < layout.maxRecords; ++record)
         {
@@ -3392,7 +3438,6 @@ namespace rachis::metal
             }
             [entry->renderEncoder drawPrimitives:primitive indirectBuffer:span->firstAddress + span->stride * record];
         }
-        metalResetDrawIndex(*entry, *pipeline);
         return {};
     }
 
@@ -3435,17 +3480,21 @@ namespace rachis::metal
         {
             return restart;
         }
-        if (layout.maxRecords == 0 || metalDrawScissoredOut(*entry, *pipeline))
-        {
-            return {};
-        }
         if (auto prefixed = metalRequireDrawIndexPrefix(*pipeline, layout); !prefixed)
         {
             return prefixed;
         }
+        if (layout.maxRecords == 0 || metalDrawScissoredOut(*entry, *pipeline))
+        {
+            return {};
+        }
         if (auto kept = metalRetainIndirectRecords(*native, *entry, inputs->records); !kept)
         {
             return kept;
+        }
+        if (auto reserved = metalReserveDrawIndices(inputs->device, *entry, *pipeline, layout.maxRecords); !reserved)
+        {
+            return reserved;
         }
         auto span = metalClampRenderRecords(inputs->device, *entry, inputs->pipelines, layout, inputs->records, 1, 1);
         if (!span)
@@ -3456,6 +3505,7 @@ namespace rachis::metal
         {
             return applied;
         }
+        const MetalDrawIndexRestore restore(*entry);
         const auto remaining = entry->indexBuffer.size;
         const auto indexStride = entry->indexFormat == IndexFormat::uint16 ? 2U : 4U;
         const auto alignedRemaining = remaining - (remaining % indexStride);
@@ -3478,7 +3528,6 @@ namespace rachis::metal
                                       indexBufferLength:static_cast<NSUInteger>(alignedRemaining)
                                          indirectBuffer:span->firstAddress + span->stride * record];
         }
-        metalResetDrawIndex(*entry, *pipeline);
         return {};
     }
 
@@ -3610,17 +3659,21 @@ namespace rachis::metal
                                                        "Indirect mesh dispatch requires complete rendering, "
                                                        "mesh-pipeline, binding, viewport, and scissor state."));
         }
-        if (layout.maxRecords == 0 || metalDrawScissoredOut(*entry, *pipeline))
-        {
-            return {};
-        }
         if (auto prefixed = metalRequireDrawIndexPrefix(*pipeline, layout); !prefixed)
         {
             return prefixed;
         }
+        if (layout.maxRecords == 0 || metalDrawScissoredOut(*entry, *pipeline))
+        {
+            return {};
+        }
         if (auto kept = metalRetainIndirectRecords(*native, *entry, inputs->records); !kept)
         {
             return kept;
+        }
+        if (auto reserved = metalReserveDrawIndices(inputs->device, *entry, *pipeline, layout.maxRecords); !reserved)
+        {
+            return reserved;
         }
         auto span = metalClampRenderRecords(inputs->device,
                                             *entry,
@@ -3637,6 +3690,7 @@ namespace rachis::metal
         {
             return applied;
         }
+        const MetalDrawIndexRestore restore(*entry);
         for (std::uint32_t record = 0; record < layout.maxRecords; ++record)
         {
             if (pipeline->readsDrawIndex)
@@ -3651,7 +3705,6 @@ namespace rachis::metal
                                              threadsPerObjectThreadgroup:pipeline->objectThreadgroupSize
                                                threadsPerMeshThreadgroup:pipeline->meshThreadgroupSize];
         }
-        metalResetDrawIndex(*entry, *pipeline);
         return {};
     }
 
