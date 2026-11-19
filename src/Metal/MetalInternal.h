@@ -1583,6 +1583,7 @@ namespace rachis::metal
         bool failNextResidencySetCreate = false;
         bool failNextPipelineCacheSerialize = false;
         bool failNextDrawIndexTableGrowth = false;
+        bool failNextBindingResidencyReserve = false;
         std::int64_t failPushConstantSliceAfter = -1;
         std::string pipelineCacheTemporaryDirectory;
         std::atomic<std::uint64_t> residencyAddCount{0};
@@ -1617,6 +1618,7 @@ namespace rachis::metal
     void holdMetalCommandPoolResetForTesting() noexcept;
     [[nodiscard]] bool consumeInjectedMetalDrawIndexTableGrowthFailure() noexcept;
     [[nodiscard]] bool consumeInjectedMetalPushConstantSliceFailure() noexcept;
+    [[nodiscard]] bool consumeInjectedMetalBindingResidencyReserveFailure() noexcept;
 #endif
 
     [[nodiscard]] FormatProperties probeFormat(id<MTLDevice> device, Format format) noexcept;

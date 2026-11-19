@@ -32,6 +32,7 @@ namespace rachis::metal
     void setFailNextResidencySetCreate(bool fail) noexcept;
     void setFailNextPipelineCacheSerialize(bool fail) noexcept;
     void setFailNextDrawIndexTableGrowth(bool fail) noexcept;
+    void setFailNextBindingResidencyReserve(bool fail) noexcept;
     void setFailPushConstantSliceAfter(std::int64_t successes) noexcept;
     void setPipelineCacheTemporaryDirectory(std::string_view directory);
 

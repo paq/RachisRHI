@@ -501,6 +501,13 @@ namespace rachis::metal
 
     Status metalReserveBindingSetResidency(MetalCommandEntry& entry, std::size_t versionCount)
     {
+#ifdef RACHIS_TESTING
+        if (consumeInjectedMetalBindingResidencyReserveFailure())
+        {
+            return std::unexpected(
+                metalSelectionError(ErrorCode::outOfMemory, "Injected Metal binding-array residency failure."));
+        }
+#endif
         try
         {
             detail::reserveAdditional(entry.foldedArgumentContents, versionCount);

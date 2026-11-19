@@ -40,6 +40,62 @@ namespace rachis::metal
             return {};
         }
 
+        [[nodiscard]] Status metalRetainBoundBindingSetsOrFail(
+            MetalCommandBuffer& native,
+            MetalCommandEntry& entry,
+            std::span<const std::shared_ptr<MetalBindingSetVersion>> versions,
+            std::span<std::shared_ptr<MetalBindingSetCommandRetention>> retentions,
+            std::vector<std::shared_ptr<MetalBindingSetVersion>>& bound,
+            std::uint32_t firstSet)
+        {
+            try
+            {
+                if (bound.size() < firstSet + versions.size())
+                {
+                    bound.resize(firstSet + versions.size());
+                }
+            }
+            catch (const std::bad_alloc&)
+            {
+                return std::unexpected(
+                    metalSelectionError(ErrorCode::outOfMemory, "Failed to record the bound Metal binding sets."));
+            }
+            for (const auto& version : versions)
+            {
+                if (auto kept = retainMetalApplicationResource(native, std::static_pointer_cast<void>(version)); !kept)
+                {
+                    return kept;
+                }
+                if (auto elements = retainMetalBindingSetElements(native, *version); !elements)
+                {
+                    return elements;
+                }
+            }
+            if (auto reserved = metalReserveBindingSetResidency(entry, versions.size()); !reserved)
+            {
+                return reserved;
+            }
+            return retainMetalBindingSetRetentions(native, retentions);
+        }
+
+        [[nodiscard]] Status metalRetainBoundBindingSets(
+            MetalCommandBuffer& native,
+            MetalCommandEntry& entry,
+            std::span<const std::shared_ptr<MetalBindingSetVersion>> versions,
+            std::span<std::shared_ptr<MetalBindingSetCommandRetention>> retentions,
+            std::vector<std::shared_ptr<MetalBindingSetVersion>>& bound,
+            std::uint32_t firstSet)
+        {
+            auto& retained = native.retained();
+            const auto mark = retained.size();
+            auto status = metalRetainBoundBindingSetsOrFail(native, entry, versions, retentions, bound, firstSet);
+            if (!status)
+            {
+                retained.erase(retained.begin() + static_cast<std::ptrdiff_t>(mark), retained.end());
+            }
+            return status;
+        }
+
         [[nodiscard]] id<MTL4ArgumentTable> metalFindReusableSingleSetTable(
             const MetalResolvedStageBindings& stageBindings,
             std::span<const std::shared_ptr<MetalBindingSetVersion>> versions,
@@ -1313,29 +1369,11 @@ namespace rachis::metal
         {
             return valid;
         }
-        for (auto& version : versions)
+        if (auto retainedSets =
+                metalRetainBoundBindingSets(*native, *entry, versions, retentions, entry->boundComputeVersions, firstSet);
+            !retainedSets)
         {
-            auto kept = retainMetalApplicationResource(*native, std::static_pointer_cast<void>(version));
-            if (!kept)
-            {
-                return kept;
-            }
-            if (auto elements = retainMetalBindingSetElements(*native, *version); !elements)
-            {
-                return elements;
-            }
-        }
-        if (auto reserved = metalReserveBindingSetResidency(*entry, versions.size()); !reserved)
-        {
-            return reserved;
-        }
-        if (auto counted = retainMetalBindingSetRetentions(*native, retentions); !counted)
-        {
-            return counted;
-        }
-        if (entry->boundComputeVersions.size() < firstSet + versions.size())
-        {
-            entry->boundComputeVersions.resize(firstSet + versions.size());
+            return retainedSets;
         }
         for (std::size_t index = 0; index < versions.size(); ++index)
         {
@@ -2748,29 +2786,11 @@ namespace rachis::metal
         {
             return valid;
         }
-        for (auto& version : versions)
+        if (auto retainedSets = metalRetainBoundBindingSets(
+                *native, *entry, versions, retentions, entry->boundGraphicsVersions, firstSet);
+            !retainedSets)
         {
-            auto kept = retainMetalApplicationResource(*native, std::static_pointer_cast<void>(version));
-            if (!kept)
-            {
-                return kept;
-            }
-            if (auto elements = retainMetalBindingSetElements(*native, *version); !elements)
-            {
-                return elements;
-            }
-        }
-        if (entry->boundGraphicsVersions.size() < firstSet + versions.size())
-        {
-            entry->boundGraphicsVersions.resize(firstSet + versions.size());
-        }
-        if (auto reserved = metalReserveBindingSetResidency(*entry, versions.size()); !reserved)
-        {
-            return reserved;
-        }
-        if (auto counted = retainMetalBindingSetRetentions(*native, retentions); !counted)
-        {
-            return counted;
+            return retainedSets;
         }
         for (std::size_t index = 0; index < versions.size(); ++index)
         {

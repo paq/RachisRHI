@@ -1310,6 +1310,18 @@ void rachis::metal::setFailPushConstantSliceAfter(std::int64_t successes) noexce
     metalTestingState().failPushConstantSliceAfter = successes;
 }
 
+void rachis::metal::setFailNextBindingResidencyReserve(bool fail) noexcept
+{
+    std::scoped_lock const lock(metalTestingState().mutex);
+    metalTestingState().failNextBindingResidencyReserve = fail;
+}
+
+bool rachis::metal::consumeInjectedMetalBindingResidencyReserveFailure() noexcept
+{
+    std::scoped_lock const lock(metalTestingState().mutex);
+    return std::exchange(metalTestingState().failNextBindingResidencyReserve, false);
+}
+
 bool rachis::metal::consumeInjectedMetalDrawIndexTableGrowthFailure() noexcept
 {
     std::scoped_lock const lock(metalTestingState().mutex);

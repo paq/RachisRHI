@@ -865,3 +865,72 @@ TEST_CASE("Metal commands keep elements written in place alive when a later upda
     REQUIRE(device.destroyBuffer(*results).has_value());
     REQUIRE(device.destroyShaderModule(shader).has_value());
 }
+
+TEST_CASE("Metal binding-set binds that fail keep none of the set's resources alive",
+          "[size:large][rhi][metal][binding][lifetime]")
+{
+    auto created = rachis::createDevice(metalDesc());
+    REQUIRE(created);
+    auto device = std::move(*created);
+
+    const auto shader = updateAfterBindShader(device);
+    const auto entries = updateAfterBindEntries();
+    auto layout = device.createBindingLayout({.entries = entries});
+    REQUIRE(layout.has_value());
+    const std::array layouts{*layout};
+    const std::array pushRanges{rachis::PushConstantRange{rachis::ShaderStage::compute, 0, 2 * sizeof(std::uint32_t)}};
+    auto pipelineLayout = device.createPipelineLayout({.bindingLayouts = layouts, .pushConstantRanges = pushRanges});
+    REQUIRE(pipelineLayout.has_value());
+    auto pipeline = device.createComputePipeline({.layout = *pipelineLayout, .computeShader = shader});
+    REQUIRE(pipeline.has_value());
+
+    const rachis::BufferDesc placedDesc{
+        .size = 256,
+        .usage = rachis::BufferUsage::storage,
+        .memoryType = rachis::MemoryType::deviceLocal,
+        .label = "Metal failed-bind placed buffer",
+    };
+    const auto requirements = device.queryBufferMemoryRequirements(placedDesc);
+    REQUIRE(requirements.has_value());
+    auto heap = device.createResourceHeap({
+        .size = requirements->size,
+        .alignment = requirements->alignment,
+        .memoryType = rachis::MemoryType::deviceLocal,
+        .resourceClass = rachis::ResourceHeapClass::buffer,
+    });
+    REQUIRE(heap.has_value());
+    auto placed = device.createPlacedBuffer({.heap = *heap, .offset = 0}, placedDesc);
+    REQUIRE(placed.has_value());
+    const auto element = valueBuffer(device, 5);
+    const std::array writes{
+        rachis::BindingWrite{
+            .binding = 0,
+            .resource = rachis::BufferBinding{.buffer = *placed, .structureByteStride = sizeof(std::uint32_t)},
+        },
+        elementWrite(0, element),
+    };
+    auto set = rachis::test::createBindingSet(device, {.layout = *layout, .writes = writes, .variableDescriptorCount = 1});
+    REQUIRE(set.has_value());
+
+    auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+    REQUIRE(command.has_value());
+    REQUIRE(device.bindComputePipeline(*command, *pipeline).has_value());
+    rachis::metal::setFailNextBindingResidencyReserve(true);
+    const auto bound = device.bindComputeBindingSet(*command, 0, *set);
+    rachis::metal::setFailNextBindingResidencyReserve(false);
+    REQUIRE_FALSE(bound.has_value());
+    CHECK(bound.error().code == rachis::ErrorCode::outOfMemory);
+
+    REQUIRE(device.destroyBindingSet(*set).has_value());
+    REQUIRE(device.destroyBuffer(*placed).has_value());
+    auto replacement = device.createPlacedBuffer({.heap = *heap, .offset = 0}, placedDesc);
+    REQUIRE(replacement.has_value());
+
+    REQUIRE(device.destroyBuffer(*replacement).has_value());
+    REQUIRE(device.destroyResourceHeap(*heap).has_value());
+    REQUIRE(device.destroyBuffer(element).has_value());
+    REQUIRE(device.destroyPipeline(*pipeline).has_value());
+    REQUIRE(device.destroyPipelineLayout(*pipelineLayout).has_value());
+    REQUIRE(device.destroyBindingLayout(*layout).has_value());
+    REQUIRE(device.destroyShaderModule(shader).has_value());
+}
