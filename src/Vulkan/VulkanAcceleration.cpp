@@ -840,7 +840,11 @@ namespace rachis::vulkan
                 const auto version = use.version->current;
                 if (version == nullptr)
                 {
-                    continue;
+                    return std::unexpected(Error{
+                        ErrorCode::invalidState,
+                        0,
+                        "A bound acceleration-structure descriptor has no built version.",
+                    });
                 }
                 std::vector<std::shared_ptr<detail::AccelerationStructureExecutionTracker>> trackers;
                 trackers.reserve(version->dependencyTrackers.size() + 1U);

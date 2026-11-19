@@ -404,6 +404,39 @@ TEST_CASE("Vulkan TLAS builds and updates read instance records that a compute p
     const auto queryPipeline = requireComputePipeline(
         device, "InstanceBufferRayQuery.spv", queryShaderBindings, *queryPipelineLayout, "Vulkan instance ray query");
 
+    {
+        const auto unbuilt = requireAccelerationStructure(device,
+                                                          rachis::AccelerationStructureType::topLevel,
+                                                          topSizes->accelerationStructureSize,
+                                                          "Vulkan unbuilt TLAS");
+        const std::array unbuiltWrites{
+            rachis::BindingWrite{.binding = 0, .resource = unbuilt.structure},
+            rachis::BindingWrite{
+                .binding = 1,
+                .resource =
+                    rachis::BufferBinding{
+                        .buffer = rayResults,
+                        .size = instanceRecordCount * sizeof(RayResult),
+                        .structureByteStride = sizeof(RayResult),
+                    },
+            },
+        };
+        auto unbuiltSet = rachis::test::createBindingSet(
+            device, {.layout = *queryBindingLayout, .writes = unbuiltWrites, .label = "Vulkan unbuilt TLAS reader"});
+        REQUIRE(unbuiltSet.has_value());
+        auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+        REQUIRE(command.has_value());
+        REQUIRE(device.bindComputePipeline(*command, queryPipeline).has_value());
+        const auto rejected = device.bindComputeBindingSet(*command, 0, *unbuiltSet);
+        REQUIRE_FALSE(rejected.has_value());
+        CHECK(rejected.error().code == rachis::ErrorCode::invalidState);
+        auto submitted = device.submit(std::move(*command));
+        REQUIRE(submitted.has_value());
+        REQUIRE(device.wait(*submitted).has_value());
+        REQUIRE(device.destroyBindingSet(*unbuiltSet).has_value());
+        destroyAccelerationStructures(device, std::span(&unbuilt, 1));
+    }
+
     std::vector<rachis::BindingSetHandle> querySets;
     const auto traceAndRead = [&](rachis::CommandBuffer command, rachis::AccelerationStructureHandle topLevel) {
         const std::array queryWrites{
