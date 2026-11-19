@@ -992,6 +992,43 @@ namespace rachis::d3d12
         std::uint32_t stepCount = 0;
     };
 
+    struct EnhancedBufferAliasStep final
+    {
+        EnhancedBarrierSync syncBefore = EnhancedBarrierSync::none;
+        EnhancedBarrierSync syncAfter = EnhancedBarrierSync::none;
+        EnhancedBarrierAccess accessBefore = EnhancedBarrierAccess::noAccess;
+        EnhancedBarrierAccess accessAfter = EnhancedBarrierAccess::noAccess;
+    };
+
+    struct EnhancedBufferAliasPlan final
+    {
+        EnhancedBufferAliasStep deactivation{};
+        EnhancedBufferAliasStep activation{};
+    };
+
+    [[nodiscard]] constexpr EnhancedBufferAliasPlan planEnhancedBufferAliasActivation(
+        const BufferAliasActivation& activation) noexcept
+    {
+        const auto before = translateEnhancedSync(activation.stagesBefore, activation.accessBefore);
+        const auto after = translateEnhancedSync(activation.stagesAfter, activation.accessAfter);
+        return EnhancedBufferAliasPlan{
+            .deactivation =
+                EnhancedBufferAliasStep{
+                    .syncBefore = before,
+                    .syncAfter = after,
+                    .accessBefore = translateEnhancedAccess(activation.accessBefore),
+                    .accessAfter = EnhancedBarrierAccess::noAccess,
+                },
+            .activation =
+                EnhancedBufferAliasStep{
+                    .syncBefore = before,
+                    .syncAfter = after,
+                    .accessBefore = EnhancedBarrierAccess::noAccess,
+                    .accessAfter = translateEnhancedAccess(activation.accessAfter),
+                },
+        };
+    }
+
     [[nodiscard]] constexpr EnhancedTextureAliasPlan planEnhancedTextureAliasActivation(
         const TextureAliasActivation& activation, TextureUsage afterUsage, QueueType queueType) noexcept
     {
@@ -999,7 +1036,7 @@ namespace rachis::d3d12
         plan.steps[0] = EnhancedTextureAliasStep{
             .target = EnhancedTextureAliasTarget::before,
             .syncBefore = translateEnhancedSync(activation.stagesBefore, activation.accessBefore),
-            .syncAfter = translateEnhancedSync(activation.stagesAfter),
+            .syncAfter = translateEnhancedSync(activation.stagesAfter, activation.accessAfter),
             .accessBefore = translateEnhancedAccess(activation.accessBefore),
             .accessAfter = EnhancedBarrierAccess::noAccess,
             .layoutBefore = translateEnhancedLayout(activation.layoutBefore, queueType),
@@ -1019,7 +1056,7 @@ namespace rachis::d3d12
                 depth ? EnhancedBarrierLayout::depthStencilWrite : EnhancedBarrierLayout::renderTarget;
             plan.steps[1] = EnhancedTextureAliasStep{
                 .target = EnhancedTextureAliasTarget::after,
-                .syncBefore = translateEnhancedSync(activation.stagesBefore),
+                .syncBefore = translateEnhancedSync(activation.stagesBefore, activation.accessBefore),
                 .syncAfter = initializationSync,
                 .accessBefore = EnhancedBarrierAccess::noAccess,
                 .accessAfter = initializationAccess,
@@ -1045,7 +1082,7 @@ namespace rachis::d3d12
 
         plan.steps[1] = EnhancedTextureAliasStep{
             .target = EnhancedTextureAliasTarget::after,
-            .syncBefore = translateEnhancedSync(activation.stagesBefore),
+            .syncBefore = translateEnhancedSync(activation.stagesBefore, activation.accessBefore),
             .syncAfter = translateEnhancedSync(activation.stagesAfter, activation.accessAfter),
             .accessBefore = EnhancedBarrierAccess::noAccess,
             .accessAfter = translateEnhancedAccess(activation.accessAfter),

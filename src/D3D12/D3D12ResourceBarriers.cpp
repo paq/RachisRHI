@@ -1802,11 +1802,12 @@ namespace rachis::d3d12
                                          const PreparedBufferAliasActivation& prepared,
                                          const BufferAliasActivation& activation)
         {
+            const auto plan = planEnhancedBufferAliasActivation(activation);
             const D3D12_BUFFER_BARRIER deactivation{
-                .SyncBefore = nativeSync(activation.stagesBefore, activation.accessBefore),
-                .SyncAfter = nativeSync(activation.stagesAfter, Access::none),
-                .AccessBefore = nativeAccess(activation.accessBefore),
-                .AccessAfter = D3D12_BARRIER_ACCESS_NO_ACCESS,
+                .SyncBefore = toNativeBarrierSync(plan.deactivation.syncBefore),
+                .SyncAfter = toNativeBarrierSync(plan.deactivation.syncAfter),
+                .AccessBefore = toNativeBarrierAccess(plan.deactivation.accessBefore),
+                .AccessAfter = toNativeBarrierAccess(plan.deactivation.accessAfter),
                 .pResource = prepared.before->resource.Get(),
                 .Offset = 0,
                 .Size = prepared.before->desc.size,
@@ -1819,10 +1820,10 @@ namespace rachis::d3d12
             commandList.Barrier(1, &group);
 
             const D3D12_BUFFER_BARRIER activationBarrier{
-                .SyncBefore = nativeSync(activation.stagesBefore, Access::none),
-                .SyncAfter = nativeSync(activation.stagesAfter, activation.accessAfter),
-                .AccessBefore = D3D12_BARRIER_ACCESS_NO_ACCESS,
-                .AccessAfter = nativeAccess(activation.accessAfter),
+                .SyncBefore = toNativeBarrierSync(plan.activation.syncBefore),
+                .SyncAfter = toNativeBarrierSync(plan.activation.syncAfter),
+                .AccessBefore = toNativeBarrierAccess(plan.activation.accessBefore),
+                .AccessAfter = toNativeBarrierAccess(plan.activation.accessAfter),
                 .pResource = prepared.after->resource.Get(),
                 .Offset = 0,
                 .Size = prepared.after->desc.size,

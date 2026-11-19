@@ -548,3 +548,71 @@ TEST_CASE("D3D12 enhanced texture alias planner sets DISCARD on activating trans
         REQUIRE(depthPlan.steps[2].flags == EnhancedTextureBarrierFlags::none);
     }
 }
+
+TEST_CASE("D3D12 enhanced alias activations order a clear of the old resource before a clear of the new one",
+          "[size:small][rhi][d3d12][barrier]")
+{
+    constexpr auto clearScope = EnhancedBarrierSync::computeShading | EnhancedBarrierSync::clearUnorderedAccessView;
+
+    SECTION("buffer aliases carry the clear scope through both barriers")
+    {
+        const BufferAliasActivation activation{
+            .before = BufferHandle{1},
+            .after = BufferHandle{2},
+            .stagesBefore = PipelineStage::computeShader,
+            .stagesAfter = PipelineStage::computeShader,
+            .accessBefore = Access::unorderedAccess,
+            .accessAfter = Access::unorderedAccess,
+        };
+        const auto plan = planEnhancedBufferAliasActivation(activation);
+        CHECK(plan.deactivation.syncBefore == clearScope);
+        CHECK(plan.deactivation.syncAfter == clearScope);
+        CHECK(plan.deactivation.accessBefore == EnhancedBarrierAccess::unorderedAccess);
+        CHECK(plan.deactivation.accessAfter == EnhancedBarrierAccess::noAccess);
+        CHECK(plan.activation.syncBefore == clearScope);
+        CHECK(plan.activation.syncAfter == clearScope);
+        CHECK(plan.activation.accessBefore == EnhancedBarrierAccess::noAccess);
+        CHECK(plan.activation.accessAfter == EnhancedBarrierAccess::unorderedAccess);
+    }
+
+    SECTION("texture aliases carry the clear scope through both barriers")
+    {
+        const TextureAliasActivation activation{
+            .before = TextureHandle{1},
+            .after = TextureHandle{2},
+            .stagesBefore = PipelineStage::computeShader,
+            .stagesAfter = PipelineStage::computeShader,
+            .accessBefore = Access::unorderedAccess,
+            .accessAfter = Access::unorderedAccess,
+            .layoutBefore = TextureLayout::unorderedAccess,
+            .layoutAfter = TextureLayout::unorderedAccess,
+        };
+        const auto plan = planEnhancedTextureAliasActivation(
+            activation, TextureUsage::storage | TextureUsage::copyDestination, QueueType::compute);
+        REQUIRE(plan.stepCount == 2);
+        CHECK(plan.steps[0].syncBefore == clearScope);
+        CHECK(plan.steps[0].syncAfter == clearScope);
+        CHECK(plan.steps[1].syncBefore == clearScope);
+        CHECK(plan.steps[1].syncAfter == clearScope);
+    }
+
+    SECTION("an attachment's metadata initialization waits for a clear of the old resource")
+    {
+        const TextureAliasActivation activation{
+            .before = TextureHandle{1},
+            .after = TextureHandle{2},
+            .stagesBefore = PipelineStage::computeShader,
+            .stagesAfter = PipelineStage::renderTarget,
+            .accessBefore = Access::unorderedAccess,
+            .accessAfter = Access::renderTarget,
+            .layoutBefore = TextureLayout::unorderedAccess,
+            .layoutAfter = TextureLayout::renderTarget,
+        };
+        const auto plan =
+            planEnhancedTextureAliasActivation(activation, TextureUsage::renderTarget, QueueType::graphics);
+        REQUIRE(plan.stepCount == 3);
+        CHECK(plan.steps[0].syncBefore == clearScope);
+        CHECK(plan.steps[1].syncBefore == clearScope);
+        CHECK(plan.steps[1].syncAfter == EnhancedBarrierSync::renderTarget);
+    }
+}
