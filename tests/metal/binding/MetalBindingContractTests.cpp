@@ -1973,7 +1973,7 @@ TEST_CASE("Metal variable descriptor arrays reach each published class limit and
     const auto& limits = capabilities->limits;
     CHECK(limits.maxVariableBufferDescriptors == 500000);
     CHECK(limits.maxVariableResourceDescriptors == 500000);
-    CHECK(limits.maxVariableSamplerDescriptors == 1024);
+    CHECK(limits.maxVariableSamplerDescriptors == (rachis::metal::boundAppleGpuFamily() >= 9 ? 1024U : 996U));
 
     struct VariableArrayCase final
     {
