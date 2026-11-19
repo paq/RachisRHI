@@ -415,7 +415,7 @@ VertexOutput vertexMain(float3 position : TEXCOORD0)
 
 ### Declaring the draw index
 
-- Set `ShaderInterfaceDesc::drawIndex` for a shader that reads the draw index. `createShaderModule` checks it against the bytecode and fails with `ErrorCode::invalidArgument` on a mismatch: Vulkan looks for a load of the `DrawIndex` builtin by the entry point (see [Draw index on Vulkan](platforms.md#draw-index-on-vulkan)), and Direct3D 12 for the constant buffer at `b0, space5` in the DXIL. `REFLECT` fills it in, `drawIndex(backend)` returns it, and `Device::shaderModuleInterface` reports it.
+- Set `ShaderInterfaceDesc::drawIndex` for a shader that reads the draw index. `createShaderModule` checks it against the bytecode and fails with `ErrorCode::invalidArgument` on a mismatch: Vulkan looks for a load of the `DrawIndex` builtin by the entry point (see [Draw index on Vulkan](platforms.md#draw-index-on-vulkan)), Direct3D 12 for the constant buffer at `b0, space5` in the DXIL, and Metal for the draw-index binding that the PNMS lists for the entry point. `REFLECT` fills it in, `drawIndex(backend)` returns it, and `Device::shaderModuleInterface` reports it.
 - Set `PipelineLayoutDesc::drawIndex` to reserve the draw index in a pipeline layout. A graphics pipeline with a shader that reads the draw index needs such a layout, or creation fails with `ErrorCode::validationError`. `derivePipelineLayout` sets `DerivedPipelineLayout::drawIndex` when any shader reads it. On Direct3D 12 the draw index takes one DWORD of the 64-DWORD root signature, so a layout at that limit keeps one fewer dynamic uniform buffer in a root descriptor.
 
 ### Record layout

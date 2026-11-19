@@ -1463,13 +1463,10 @@ TEST_CASE("C ABI counted indirect draws read the draw index and a variable-count
     CHECK(rachis_shader_module_create(device.get(), &vertexDesc, &rejectedShader, &error) ==
           RACHIS_STATUS_INVALID_ARGUMENT);
     CHECK(rejectedShader == 0);
-    if (RACHIS_SMOKE_BACKEND != RACHIS_BACKEND_METAL)
-    {
-        vertexDesc.draw_index = 0;
-        CHECK(rachis_shader_module_create(device.get(), &vertexDesc, &rejectedShader, &error) ==
-              RACHIS_STATUS_INVALID_ARGUMENT);
-        CHECK(rejectedShader == 0);
-    }
+    vertexDesc.draw_index = 0;
+    CHECK(rachis_shader_module_create(device.get(), &vertexDesc, &rejectedShader, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rejectedShader == 0);
     vertexDesc.draw_index = 1;
     const auto vertex = createShaderModule(device.get(), vertexDesc, error);
 
