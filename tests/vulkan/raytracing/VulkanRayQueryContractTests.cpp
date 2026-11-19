@@ -9,6 +9,7 @@
 #error Public Rachis headers must not include Vulkan headers.
 #endif
 
+#include "Internal/VulkanResources.h"
 #include "Vulkan/VulkanTestHooks.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -26,6 +27,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <utility>
@@ -1334,3 +1336,421 @@ TEST_CASE("Vulkan BLAS triangle vertex strides must be multiples of the vertex c
     CHECK(diagnostics.errors == 0);
     CHECK(diagnostics.corruptions == 0);
 }
+
+#ifdef RACHIS_SPIRV_DIR
+namespace
+{
+
+    constexpr auto topLevelFlags = rachis::AccelerationStructureBuildFlag::allowUpdate;
+
+    template<typename T>
+    [[nodiscard]] T require(rachis::Result<T> created)
+    {
+        if (!created)
+        {
+            UNSCOPED_INFO(created.error().message);
+        }
+        REQUIRE(created.has_value());
+        return *created;
+    }
+
+    class TopLevelLeaseFixture final
+    {
+    public:
+        explicit TopLevelLeaseFixture(rachis::Device& device) : device_(device)
+        {
+            const auto bytecode = loadSpirv("RayQueryWorkload.spv");
+            REQUIRE_FALSE(bytecode.empty());
+            const std::array shaderBindings{
+                rachis::ShaderBindingRequirement{0, 0, rachis::ShaderResourceType::accelerationStructure, 1},
+                rachis::ShaderBindingRequirement{0, 1, rachis::ShaderResourceType::storageBuffer, 1},
+            };
+            shader_ = require(device.createShaderModule({
+                .stage = rachis::ShaderStage::compute,
+                .bytecode = bytecode,
+                .entryPoint = "main",
+                .label = "Vulkan TLAS lease ray query",
+                .shaderInterface = rachis::test::computeShaderInterface({1, 1, 1}, shaderBindings),
+            }));
+
+            const std::array vertices{
+                std::array{-1.0F, -1.0F, 0.0F},
+                std::array{0.0F, 1.0F, 0.0F},
+                std::array{1.0F, -1.0F, 0.0F},
+            };
+            vertices_ = require(device.createBuffer({
+                .size = sizeof(vertices),
+                .usage = rachis::BufferUsage::accelerationStructureBuildInput,
+                .memoryType = rachis::MemoryType::upload,
+                .label = "Vulkan TLAS lease triangle",
+            }));
+            REQUIRE(device.writeBuffer(vertices_, 0, std::as_bytes(std::span(vertices))).has_value());
+            geometry_ = {
+                rachis::AccelerationStructureGeometry{
+                    .data =
+                        rachis::AccelerationStructureTriangleGeometry{
+                            .vertexBuffer = vertices_,
+                            .vertexCount = 3,
+                            .vertexStride = sizeof(vertices[0]),
+                            .vertexFormat = rachis::AccelerationStructureVertexFormat::float32x3,
+                        },
+                    .flags = rachis::AccelerationStructureGeometryFlag::opaque,
+                },
+            };
+            const auto bottomSizes = require(device.queryBottomLevelAccelerationStructureBuildSizes(bottomInput()));
+            const auto updatableSizes = require(device.queryTopLevelAccelerationStructureBuildSizes({
+                .instanceCount = 1,
+                .flags = topLevelFlags,
+            }));
+            const auto fastTraceSizes = require(device.queryTopLevelAccelerationStructureBuildSizes({
+                .instanceCount = 1,
+                .flags = rachis::AccelerationStructureBuildFlag::preferFastTrace,
+            }));
+            const rachis::AccelerationStructureBuildSizes topSizes{
+                .accelerationStructureSize =
+                    std::max(updatableSizes.accelerationStructureSize, fastTraceSizes.accelerationStructureSize),
+                .buildScratchSize = std::max(updatableSizes.buildScratchSize, fastTraceSizes.buildScratchSize),
+                .updateScratchSize = updatableSizes.updateScratchSize,
+            };
+            bottomSize_ = bottomSizes.accelerationStructureSize;
+            bottomStorage_ = require(device.createBuffer({
+                .size = bottomSize_,
+                .usage = rachis::BufferUsage::accelerationStructureStorage,
+                .memoryType = rachis::MemoryType::deviceLocal,
+                .label = "Vulkan TLAS lease BLAS storage",
+            }));
+            for (auto& storage : topStorage_)
+            {
+                storage = require(device.createBuffer({
+                    .size = topSizes.accelerationStructureSize,
+                    .usage = rachis::BufferUsage::accelerationStructureStorage,
+                    .memoryType = rachis::MemoryType::deviceLocal,
+                    .label = "Vulkan TLAS lease TLAS storage",
+                }));
+            }
+            scratch_ = require(device.createBuffer({
+                .size = std::max({bottomSizes.buildScratchSize,
+                                  topSizes.buildScratchSize,
+                                  topSizes.updateScratchSize,
+                                  std::uint64_t{256}}),
+                .usage = rachis::BufferUsage::accelerationStructureScratch,
+                .memoryType = rachis::MemoryType::deviceLocal,
+                .label = "Vulkan TLAS lease scratch",
+            }));
+            bottomLevel_ = require(device.createAccelerationStructure({
+                .type = rachis::AccelerationStructureType::bottomLevel,
+                .storage = bottomStorage_,
+                .label = "Vulkan TLAS lease BLAS",
+            }));
+            for (std::size_t index = 0; index < topLevels_.size(); ++index)
+            {
+                topLevels_[index] = require(device.createAccelerationStructure({
+                    .type = rachis::AccelerationStructureType::topLevel,
+                    .storage = topStorage_[index],
+                    .label = "Vulkan TLAS lease TLAS",
+                }));
+            }
+
+            output_ = require(device.createBuffer({
+                .size = 2 * sizeof(std::uint32_t),
+                .usage = rachis::BufferUsage::storage | rachis::BufferUsage::copySource,
+                .memoryType = rachis::MemoryType::deviceLocal,
+                .label = "Vulkan TLAS lease output",
+            }));
+            readback_ = require(device.createBuffer({
+                .size = 2 * sizeof(std::uint32_t),
+                .usage = rachis::BufferUsage::copyDestination,
+                .memoryType = rachis::MemoryType::readback,
+                .label = "Vulkan TLAS lease readback",
+            }));
+            const std::array layoutEntries{
+                rachis::BindingLayoutEntry{
+                    0, rachis::BindingType::accelerationStructure, rachis::ShaderStage::compute, 1},
+                rachis::BindingLayoutEntry{1, rachis::BindingType::storageBuffer, rachis::ShaderStage::compute, 1},
+            };
+            bindingLayout_ = require(device.createBindingLayout({.entries = layoutEntries}));
+            const std::array bindingLayouts{bindingLayout_};
+            pipelineLayout_ = require(device.createPipelineLayout({.bindingLayouts = bindingLayouts}));
+            pipeline_ = require(device.createComputePipeline({.layout = pipelineLayout_, .computeShader = shader_}));
+        }
+
+        TopLevelLeaseFixture(const TopLevelLeaseFixture&) = delete;
+        TopLevelLeaseFixture& operator=(const TopLevelLeaseFixture&) = delete;
+        TopLevelLeaseFixture(TopLevelLeaseFixture&&) = delete;
+        TopLevelLeaseFixture& operator=(TopLevelLeaseFixture&&) = delete;
+
+        ~TopLevelLeaseFixture()
+        {
+            device_.collectGarbage();
+            if (bindingSet_.isValid())
+            {
+                static_cast<void>(device_.destroyBindingSet(bindingSet_));
+            }
+            static_cast<void>(device_.destroyPipeline(pipeline_));
+            static_cast<void>(device_.destroyPipelineLayout(pipelineLayout_));
+            static_cast<void>(device_.destroyBindingLayout(bindingLayout_));
+            static_cast<void>(device_.destroyShaderModule(shader_));
+            static_cast<void>(device_.destroyAccelerationStructure(bottomLevel_));
+            for (const auto topLevel : topLevels_)
+            {
+                static_cast<void>(device_.destroyAccelerationStructure(topLevel));
+            }
+            for (const auto buffer :
+                 {vertices_, bottomStorage_, topStorage_[0], topStorage_[1], scratch_, output_, readback_})
+            {
+                static_cast<void>(device_.destroyBuffer(buffer));
+            }
+            device_.collectGarbage();
+        }
+
+        [[nodiscard]] rachis::BottomLevelAccelerationStructureBuildInput bottomInput() const noexcept
+        {
+            return {.geometries = geometry_, .flags = rachis::AccelerationStructureBuildFlag::preferFastTrace};
+        }
+
+        [[nodiscard]] std::array<rachis::AccelerationStructureInstance, 1> instances() const noexcept
+        {
+            return {rachis::AccelerationStructureInstance{
+                .bottomLevel = bottomLevel_,
+                .flags = rachis::AccelerationStructureInstanceFlag::triangleCullDisable,
+            }};
+        }
+
+        void recordBuilds(rachis::CommandBuffer& command,
+                          rachis::AccelerationStructureBuildFlag flags = topLevelFlags) const
+        {
+            REQUIRE(device_
+                        .buildBottomLevelAccelerationStructure(command,
+                                                               {
+                                                                   .destination = bottomLevel_,
+                                                                   .input = bottomInput(),
+                                                                   .scratch = scratch_,
+                                                               })
+                        .has_value());
+            const auto built = instances();
+            const auto topLevel = device_.buildTopLevelAccelerationStructure(command,
+                                                                             {
+                                                                                 .destination = topLevels_[0],
+                                                                                 .instances = built,
+                                                                                 .flags = flags,
+                                                                                 .scratch = scratch_,
+                                                                             });
+            if (!topLevel)
+            {
+                UNSCOPED_INFO(topLevel.error().message);
+            }
+            REQUIRE(topLevel.has_value());
+        }
+
+        void build() const
+        {
+            auto command = rachis::test::acquireCommandBuffer(device_, rachis::QueueType::compute);
+            REQUIRE(command.has_value());
+            recordBuilds(*command);
+            auto submitted = device_.submit(std::move(*command));
+            REQUIRE(submitted.has_value());
+            REQUIRE(device_.wait(*submitted).has_value());
+            device_.collectGarbage();
+        }
+
+        [[nodiscard]] rachis::Status updateInPlace(rachis::CommandBuffer& command) const
+        {
+            const auto updated = instances();
+            return device_.updateTopLevelAccelerationStructureInPlace(command,
+                                                                      {
+                                                                          .target = topLevels_[0],
+                                                                          .instances = updated,
+                                                                          .flags = topLevelFlags,
+                                                                          .scratch = scratch_,
+                                                                      });
+        }
+
+        void createBindingSet()
+        {
+            const std::array writes{
+                rachis::BindingWrite{.binding = 0, .resource = topLevels_[0]},
+                rachis::BindingWrite{
+                    .binding = 1,
+                    .resource =
+                        rachis::BufferBinding{
+                            .buffer = output_,
+                            .size = 2 * sizeof(std::uint32_t),
+                            .structureByteStride = 2 * sizeof(std::uint32_t),
+                        },
+                },
+            };
+            bindingSet_ =
+                require(rachis::test::createBindingSet(device_, {.layout = bindingLayout_, .writes = writes}));
+        }
+
+        void bindPipeline(rachis::CommandBuffer& command) const
+        {
+            REQUIRE(device_.bindComputePipeline(command, pipeline_).has_value());
+        }
+
+        [[nodiscard]] rachis::Status bindSet(rachis::CommandBuffer& command) const
+        {
+            return device_.bindComputeBindingSet(command, 0, bindingSet_);
+        }
+
+        void trace(rachis::CommandBuffer& command) const
+        {
+            REQUIRE(device_
+                        .bufferBarrier(command,
+                                       {
+                                           .buffer = output_,
+                                           .stagesBefore = rachis::PipelineStage::all,
+                                           .stagesAfter = rachis::PipelineStage::computeShader,
+                                           .accessBefore = rachis::Access::common,
+                                           .accessAfter = rachis::Access::unorderedAccess,
+                                       })
+                        .has_value());
+            bindPipeline(command);
+            REQUIRE(bindSet(command).has_value());
+            REQUIRE(device_.dispatch(command, 1).has_value());
+        }
+
+        [[nodiscard]] std::array<std::uint32_t, 2> finish(rachis::CommandBuffer command) const
+        {
+            REQUIRE(device_
+                        .bufferBarrier(command,
+                                       {
+                                           .buffer = output_,
+                                           .stagesBefore = rachis::PipelineStage::computeShader,
+                                           .stagesAfter = rachis::PipelineStage::copy,
+                                           .accessBefore = rachis::Access::unorderedAccess,
+                                           .accessAfter = rachis::Access::copySource,
+                                       })
+                        .has_value());
+            REQUIRE(device_.copyBuffer(command, {.source = output_, .destination = readback_, .size = 8}).has_value());
+            auto submitted = device_.submit(std::move(command));
+            REQUIRE(submitted.has_value());
+            REQUIRE(device_.wait(*submitted).has_value());
+            device_.collectGarbage();
+            std::array<std::uint32_t, 2> result{};
+            REQUIRE(device_.readBuffer(readback_, 0, std::as_writable_bytes(std::span(result))).has_value());
+            return result;
+        }
+
+        [[nodiscard]] rachis::AccelerationStructureHandle bottomLevel() const noexcept
+        {
+            return bottomLevel_;
+        }
+
+        [[nodiscard]] rachis::AccelerationStructureHandle topLevel(std::size_t index) const noexcept
+        {
+            return topLevels_[index];
+        }
+
+        [[nodiscard]] rachis::BufferHandle bottomStorage() const noexcept
+        {
+            return bottomStorage_;
+        }
+
+        [[nodiscard]] rachis::BufferHandle scratch() const noexcept
+        {
+            return scratch_;
+        }
+
+        void forgetBottomLevel() noexcept
+        {
+            bottomLevel_ = {};
+        }
+
+        void forgetTopLevel(std::size_t index) noexcept
+        {
+            topLevels_[index] = {};
+        }
+
+    private:
+        rachis::Device& device_;
+        rachis::ShaderModuleHandle shader_{};
+        rachis::BufferHandle vertices_{};
+        std::array<rachis::AccelerationStructureGeometry, 1> geometry_{};
+        std::uint64_t bottomSize_ = 0;
+        rachis::BufferHandle bottomStorage_{};
+        std::array<rachis::BufferHandle, 2> topStorage_{};
+        rachis::BufferHandle scratch_{};
+        rachis::AccelerationStructureHandle bottomLevel_{};
+        std::array<rachis::AccelerationStructureHandle, 2> topLevels_{};
+        rachis::BufferHandle output_{};
+        rachis::BufferHandle readback_{};
+        rachis::BindingLayoutHandle bindingLayout_{};
+        rachis::BindingSetHandle bindingSet_{};
+        rachis::PipelineLayoutHandle pipelineLayout_{};
+        rachis::PipelineHandle pipeline_{};
+    };
+
+    [[nodiscard]] std::optional<rachis::Device> createRayQueryDevice()
+    {
+        auto created = rachis::createDevice(rachis::test::vulkanDeviceDesc());
+        if (rachis::test::skipWithoutCreatedDevice(created))
+        {
+            return std::nullopt;
+        }
+        if (!rachis::test::requireCapabilities(*created).rayQuery)
+        {
+            SKIP("The Vulkan adapter does not advertise inline ray queries.");
+        }
+        return std::move(*created);
+    }
+
+    void checkNoDiagnostics(const rachis::Device& device)
+    {
+        const auto diagnostics = device.diagnosticCounts();
+        CHECK(diagnostics.errors == 0);
+        CHECK(diagnostics.corruptions == 0);
+    }
+
+} // namespace
+
+TEST_CASE("Vulkan in-place TLAS updates follow reads of the same TLAS in their own command buffer only",
+          "[size:medium][rhi][vulkan][ray-query][acceleration-structure]")
+{
+    auto device = createRayQueryDevice();
+    if (!device)
+    {
+        return;
+    }
+    {
+        TopLevelLeaseFixture fixture(*device);
+        fixture.build();
+        fixture.createBindingSet();
+
+        auto command = rachis::test::acquireCommandBuffer(*device, rachis::QueueType::compute);
+        REQUIRE(command.has_value());
+        fixture.trace(*command);
+        REQUIRE(device
+                    ->globalBarrier(*command,
+                                    {
+                                        .stagesBefore = rachis::PipelineStage::computeShader,
+                                        .stagesAfter = rachis::PipelineStage::accelerationStructureBuild,
+                                        .accessBefore = rachis::Access::shaderResource,
+                                        .accessAfter = rachis::Access::accelerationStructureBuildInput,
+                                    })
+                    .has_value());
+        {
+            auto foreign = rachis::test::acquireCommandBuffer(*device, rachis::QueueType::compute);
+            REQUIRE(foreign.has_value());
+            const auto blocked = fixture.updateInPlace(*foreign);
+            REQUIRE_FALSE(blocked.has_value());
+            CHECK(blocked.error().code == rachis::ErrorCode::invalidState);
+        }
+        const auto updated = fixture.updateInPlace(*command);
+        if (!updated)
+        {
+            UNSCOPED_INFO(updated.error().message);
+        }
+        REQUIRE(updated.has_value());
+        fixture.trace(*command);
+        const auto result = fixture.finish(std::move(*command));
+        CHECK(result[0] == 1);
+        CHECK(std::bit_cast<float>(result[1]) == 1.0F);
+
+        auto later = rachis::test::acquireCommandBuffer(*device, rachis::QueueType::compute);
+        REQUIRE(later.has_value());
+        CHECK(fixture.updateInPlace(*later).has_value());
+    }
+    checkNoDiagnostics(*device);
+}
+#endif

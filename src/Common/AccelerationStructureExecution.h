@@ -95,13 +95,18 @@ namespace rachis::detail
                 return false;
             }
             const std::scoped_lock lock(mutex_);
-            return activeConsumers_ == 0 && (activeProducers_ == 0 || producerRecordingId_ == recordingId);
+            return !hasForeignConsumers(recordingId) && (activeProducers_ == 0 || producerRecordingId_ == recordingId);
         }
 
         [[nodiscard]] std::uint64_t activeConsumerCount() const noexcept
         {
             const std::scoped_lock lock(mutex_);
-            return activeConsumers_;
+            std::uint64_t count = 0;
+            for (const auto& consumer : consumers_)
+            {
+                count += consumer.count;
+            }
+            return count;
         }
 
         [[nodiscard]] std::uint64_t activeProducerCount() const noexcept
@@ -125,15 +130,28 @@ namespace rachis::detail
         [[nodiscard]] bool hasActiveExecutions() const noexcept
         {
             const std::scoped_lock lock(mutex_);
-            return activeConsumers_ != 0 || activeProducers_ != 0;
+            return !consumers_.empty() || activeProducers_ != 0;
         }
 
     private:
         friend class AccelerationStructureExecutionLease;
 
+        struct ConsumerRecording final
+        {
+            std::uint64_t recordingId = 0;
+            std::uint64_t count = 0;
+        };
+
         [[nodiscard]] bool consumableBy(std::uint64_t recordingId) const noexcept
         {
             return activeInPlaceProducers_ == 0 || (recordingId != 0 && producerRecordingId_ == recordingId);
+        }
+
+        [[nodiscard]] bool hasForeignConsumers(std::uint64_t recordingId) const noexcept
+        {
+            return std::ranges::any_of(consumers_, [recordingId](const ConsumerRecording& consumer) noexcept {
+                return recordingId == 0 || consumer.recordingId != recordingId;
+            });
         }
 
         [[nodiscard]] bool tryAcquireProducer(std::uint64_t recordingId, AccelerationStructureWrite write) noexcept
@@ -143,7 +161,7 @@ namespace rachis::detail
                 return false;
             }
             const std::scoped_lock lock(mutex_);
-            if (activeConsumers_ != 0 || (activeProducers_ != 0 && producerRecordingId_ != recordingId))
+            if (hasForeignConsumers(recordingId) || (activeProducers_ != 0 && producerRecordingId_ != recordingId))
             {
                 return false;
             }
@@ -173,28 +191,40 @@ namespace rachis::detail
             }
         }
 
-        [[nodiscard]] bool tryAcquireConsumer(std::uint64_t recordingId) noexcept
+        [[nodiscard]] bool tryAcquireConsumer(std::uint64_t recordingId)
         {
             const std::scoped_lock lock(mutex_);
             if (!consumableBy(recordingId))
             {
                 return false;
             }
-            ++activeConsumers_;
+            const auto found = std::ranges::find(consumers_, recordingId, &ConsumerRecording::recordingId);
+            if (found != consumers_.end())
+            {
+                ++found->count;
+                return true;
+            }
+            consumers_.push_back(ConsumerRecording{.recordingId = recordingId, .count = 1});
             return true;
         }
 
-        void releaseConsumer() noexcept
+        void releaseConsumer(std::uint64_t recordingId) noexcept
         {
             const std::scoped_lock lock(mutex_);
-            if (activeConsumers_ != 0)
+            const auto found = std::ranges::find(consumers_, recordingId, &ConsumerRecording::recordingId);
+            if (found == consumers_.end())
             {
-                --activeConsumers_;
+                return;
+            }
+            if (--found->count == 0)
+            {
+                *found = consumers_.back();
+                consumers_.pop_back();
             }
         }
 
         mutable std::mutex mutex_;
-        std::uint64_t activeConsumers_ = 0;
+        std::vector<ConsumerRecording> consumers_;
         std::uint64_t activeProducers_ = 0;
         std::uint64_t activeInPlaceProducers_ = 0;
         std::uint64_t producerRecordingId_ = 0;
@@ -215,8 +245,10 @@ namespace rachis::detail
 
         AccelerationStructureExecutionLease(AccelerationStructureExecutionLease&& other) noexcept
             : producer_(std::exchange(other.producer_, nullptr)), producerWrite_(other.producerWrite_),
-              consumers_(std::move(other.consumers_))
+              consumers_(std::move(other.consumers_)),
+              consumerRecordingId_(std::exchange(other.consumerRecordingId_, 0))
         {
+            other.consumers_.clear();
         }
 
         AccelerationStructureExecutionLease& operator=(AccelerationStructureExecutionLease&& other) noexcept
@@ -227,6 +259,8 @@ namespace rachis::detail
                 producer_ = std::exchange(other.producer_, nullptr);
                 producerWrite_ = other.producerWrite_;
                 consumers_ = std::move(other.consumers_);
+                other.consumers_.clear();
+                consumerRecordingId_ = std::exchange(other.consumerRecordingId_, 0);
             }
             return *this;
         }
@@ -246,12 +280,23 @@ namespace rachis::detail
             {
                 return std::unexpected(AccelerationStructureLeaseConflict::producer);
             }
-            if (!tryAcquireAllConsumers(deduplicated, recordingId))
+            bool acquired = false;
+            try
+            {
+                acquired = tryAcquireAllConsumers(deduplicated, recordingId);
+            }
+            catch (...)
+            {
+                producer->releaseProducer(write);
+                throw;
+            }
+            if (!acquired)
             {
                 producer->releaseProducer(write);
                 return std::unexpected(AccelerationStructureLeaseConflict::consumer);
             }
-            return AccelerationStructureExecutionLease(std::move(producer), write, std::move(deduplicated));
+            return AccelerationStructureExecutionLease(
+                std::move(producer), write, std::move(deduplicated), recordingId);
         }
 
         [[nodiscard]] static std::optional<AccelerationStructureExecutionLease> tryAcquireConsumers(
@@ -264,7 +309,7 @@ namespace rachis::detail
                 return std::nullopt;
             }
             return AccelerationStructureExecutionLease(
-                nullptr, AccelerationStructureWrite::publishVersion, std::move(deduplicated));
+                nullptr, AccelerationStructureWrite::publishVersion, std::move(deduplicated), recordingId);
         }
 
         [[nodiscard]] static std::optional<AccelerationStructureExecutionLease> tryAcquireConsumer(
@@ -285,8 +330,9 @@ namespace rachis::detail
 
         void reset() noexcept
         {
-            releaseConsumers(consumers_);
+            releaseConsumers(consumers_, consumerRecordingId_);
             consumers_.clear();
+            consumerRecordingId_ = 0;
             if (producer_ != nullptr)
             {
                 producer_->releaseProducer(producerWrite_);
@@ -298,8 +344,10 @@ namespace rachis::detail
         AccelerationStructureExecutionLease(
             std::shared_ptr<AccelerationStructureExecutionTracker> producer,
             AccelerationStructureWrite producerWrite,
-            std::vector<std::shared_ptr<AccelerationStructureExecutionTracker>> consumers) noexcept
-            : producer_(std::move(producer)), producerWrite_(producerWrite), consumers_(std::move(consumers))
+            std::vector<std::shared_ptr<AccelerationStructureExecutionTracker>> consumers,
+            std::uint64_t consumerRecordingId) noexcept
+            : producer_(std::move(producer)), producerWrite_(producerWrite), consumers_(std::move(consumers)),
+              consumerRecordingId_(consumerRecordingId)
         {
         }
 
@@ -312,29 +360,38 @@ namespace rachis::detail
             return unique;
         }
 
-        static void releaseConsumers(
-            std::span<const std::shared_ptr<AccelerationStructureExecutionTracker>> consumers) noexcept
+        static void releaseConsumers(std::span<const std::shared_ptr<AccelerationStructureExecutionTracker>> consumers,
+                                     std::uint64_t recordingId) noexcept
         {
             for (const auto& consumer : consumers)
             {
                 if (consumer != nullptr)
                 {
-                    consumer->releaseConsumer();
+                    consumer->releaseConsumer(recordingId);
                 }
             }
         }
 
         [[nodiscard]] static bool tryAcquireAllConsumers(
             std::span<const std::shared_ptr<AccelerationStructureExecutionTracker>> consumers,
-            std::uint64_t recordingId) noexcept
+            std::uint64_t recordingId)
         {
-            for (std::size_t index = 0; index < consumers.size(); ++index)
+            std::size_t acquired = 0;
+            try
             {
-                if (!consumers[index]->tryAcquireConsumer(recordingId))
+                for (; acquired < consumers.size(); ++acquired)
                 {
-                    releaseConsumers(consumers.first(index));
-                    return false;
+                    if (!consumers[acquired]->tryAcquireConsumer(recordingId))
+                    {
+                        releaseConsumers(consumers.first(acquired), recordingId);
+                        return false;
+                    }
                 }
+            }
+            catch (...)
+            {
+                releaseConsumers(consumers.first(acquired), recordingId);
+                throw;
             }
             return true;
         }
@@ -342,6 +399,7 @@ namespace rachis::detail
         std::shared_ptr<AccelerationStructureExecutionTracker> producer_;
         AccelerationStructureWrite producerWrite_ = AccelerationStructureWrite::publishVersion;
         std::vector<std::shared_ptr<AccelerationStructureExecutionTracker>> consumers_;
+        std::uint64_t consumerRecordingId_ = 0;
     };
 
 } // namespace rachis::detail
