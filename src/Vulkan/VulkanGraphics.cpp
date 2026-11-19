@@ -442,10 +442,10 @@ namespace rachis::vulkan
             return retainVulkanAccelerationStructureConsumers(commandBuffer, uses);
         }
 
-        [[nodiscard]] Status retainBindingSetUses(VulkanCommandBuffer& commandBuffer,
-                                                  std::span<VulkanNativeBindingSet> resolvedSets)
+        [[nodiscard]] Result<VulkanCommandUses*> reserveBindingSetUses(VulkanCommandBuffer& commandBuffer,
+                                                                       std::size_t setCount)
         {
-            auto uses = commandBuffer.reserveCommandUses(resolvedSets.size());
+            auto uses = commandBuffer.reserveCommandUses(setCount);
             if (!uses)
             {
                 return std::unexpected(Error{
@@ -454,11 +454,15 @@ namespace rachis::vulkan
                     "Binding-set dependencies could not be retained.",
                 });
             }
+            return *uses;
+        }
+
+        void retainBindingSetUses(VulkanCommandUses& uses, std::span<VulkanNativeBindingSet> resolvedSets) noexcept
+        {
             for (auto& set : resolvedSets)
             {
-                (*uses)->add(std::move(set.commandUse));
+                uses.add(std::move(set.commandUse));
             }
-            return {};
         }
 
         [[nodiscard]] Status bindDescriptorSetBatch(VulkanBindingManager* bindings,
@@ -518,14 +522,16 @@ namespace rachis::vulkan
             {
                 return validOffsets;
             }
+            auto uses = reserveBindingSetUses(commandBuffer, scratch.resolvedSets.size());
+            if (!uses)
+            {
+                return std::unexpected(std::move(uses.error()));
+            }
             if (auto consumers = retainAccelerationStructureConsumers(commandBuffer, scratch.resolvedSets); !consumers)
             {
                 return consumers;
             }
-            if (auto usesRetained = retainBindingSetUses(commandBuffer, scratch.resolvedSets); !usesRetained)
-            {
-                return usesRetained;
-            }
+            retainBindingSetUses(**uses, scratch.resolvedSets);
 
             table->vkCmdBindDescriptorSets(commandBuffer.native(),
                                            bindPoint,

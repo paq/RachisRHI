@@ -404,6 +404,9 @@ namespace rachis::vulkan
     {
         try
         {
+#ifdef RACHIS_TESTING
+            throwInjectedVulkanBadAlloc(VulkanBadAllocPoint::commandUses);
+#endif
             auto uses = commandUses_.lock();
             if (uses == nullptr)
             {

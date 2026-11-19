@@ -1871,4 +1871,38 @@ TEST_CASE("Vulkan acceleration-structure creation that fails to allocate its rec
     }
     checkNoDiagnostics(*device);
 }
+
+TEST_CASE("Vulkan descriptor binds that fail to retain their uses leave no TLAS lease behind",
+          "[size:medium][rhi][vulkan][ray-query][acceleration-structure]")
+{
+    auto device = createRayQueryDevice();
+    if (!device)
+    {
+        return;
+    }
+    {
+        TopLevelLeaseFixture fixture(*device);
+        fixture.build();
+        fixture.createBindingSet();
+
+        auto failed = rachis::test::acquireCommandBuffer(*device, rachis::QueueType::compute);
+        REQUIRE(failed.has_value());
+        fixture.bindPipeline(*failed);
+        rachis::vulkan::injectVulkanBadAlloc(rachis::vulkan::VulkanBadAllocPoint::commandUses, true);
+        const auto bound = fixture.bindSet(*failed);
+        rachis::vulkan::injectVulkanBadAlloc(rachis::vulkan::VulkanBadAllocPoint::commandUses, false);
+        REQUIRE_FALSE(bound.has_value());
+        CHECK(bound.error().code == rachis::ErrorCode::outOfMemory);
+
+        auto update = rachis::test::acquireCommandBuffer(*device, rachis::QueueType::compute);
+        REQUIRE(update.has_value());
+        const auto updated = fixture.updateInPlace(*update);
+        if (!updated)
+        {
+            UNSCOPED_INFO(updated.error().message);
+        }
+        CHECK(updated.has_value());
+    }
+    checkNoDiagnostics(*device);
+}
 #endif
