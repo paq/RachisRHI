@@ -139,6 +139,8 @@ namespace rachis::vulkan
             std::vector<std::shared_ptr<void>> owners;
             std::vector<std::shared_ptr<detail::AccelerationStructureExecutionTracker>> consumers;
             detail::AccelerationStructureWrite write = detail::AccelerationStructureWrite::publishVersion;
+            AccelerationStructureHandle source{};
+            std::shared_ptr<VulkanAccelerationStructureVersion> sourceVersion;
         };
 
         [[nodiscard]] bool supported() const noexcept;

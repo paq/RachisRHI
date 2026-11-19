@@ -1369,8 +1369,41 @@ namespace rachis::vulkan
                 "The acceleration-structure handle is invalid or stale.",
             });
         }
-        const std::scoped_lock versionLock((*record)->version->mutex);
+        std::shared_ptr<AccelerationStructureRecord> sourceRecord;
+        if (build.sourceVersion != nullptr && build.source != destination)
+        {
+            auto* found = structures_.find(build.source);
+            if (found == nullptr || *found == nullptr)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidArgument,
+                    0,
+                    "The TLAS update source handle is invalid or stale.",
+                });
+            }
+            sourceRecord = *found;
+        }
+        std::unique_lock versionLock((*record)->version->mutex, std::defer_lock);
+        std::unique_lock<std::mutex> sourceVersionLock;
+        if (sourceRecord != nullptr)
+        {
+            sourceVersionLock = std::unique_lock(sourceRecord->version->mutex, std::defer_lock);
+            std::lock(versionLock, sourceVersionLock);
+        }
+        else
+        {
+            versionLock.lock();
+        }
         auto& slot = *(*record)->version;
+        if (build.sourceVersion != nullptr &&
+            (sourceRecord != nullptr ? sourceRecord->version->current : slot.current) != build.sourceVersion)
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidState,
+                0,
+                "The TLAS update source was rebuilt or rolled back while the update was being recorded.",
+            });
+        }
         if (!inPlace && slot.current != nullptr)
         {
             return std::unexpected(Error{ErrorCode::invalidState, 0, std::string(immutableDestinationMessage)});
@@ -1767,6 +1800,12 @@ namespace rachis::vulkan
         }
         auto consumers = std::move(instances.dependencyTrackers);
         instances.owners.push_back(target.scratch.keepAlive);
+#ifdef RACHIS_TESTING
+        if (auto hook = std::exchange(test::beforeTopLevelUpdatePublication(), {}); hook)
+        {
+            hook();
+        }
+#endif
         if (!target.request.inPlace)
         {
             consumers.push_back(target.source.use.executionTracker);
@@ -1782,6 +1821,8 @@ namespace rachis::vulkan
                                  .consumers = std::move(consumers),
                                  .write = target.request.inPlace ? detail::AccelerationStructureWrite::updateInPlace
                                                                  : detail::AccelerationStructureWrite::publishVersion,
+                                 .source = target.request.source,
+                                 .sourceVersion = target.source.version,
                              });
             !begun)
         {

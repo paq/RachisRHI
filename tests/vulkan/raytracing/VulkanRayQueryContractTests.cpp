@@ -1788,6 +1788,53 @@ TEST_CASE("Vulkan BLAS storage stays leased while a built TLAS still references 
     checkNoDiagnostics(*device);
 }
 
+TEST_CASE("Vulkan TLAS updates fail when their source is rebuilt while the update records",
+          "[size:medium][rhi][vulkan][ray-query][acceleration-structure]")
+{
+    auto device = createRayQueryDevice();
+    if (!device)
+    {
+        return;
+    }
+    {
+        TopLevelLeaseFixture fixture(*device);
+        auto original = rachis::test::acquireCommandBuffer(*device, rachis::QueueType::compute);
+        REQUIRE(original.has_value());
+        fixture.recordBuilds(*original);
+
+        std::optional<rachis::CommandBuffer> rebuild;
+        bool rebuilt = false;
+        rachis::vulkan::test::beforeTopLevelUpdatePublication() = [&] {
+            *original = rachis::CommandBuffer{};
+            auto command = rachis::test::acquireCommandBuffer(*device, rachis::QueueType::compute);
+            if (!command)
+            {
+                return;
+            }
+            rebuild = std::move(*command);
+            fixture.recordBuilds(*rebuild, rachis::AccelerationStructureBuildFlag::preferFastTrace);
+            rebuilt = true;
+        };
+
+        auto update = rachis::test::acquireCommandBuffer(*device, rachis::QueueType::compute);
+        REQUIRE(update.has_value());
+        const auto instances = fixture.instances();
+        const auto updated = device->updateTopLevelAccelerationStructure(*update,
+                                                                         {
+                                                                             .source = fixture.topLevel(0),
+                                                                             .destination = fixture.topLevel(1),
+                                                                             .instances = instances,
+                                                                             .flags = topLevelFlags,
+                                                                             .scratch = fixture.scratch(),
+                                                                         });
+        rachis::vulkan::test::beforeTopLevelUpdatePublication() = {};
+        REQUIRE(rebuilt);
+        REQUIRE_FALSE(updated.has_value());
+        CHECK(updated.error().code == rachis::ErrorCode::invalidState);
+    }
+    checkNoDiagnostics(*device);
+}
+
 TEST_CASE("Vulkan acceleration-structure creation that fails to allocate its record leaks no native object",
           "[size:medium][rhi][vulkan][ray-query][acceleration-structure]")
 {
