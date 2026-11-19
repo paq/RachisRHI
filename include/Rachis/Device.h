@@ -295,7 +295,6 @@ namespace rachis
 
         bool shaderInt64AtomicGroupShared = false;
         bool shaderInt64AtomicTypedResource = false;
-        bool shaderInt64AtomicStorageBuffer = false;
 
         bool subgroupOperations = false;
         SubgroupCapabilities subgroup = {};
@@ -341,8 +340,6 @@ namespace rachis
         bool multiDrawIndirect = false;
         bool drawIndirectCount = false;
 
-        bool shaderDrawIndex = false;
-
         bool multiViewport = false;
         bool debugMarkers = false;
         bool pipelineCaches = false;
@@ -370,7 +367,6 @@ namespace rachis
         std::uint32_t shadingRateImageTileSize = 0;
         bool partiallyBoundBindingArrays = false;
         bool variableDescriptorCountBindingArrays = false;
-        bool updateAfterBindBindingArrays = false;
         bool wireframeRasterization = false;
 
         bool dynamicDepthBias = false;
@@ -402,6 +398,10 @@ namespace rachis
         bool manualResidency = false;
         VertexInputCapabilities vertexInput = {};
         DeviceLimits limits = {};
+
+        bool shaderInt64AtomicStorageBuffer = false;
+        bool shaderDrawIndex = false;
+        bool updateAfterBindBindingArrays = false;
     };
 
     namespace detail

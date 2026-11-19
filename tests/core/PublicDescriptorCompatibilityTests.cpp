@@ -86,6 +86,113 @@ namespace
     static_assert(subgroup.maxSize == 64);
     static_assert(subgroup.requiredSizeStages == ShaderStage::none);
 
+    constexpr rachis::DeviceCapabilities capabilitiesToSubgroups{
+        {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, true};
+    static_assert(capabilitiesToSubgroups.subgroupOperations);
+    static_assert(!capabilitiesToSubgroups.shaderInt64AtomicTypedResource);
+    static_assert(!capabilitiesToSubgroups.shaderInt64AtomicStorageBuffer);
+
+    constexpr rachis::DeviceCapabilities capabilitiesToViewports{
+        {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},  {},
+        {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, true};
+    static_assert(capabilitiesToViewports.multiViewport);
+    static_assert(!capabilitiesToViewports.drawIndirectCount);
+    static_assert(!capabilitiesToViewports.shaderDrawIndex);
+
+    constexpr rachis::DeviceCapabilities capabilitiesToWireframe{
+        {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},  {}, {},
+        {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},  {}, {},
+        {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, true};
+    static_assert(capabilitiesToWireframe.wireframeRasterization);
+    static_assert(!capabilitiesToWireframe.variableDescriptorCountBindingArrays);
+    static_assert(!capabilitiesToWireframe.updateAfterBindBindingArrays);
+
+    constexpr rachis::DeviceCapabilities capabilitiesToLimits{{},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              {},
+                                                              rachis::DeviceLimits{.maxViewports = 7}};
+    static_assert(capabilitiesToLimits.limits.maxViewports == 7);
+    static_assert(capabilitiesToLimits.vertexInput.maxBufferStride == 0);
+
 } // namespace
 
 TEST_CASE("Public descriptors keep the positional member order of the last release", "[size:small][rhi][core][abi]")
