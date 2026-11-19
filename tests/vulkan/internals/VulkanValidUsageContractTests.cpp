@@ -3116,7 +3116,7 @@ TEST_CASE("Vulkan push constants name the enabled stages of composite layout ran
     gMock = nullptr;
 }
 
-TEST_CASE("Vulkan graphics push constants to a range shared with compute update the compute shadow",
+TEST_CASE("Vulkan graphics and ray-tracing push constants to a range shared with compute update the compute shadow",
           "[size:small][rhi][vulkan][vuid][graphics-mock]")
 {
     using rachis::ShaderStage;
@@ -3172,6 +3172,26 @@ TEST_CASE("Vulkan graphics push constants to a range shared with compute update 
     CHECK(std::ranges::all_of(std::span(shadow).first(16), [](std::byte value) { return value == std::byte{0x22}; }));
     CHECK(std::ranges::all_of(std::span(shadow).subspan(16, 16), [](std::byte value) { return value == std::byte{}; }));
 
+    const auto full = everyOptionalShaderStage();
+    rachis::vulkan::VulkanGraphicsEncoder fullGraphics;
+    fullGraphics.initialize(device, &table, &full, &resources, nullptr, nullptr);
+    auto rayPipeline = std::make_shared<rachis::vulkan::VulkanNativePipeline>();
+    rayPipeline->pipeline = fakeHandle<VkPipeline>(0x5033);
+    rayPipeline->layout = fakeHandle<VkPipelineLayout>(0x5034);
+    rayPipeline->pushConstantRanges = {
+        {.visibility = ShaderStage::rayGeneration | ShaderStage::compute, .offset = 0, .size = 16},
+    };
+    rayPipeline->nativePushConstantRanges =
+        rachis::vulkan::validation_detail::mergePushConstantRangesPerStage(rayPipeline->pushConstantRanges);
+    vkCb.computeState().pipelineOwner = rayPipeline;
+    vkCb.rayTracingState().pipelineOwner = rayPipeline;
+    std::array<std::byte, 16> rayData{};
+    rayData.fill(std::byte{0x33});
+    REQUIRE(fullGraphics.setComputePushConstants(vkCb, 0, computeData).has_value());
+    REQUIRE(fullGraphics.setRayTracingPushConstants(vkCb, 0, rayData).has_value());
+    CHECK(std::ranges::all_of(std::span(shadow).first(16), [](std::byte value) { return value == std::byte{0x33}; }));
+
+    vkCb.rayTracingState().pipelineOwner.reset();
     vkCb.graphicsState().renderingOwner.reset();
     vkCb.graphicsState().pipelineOwner.reset();
     vkCb.computeState().pipelineOwner.reset();

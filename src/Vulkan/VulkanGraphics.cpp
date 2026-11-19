@@ -1086,6 +1086,18 @@ namespace rachis::vulkan
             return {};
         }
 
+        void mirrorComputePushConstants(VulkanCommandBuffer& commandBuffer,
+                                        const validation_detail::PushConstantSubrange& subrange,
+                                        std::uint32_t offset,
+                                        std::span<const std::byte> data) noexcept
+        {
+            if (hasAny(subrange.stages, ShaderStage::compute))
+            {
+                std::ranges::copy(data.subspan(subrange.offset - offset, subrange.size),
+                                  commandBuffer.computePushConstants().begin() + subrange.offset);
+            }
+        }
+
     } // namespace
 
     void VulkanGraphicsEncoder::initialize(VkDevice device,
@@ -1498,11 +1510,7 @@ namespace rachis::vulkan
                                        subrange.offset,
                                        subrange.size,
                                        data.data() + (subrange.offset - offset));
-            if (hasAny(subrange.stages, ShaderStage::compute))
-            {
-                std::ranges::copy(data.subspan(subrange.offset - offset, subrange.size),
-                                  commandBuffer.computePushConstants().begin() + subrange.offset);
-            }
+            mirrorComputePushConstants(commandBuffer, subrange, offset, data);
         }
         return {};
     }
@@ -3229,6 +3237,7 @@ namespace rachis::vulkan
                                        subrange.offset,
                                        subrange.size,
                                        data.data() + (subrange.offset - offset));
+            mirrorComputePushConstants(commandBuffer, subrange, offset, data);
         }
         return {};
     }
