@@ -16,12 +16,15 @@
 #endif
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <future>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -542,8 +545,196 @@ TEST_CASE("Vulkan binding set updates republish a large array in full on every u
     checkCleanDiagnostics(device);
 }
 
-TEST_CASE("Vulkan update-after-bind entries of a large array change in place while work that does not read them is in "
-          "flight",
+#if RACHIS_ENABLE_D3D12
+namespace
+{
+
+    struct GateTimeline final
+    {
+        rachis::Device device;
+        rachis::SharedTimelinePoint shared;
+        std::uint64_t firstValue = 0;
+        std::uint64_t signaledValue = 0;
+
+        [[nodiscard]] rachis::SharedTimelinePointView at(std::uint64_t value) const noexcept
+        {
+            return rachis::SharedTimelinePointView{.handle = shared.handle.view(), .value = value};
+        }
+
+        void signal(std::uint64_t value)
+        {
+            while (signaledValue < value)
+            {
+                auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::graphics);
+                REQUIRE(command);
+                auto submitted = device.submit(std::move(*command));
+                REQUIRE(submitted);
+                signaledValue = submitted->value();
+            }
+        }
+    };
+
+    [[nodiscard]] std::optional<GateTimeline> createGateTimeline(const rachis::Device& consumer)
+    {
+        if (!rachis::test::requireCapabilities(consumer).sharedTimelineHandles)
+        {
+            return std::nullopt;
+        }
+        auto created = rachis::createDevice(rachis::DeviceDesc{
+            .backend = rachis::Backend::d3d12,
+            .adapterPreference = rachis::AdapterPreference::highPerformance,
+            .validation = rachis::ValidationLevel::standard,
+            .requireValidation = false,
+        });
+        if (!created)
+        {
+            return std::nullopt;
+        }
+        const auto consumerAdapter = rachis::test::requireAdapterInfo(consumer);
+        const auto producerAdapter = rachis::test::requireAdapterInfo(*created);
+        if (producerAdapter.vendorId != consumerAdapter.vendorId ||
+            producerAdapter.deviceId != consumerAdapter.deviceId)
+        {
+            return std::nullopt;
+        }
+        GateTimeline gate{.device = std::move(*created)};
+        auto command = rachis::test::acquireCommandBuffer(gate.device, rachis::QueueType::graphics);
+        REQUIRE(command);
+        auto first = gate.device.submit(std::move(*command));
+        REQUIRE(first);
+        REQUIRE(gate.device.wait(*first).has_value());
+        auto shared = gate.device.exportTimelinePoint(*first);
+        REQUIRE(shared);
+        gate.shared = std::move(*shared);
+        gate.firstValue = first->value();
+        gate.signaledValue = first->value();
+        return gate;
+    }
+
+    template<typename Call>
+    [[nodiscard]] auto callReleasingGate(Call call, GateTimeline& gate, std::uint64_t release)
+    {
+        auto pending = std::async(std::launch::async, std::move(call));
+        const bool returnedPromptly = pending.wait_for(std::chrono::seconds{2}) == std::future_status::ready;
+        if (!returnedPromptly)
+        {
+            gate.signal(release);
+        }
+        CHECK(returnedPromptly);
+        return pending.get();
+    }
+
+    [[nodiscard]] bool pending(const rachis::Device& device, rachis::TimelinePoint point)
+    {
+        const auto status = device.queryTimelinePoint(point);
+        REQUIRE(status.has_value());
+        return *status == rachis::TimelinePointStatus::pending;
+    }
+
+} // namespace
+
+TEST_CASE("Vulkan update-after-bind entries of a large array change in place while a gated submission reads other "
+          "elements of the same set",
+          "[size:medium][requires:HardwareVulkan][requires:HardwareD3D12][rhi][vulkan][binding][compute]")
+{
+    auto created = rachis::createDevice(rachis::test::vulkanDeviceDesc());
+    if (rachis::test::skipWithoutCreatedDevice(created))
+    {
+        return;
+    }
+    auto device = std::move(*created);
+    constexpr auto arrayFlags = rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind;
+    if (skipWithoutUpdateAfterBind(device) || skipWithoutLargeArray(device, arrayFlags))
+    {
+        return;
+    }
+    auto gate = createGateTimeline(device);
+    if (!gate.has_value())
+    {
+        SKIP("A Direct3D 12 device on the same adapter must export a timeline that this Vulkan device imports.");
+    }
+    LargeArrayFixture fixture(device, arrayFlags);
+    const auto first = gate->firstValue;
+
+    auto firstGate = device.enqueueSharedTimelineWait(rachis::QueueType::compute, gate->at(first + 1));
+    REQUIRE(firstGate.has_value());
+    const std::array firstSelections{Selection{.element = 0, .slot = 0}};
+    auto firstSubmitted = device.submit(fixture.record(firstSelections));
+    REQUIRE(firstSubmitted.has_value());
+    CHECK(pending(device, *firstSubmitted));
+
+    const auto beforeInPlace = device.bindingUpdateStatistics();
+    REQUIRE(callReleasingGate(
+                [&] { return update(device, fixture.set(), 1, 1, slice(fixture.values(), 2)); }, *gate, first + 2)
+                .has_value());
+    const auto inPlace = resourceDelta(beforeInPlace, device.bindingUpdateStatistics());
+    CHECK(inPlace.prepared == 1);
+    CHECK(inPlace.tablePublishes == 1);
+    CHECK(inPlace.published == 1);
+    CHECK(pending(device, *firstSubmitted));
+
+    const std::array secondSelections{Selection{.element = 1, .slot = 1}};
+    auto secondSubmitted = device.submit(fixture.record(secondSelections));
+    REQUIRE(secondSubmitted.has_value());
+
+    auto secondGate = device.enqueueSharedTimelineWait(rachis::QueueType::compute, gate->at(first + 2));
+    REQUIRE(secondGate.has_value());
+    const std::array thirdSelections{Selection{.element = 1, .slot = 2}};
+    auto thirdSubmitted = device.submit(fixture.record(thirdSelections));
+    REQUIRE(thirdSubmitted.has_value());
+
+    const auto beforeVersioned = device.bindingUpdateStatistics();
+    REQUIRE(callReleasingGate(
+                [&] {
+                    return update(device,
+                                  fixture.set(),
+                                  0,
+                                  0,
+                                  rachis::BufferBinding{
+                                      fixture.results(), resultRangeSize, resultRangeSize, sizeof(std::uint32_t)});
+                },
+                *gate,
+                first + 2)
+                .has_value());
+    const auto versioned = resourceDelta(beforeVersioned, device.bindingUpdateStatistics());
+    CHECK(versioned.prepared == 1);
+    CHECK(versioned.tablePublishes == 1);
+    CHECK(versioned.published == inputCount + 1);
+
+    const auto beforeNewVersion = device.bindingUpdateStatistics();
+    REQUIRE(update(device, fixture.set(), 1, 2, slice(fixture.values(), 3)).has_value());
+    const auto newVersion = resourceDelta(beforeNewVersion, device.bindingUpdateStatistics());
+    CHECK(newVersion.prepared == 1);
+    CHECK(newVersion.tablePublishes == 1);
+    CHECK(newVersion.published == 1);
+    CHECK(pending(device, *firstSubmitted));
+    CHECK(pending(device, *thirdSubmitted));
+
+    const std::array fourthSelections{Selection{.element = 2, .slot = 0}, Selection{.element = 1, .slot = 1}};
+    auto fourth = fixture.record(fourthSelections);
+    fixture.recordReadback(fourth);
+    auto fourthSubmitted = device.submit(std::move(fourth));
+    REQUIRE(fourthSubmitted.has_value());
+
+    gate->signal(first + 2);
+    for (const auto point : {*firstSubmitted, *secondSubmitted, *thirdSubmitted, *fourthSubmitted})
+    {
+        REQUIRE(device.wait(point).has_value());
+    }
+
+    CHECK(fixture.result(0) == sliceValues[0]);
+    CHECK(fixture.result(sizeof(std::uint32_t)) == sliceValues[2]);
+    CHECK(fixture.result(2 * sizeof(std::uint32_t)) == sliceValues[2]);
+    CHECK(fixture.result(resultRangeSize) == sliceValues[3]);
+    CHECK(fixture.result(resultRangeSize + sizeof(std::uint32_t)) == sliceValues[2]);
+
+    checkCleanDiagnostics(device);
+    CHECK(gate->device.diagnosticCounts().errors == 0);
+}
+#endif
+
+TEST_CASE("Vulkan update-after-bind entries of a large array change in place before submission and in a new version "
+          "while older versions are in flight",
           "[size:medium][requires:HardwareVulkan][rhi][vulkan][binding][compute]")
 {
     auto created = rachis::createDevice(rachis::test::vulkanDeviceDesc());
