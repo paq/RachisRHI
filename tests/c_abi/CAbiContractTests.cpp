@@ -2717,9 +2717,17 @@ TEST_CASE("C ABI reports indirect, mesh, binding-array, 64-bit atomic and subgro
     }
     if (RACHIS_SMOKE_BACKEND == RACHIS_BACKEND_METAL)
     {
+        CHECK(capabilities.multi_dispatch_indirect == 1);
+        CHECK(capabilities.dispatch_indirect_count == 1);
+        CHECK(capabilities.multi_draw_indirect == 1);
+        CHECK(capabilities.draw_indirect_count == 1);
+        CHECK(capabilities.shader_draw_index == 1);
+        CHECK(capabilities.update_after_bind_binding_arrays == 1);
         CHECK(capabilities.conditional_execution == 0);
         CHECK(capabilities.shader_int64_atomic_storage_buffer == 0);
-        CHECK(capabilities.subgroup_required_size_stages == 0);
+        CHECK(capabilities.subgroup_required_size_stages == RACHIS_SHADER_COMPUTE);
+        CHECK(capabilities.subgroup_min_size == 32);
+        CHECK(capabilities.subgroup_max_size == 32);
     }
 }
 

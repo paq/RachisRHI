@@ -55,13 +55,13 @@ The table below shows which backends *can* report each feature (subject to adapt
 | `sparseBuffers`, `sparseTextures` | Yes | No | No |
 | `samplerFeedback` | Yes | No | No |
 | `conditionalExecution` | Yes | Yes, with `VK_EXT_conditional_rendering` | No |
-| `multiDispatchIndirect` | Yes | Yes | No |
-| `dispatchIndirectCount` | Yes | Yes, with the `bufferDeviceAddress` and `shaderInt64` features | No |
+| `multiDispatchIndirect` | Yes | Yes | Yes |
+| `dispatchIndirectCount` | Yes | Yes, with the `bufferDeviceAddress` and `shaderInt64` features | Yes |
 | `updateAfterBindBindingArrays` | Yes | Yes | Yes, variable-count arrays only |
 | `shaderInt64AtomicGroupShared`, `shaderInt64AtomicTypedResource`, `shaderInt64AtomicStorageBuffer` | Yes | Yes | No |
 | `subgroup.requiredSizeStages` (`ShaderStage::compute`) | Yes | Yes | Yes, size 32 only |
 
-On Vulkan, `multiDispatchIndirect` and `dispatchIndirectCount` are emulated; see [Indirect dispatch batches on Vulkan](#indirect-dispatch-batches-on-vulkan).
+Vulkan emulates `multiDispatchIndirect` and `dispatchIndirectCount` (see [Indirect dispatch batches on Vulkan](#indirect-dispatch-batches-on-vulkan)), and Metal emulates every multi-record and counted indirect call (see [Indirect calls on Metal](#indirect-calls-on-metal)).
 
 ### Required subgroup sizes
 

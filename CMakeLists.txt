@@ -2125,9 +2125,17 @@ if(rachis_build_tests)
             OUTPUT "${rachis_c_abi_shader_dir}/CAbiIndirectDispatch.metallib"
             COMMENT "Cooking Metal PNMS CAbiIndirectDispatch"
         )
+        rachis_cook_slang_metallib(
+            SOURCE "${rachis_c_abi_subgroup_source}"
+            ENTRY main
+            STAGE compute
+            OUTPUT "${rachis_c_abi_shader_dir}/CAbiSubgroupSize.metallib"
+            COMMENT "Cooking Metal PNMS CAbiSubgroupSize"
+        )
         list(APPEND rachis_c_abi_shader_outputs
             "${rachis_c_abi_shader_dir}/CAbiBindingArray.pixel.pnms"
-            "${rachis_c_abi_shader_dir}/CAbiIndirectDispatch.pnms")
+            "${rachis_c_abi_shader_dir}/CAbiIndirectDispatch.pnms"
+            "${rachis_c_abi_shader_dir}/CAbiSubgroupSize.pnms")
     endif()
     if(rachis_c_abi_shader_outputs)
         add_custom_target(RachisCAbiShaders DEPENDS ${rachis_c_abi_shader_outputs})
@@ -2193,7 +2201,8 @@ if(rachis_build_tests)
                 RACHIS_CABI_DRAW_INDEX_PIXEL_PATH="${rachis_c_abi_shader_dir}/CAbiDrawIndex.pixel.${graphics_extension}"
                 RACHIS_CABI_BINDING_ARRAY_PIXEL_PATH="${rachis_c_abi_shader_dir}/CAbiBindingArray.pixel.${graphics_extension}"
                 RACHIS_CABI_INDIRECT_DISPATCH_PATH="${rachis_c_abi_shader_dir}/CAbiIndirectDispatch.${graphics_extension}")
-            # Metal reports no required subgroup sizes, so only Direct3D 12 and Vulkan cook the subgroup-size shader.
+            # Direct3D 12 needs one subgroup-size shader per size, which declares [WaveSize(N)]; Vulkan and Metal
+            # take the size from the pipeline.
             if(backend STREQUAL "RACHIS_BACKEND_D3D12")
                 target_compile_definitions(${target} PRIVATE
                     RACHIS_CABI_SUBGROUP_SHADER_PREFIX="${rachis_c_abi_shader_dir}/CAbiSubgroupSize"
@@ -2203,6 +2212,11 @@ if(rachis_build_tests)
                 target_compile_definitions(${target} PRIVATE
                     RACHIS_CABI_SUBGROUP_SHADER_PREFIX="${rachis_c_abi_shader_dir}/CAbiSubgroupSize"
                     RACHIS_CABI_SUBGROUP_SHADER_EXTENSION=".spv"
+                    RACHIS_CABI_SUBGROUP_SIZE_IN_SHADER=0)
+            elseif(backend STREQUAL "RACHIS_BACKEND_METAL")
+                target_compile_definitions(${target} PRIVATE
+                    RACHIS_CABI_SUBGROUP_SHADER_PREFIX="${rachis_c_abi_shader_dir}/CAbiSubgroupSize"
+                    RACHIS_CABI_SUBGROUP_SHADER_EXTENSION=".pnms"
                     RACHIS_CABI_SUBGROUP_SIZE_IN_SHADER=0)
             endif()
         endif()
