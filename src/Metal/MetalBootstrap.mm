@@ -253,7 +253,7 @@ namespace rachis::metal
             capabilities.shaderInt16 = true;
             capabilities.shaderInt64 = true;
             capabilities.subgroupOperations = true;
-            capabilities.subgroup = {.minSize = 32, .maxSize = 32};
+            capabilities.subgroup = {.minSize = 32, .maxSize = 32, .requiredSizeStages = rachis::ShaderStage::compute};
             capabilities.partiallyBoundBindingArrays = true;
             capabilities.variableDescriptorCountBindingArrays = true;
             capabilities.enhancedBarriers = true;

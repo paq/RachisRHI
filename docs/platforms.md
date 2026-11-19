@@ -59,7 +59,7 @@ The table below shows which backends *can* report each feature (subject to adapt
 | `dispatchIndirectCount` | Yes | Yes, with the `bufferDeviceAddress` and `shaderInt64` features | No |
 | `updateAfterBindBindingArrays` | Yes | Yes | Yes, variable-count arrays only |
 | `shaderInt64AtomicGroupShared`, `shaderInt64AtomicTypedResource`, `shaderInt64AtomicStorageBuffer` | Yes | Yes | No |
-| `subgroup.requiredSizeStages` (`ShaderStage::compute`) | Yes | Yes | No |
+| `subgroup.requiredSizeStages` (`ShaderStage::compute`) | Yes | Yes | Yes, size 32 only |
 
 On Vulkan, `multiDispatchIndirect` and `dispatchIndirectCount` are emulated; see [Indirect dispatch batches on Vulkan](#indirect-dispatch-batches-on-vulkan).
 
@@ -71,8 +71,9 @@ On Vulkan, `multiDispatchIndirect` and `dispatchIndirectCount` are emulated; see
 | --- | --- | --- |
 | Direct3D 12 | Wave operations and shader model 6.6 | `WaveLaneCountMin` to `WaveLaneCountMax` |
 | Vulkan | `subgroupSizeControl`, `computeFullSubgroups`, and compute in `requiredSubgroupSizeStages` | `minSubgroupSize` to `maxSubgroupSize` |
+| Metal | Always | 32, the SIMD-group width of Apple GPUs |
 
-On Vulkan, a pipeline with a required size also fails with `ErrorCode::unsupported` when its workgroup holds more invocations than `maxComputeWorkgroupSubgroups` subgroups of that size.
+On Vulkan, a pipeline with a required size also fails with `ErrorCode::unsupported` when its workgroup holds more invocations than `maxComputeWorkgroupSubgroups` subgroups of that size. On Metal it fails with `ErrorCode::unsupported` if Metal compiles the pipeline with a SIMD-group width (`threadExecutionWidth`) other than 32.
 
 ### 64-bit atomics
 
@@ -83,6 +84,8 @@ Each 64-bit atomic capability needs `shaderInt64`, and a shader built for shader
 | `shaderInt64AtomicStorageBuffer` | Shader model 6.6 | `shaderBufferInt64Atomics` |
 | `shaderInt64AtomicGroupShared` | Shader model 6.6 and `AtomicInt64OnGroupSharedSupported` | `shaderSharedInt64Atomics` |
 | `shaderInt64AtomicTypedResource` | Shader model 6.6 and `AtomicInt64OnTypedResourceSupported` | `shaderImageInt64Atomics` and storage-image atomics on `R64_UINT` |
+
+Metal reports none of them. The Metal Shading Language has 64-bit atomics on device memory only as `atomic_max_explicit` and `atomic_min_explicit` on `atomic_ulong`, which return no value, and no 64-bit add, exchange, or bitwise atomics. `slangc` compiles HLSL's `InterlockedMax` and `InterlockedMin` on a `uint64_t` to the forms that return the previous value, which Metal rejects.
 
 ### Acceleration-structure operations
 

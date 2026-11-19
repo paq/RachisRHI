@@ -2925,6 +2925,7 @@ if(rachis_build_tests)
             tests/metal/resources/MetalImageUtilityContractTests.cpp
             tests/metal/resources/MetalTextureContractTests.cpp
             tests/metal/shaders/MetalShaderArithmeticContractTests.cpp
+            tests/metal/shaders/MetalShaderCapabilityContractTests.cpp
             tests/metal/shaders/MetalShaderCookingContractTests.cpp
             tests/metal/shaders/MetalShaderModuleContractTests.cpp
             tests/portable/PortableBackendContractTests.cpp
@@ -3112,8 +3113,8 @@ if(rachis_build_tests)
             LANGUAGE SLANG
             ENTRY drawIdPixel
             STAGE pixel)
-        # 64-bit atomics need shader model 6.6 on every backend. Metal reports no storage-buffer 64-bit atomics
-        # yet, so Metal builds do not cook this shader.
+        # 64-bit atomics need shader model 6.6. Metal has only 64-bit atomic minimum and maximum without a
+        # returned value, which slangc does not emit, so Metal builds do not cook this shader.
         if(NOT RACHIS_ENABLE_METAL)
             rachis_add_shader(RachisRHITests
                 NAME ShaderInt64AtomicStorageBuffer
@@ -3121,24 +3122,24 @@ if(rachis_build_tests)
                 ENTRY main
                 STAGE compute
                 SHADER_MODEL 6_6)
-            # SubgroupSize<N> declares [WaveSize(N)] for Direct3D 12, where the shader carries the subgroup size;
-            # SubgroupSizeAny declares none. Metal does not report required subgroup sizes yet.
-            foreach(size IN ITEMS 4 8 16 32 64 128)
-                rachis_add_shader(RachisRHITests
-                    NAME SubgroupSize${size}
-                    SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/SubgroupSize.hlsl"
-                    ENTRY main
-                    STAGE compute
-                    SHADER_MODEL 6_6
-                    DEFINES RACHIS_SUBGROUP_SIZE=${size})
-            endforeach()
+        endif()
+        # SubgroupSize<N> declares [WaveSize(N)] for Direct3D 12, where the shader carries the subgroup size;
+        # SubgroupSizeAny declares none.
+        foreach(size IN ITEMS 4 8 16 32 64 128)
             rachis_add_shader(RachisRHITests
-                NAME SubgroupSizeAny
+                NAME SubgroupSize${size}
                 SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/SubgroupSize.hlsl"
                 ENTRY main
                 STAGE compute
-                SHADER_MODEL 6_6)
-        endif()
+                SHADER_MODEL 6_6
+                DEFINES RACHIS_SUBGROUP_SIZE=${size})
+        endforeach()
+        rachis_add_shader(RachisRHITests
+            NAME SubgroupSizeAny
+            SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/SubgroupSize.hlsl"
+            ENTRY main
+            STAGE compute
+            SHADER_MODEL 6_6)
         if(TARGET RachisCAbiShaders)
             add_dependencies(RachisRHITests RachisCAbiShaders)
             target_compile_definitions(RachisRHITests PRIVATE

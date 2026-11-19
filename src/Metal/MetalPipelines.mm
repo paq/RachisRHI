@@ -2443,6 +2443,13 @@ namespace rachis::metal
                 }
                 pso = *compiled;
             }
+            if (desc.requiredSubgroupSize != 0 && pso.threadExecutionWidth != desc.requiredSubgroupSize)
+            {
+                return std::unexpected(metalSelectionError(
+                    ErrorCode::unsupported,
+                    "Metal compiled this compute pipeline with a SIMD-group width other than the required subgroup "
+                    "size."));
+            }
             auto record = metalMakeComputePipelineRecord(*inputs, pso, *workgroup, desc.label);
             std::scoped_lock const lock(mutex_);
             if (native_ == nullptr)
