@@ -439,6 +439,8 @@ namespace rachis::shader_tool
             static constexpr std::uint32_t executionModelVertex = 0;
             static constexpr std::uint32_t executionModelFragment = 4;
             static constexpr std::uint32_t executionModelGLCompute = 5;
+            static constexpr std::uint32_t executionModelTaskEXT = 5364;
+            static constexpr std::uint32_t executionModelMeshEXT = 5365;
 
             [[nodiscard]] static std::expected<SpirvLayoutModule, std::string> parse(std::span<const std::byte> bytes)
             {
@@ -706,7 +708,8 @@ namespace rachis::shader_tool
                         return std::unexpected(std::move(appended.error()));
                     }
                 }
-                if (executionModel == executionModelGLCompute)
+                if (executionModel == executionModelGLCompute || executionModel == executionModelTaskEXT ||
+                    executionModel == executionModelMeshEXT)
                 {
                     auto size = workgroupSize(entry->function);
                     if (!size)
