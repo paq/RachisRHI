@@ -227,7 +227,12 @@ TEST_CASE("reported shader subgroup operations execute wave queries and reductio
             .enableDred = true,
             .diagnosticCallback = &printDiagnostic,
         });
-        if (created && rachis::test::requireCapabilities(*created).subgroupOperations)
+        if (!created)
+        {
+            UNSCOPED_INFO(adapter.name << ": " << created.error().message);
+        }
+        REQUIRE(created.has_value());
+        if (rachis::test::requireCapabilities(*created).subgroupOperations)
         {
             selectedAdapter = adapter.name;
             selectedDevice.emplace(std::move(*created));
@@ -412,8 +417,9 @@ TEST_CASE("compute pipelines that require a subgroup size run full waves of that
         });
         if (!created)
         {
-            continue;
+            UNSCOPED_INFO(adapter.name << ": " << created.error().message);
         }
+        REQUIRE(created.has_value());
         auto& device = *created;
         const auto capabilities = rachis::test::requireCapabilities(device);
         const auto subgroup = capabilities.subgroup;
