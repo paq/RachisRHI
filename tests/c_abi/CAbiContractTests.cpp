@@ -2682,9 +2682,12 @@ TEST_CASE("C ABI reports indirect, mesh, binding-array, 64-bit atomic and subgro
     capabilities.struct_size = offsetof(rachis_device_capabilities, indirect_dispatch);
     CHECK(rachis_device_query_capabilities(device.get(), &capabilities, &error) == RACHIS_STATUS_ABI_MISMATCH);
     capabilities.struct_size = sizeof(capabilities);
-    capabilities.reserved1 = 7;
     requireOk(rachis_device_query_capabilities(device.get(), &capabilities, &error), error);
-    CHECK(capabilities.reserved1 == 0);
+    CHECK(capabilities.max_draw_indirect_count >= 1);
+    if (capabilities.multi_draw_indirect != 0)
+    {
+        CHECK(capabilities.max_draw_indirect_count > 1);
+    }
 
     const std::array<std::uint32_t, 19> flags{
         capabilities.indirect_dispatch,

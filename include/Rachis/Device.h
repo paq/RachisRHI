@@ -232,6 +232,7 @@ namespace rachis
         std::uint32_t maxClipDistances = 0;
         std::uint32_t maxCullDistances = 0;
         std::uint32_t maxCombinedClipAndCullDistances = 0;
+        std::uint32_t maxDrawIndirectCount = std::numeric_limits<std::uint32_t>::max();
     };
 
     struct SubgroupCapabilities final

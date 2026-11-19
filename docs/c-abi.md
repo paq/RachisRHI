@@ -36,7 +36,7 @@ Call `rachis_abi_version()` before creating a device and abort unless it equals 
 
 Version 3 adds GPU-driven rendering. Modules built against version 2 must be rebuilt, because these declarations changed:
 
-- `rachis_device_capabilities` gains the indirect, mesh, binding-array, 64-bit atomic, and subgroup fields after `reserved0`, and `reserved1` at the end.
+- `rachis_device_capabilities` gains the indirect, mesh, binding-array, 64-bit atomic, and subgroup fields after `reserved0`, and `max_draw_indirect_count` at the end.
 - `rachis_binding_layout_entry` gains `flags`, and `rachis_binding_set_desc` gains `variable_descriptor_count`.
 - `rachis_shader_module_desc` and `rachis_pipeline_layout_desc` gain `draw_index`.
 - `rachis_graphics_pipeline_desc` gains `task_shader` and `mesh_shader`.
@@ -139,6 +139,7 @@ Supported C ABI surface:
 | `multi_dispatch_indirect`, `multi_draw_indirect` | Nonzero when an indirect dispatch or an indirect draw or mesh dispatch may run more than one record |
 | `dispatch_indirect_count`, `draw_indirect_count` | Nonzero when the same calls accept a `count_buffer` |
 | `indirect_draw_base_instance` | Nonzero when `first_instance` in an indirect draw record may be nonzero |
+| `max_draw_indirect_count` | Largest `max_draw_count` of an indirect draw or mesh dispatch, and the largest count a `count_buffer` may hold for one (`DeviceLimits::maxDrawIndirectCount`) |
 | `shader_draw_index` | Nonzero when shaders can read the draw index (see [Draw index](#draw-index)) |
 | `conditional_execution` | Nonzero when the device supports conditional execution in the C++ API; the C ABI has no calls for it |
 | `mesh_shaders`, `task_shaders` | Nonzero when graphics pipelines accept a mesh shader, and a task shader before it |
@@ -152,7 +153,7 @@ Supported C ABI surface:
 | `subgroup_operations`, `subgroup_min_size`, `subgroup_max_size` | Nonzero when shaders may use subgroup (wave) operations, and the range of subgroup sizes |
 | `subgroup_required_size_stages` | `RACHIS_SHADER_COMPUTE` when compute pipelines accept `required_subgroup_size`, otherwise `0` |
 
-`reserved0` and `reserved1` are written as `0`.
+`reserved0` is written as `0`.
 
 ## Mapped buffers
 

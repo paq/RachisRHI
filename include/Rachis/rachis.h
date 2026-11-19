@@ -502,7 +502,7 @@ extern "C"
         uint32_t max_mesh_output_memory_bytes;
         uint32_t max_mesh_workgroup_count[3];
         uint32_t max_mesh_total_workgroups;
-        uint32_t reserved1;
+        uint32_t max_draw_indirect_count;
     } rachis_device_capabilities;
 
     typedef struct rachis_buffer_desc

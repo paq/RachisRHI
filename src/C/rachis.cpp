@@ -1457,7 +1457,7 @@ extern "C"
                 output->max_mesh_workgroup_count[axis] = mesh.maxWorkgroupCount[axis];
             }
             output->max_mesh_total_workgroups = mesh.maxTotalWorkgroups;
-            output->reserved1 = 0;
+            output->max_draw_indirect_count = capabilities->limits.maxDrawIndirectCount;
             return RACHIS_STATUS_OK;
         });
     }

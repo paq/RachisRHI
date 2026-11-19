@@ -193,7 +193,7 @@ Core Vulkan dispatches one indirect record per call and has no GPU-counted dispa
 
 ## GPU-counted draws on Vulkan
 
-`drawIndirect`, `drawIndexedIndirect`, and `dispatchMeshIndirect` with a `countBuffer` record the native counted commands, which use `min(count, maxDrawCount)` records. Vulkan also requires the count that the GPU writes to be at most the device's `maxDrawIndirectCount` limit, even when `maxDrawCount` is smaller. RachisRHI cannot clamp the count inside a rendering scope, so the producer must keep it within that limit. A call whose `maxDrawCount` or `maxDispatchCount` is above the limit fails with `ErrorCode::unsupported`, and the error message gives the limit.
+`drawIndirect`, `drawIndexedIndirect`, and `dispatchMeshIndirect` with a `countBuffer` record the native counted commands, which use `min(count, maxDrawCount)` records. Vulkan also requires the count that the GPU writes to be at most the device's `maxDrawIndirectCount` limit, which `DeviceLimits::maxDrawIndirectCount` reports, even when `maxDrawCount` is smaller. RachisRHI cannot clamp the count inside a rendering scope, so the producer must keep it within that limit. A call whose `maxDrawCount` or `maxDispatchCount` is above the limit fails with `ErrorCode::unsupported`, and the error message gives the limit.
 
 ## Draw index on Vulkan
 
