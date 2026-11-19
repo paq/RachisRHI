@@ -2183,11 +2183,17 @@ extern "C"
                 return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "invalid storage texture clear type");
             }
             rachis::StorageTextureClearValue clear{.type = static_cast<rachis::StorageTextureClearType>(value->type)};
-            for (std::size_t channel = 0; channel < clear.float32.size(); ++channel)
+            switch (value->type)
             {
-                clear.float32[channel] = value->float32[channel];
-                clear.uint32[channel] = value->uint32[channel];
-                clear.sint32[channel] = value->sint32[channel];
+            case RACHIS_STORAGE_TEXTURE_CLEAR_FLOAT32:
+                std::ranges::copy(value->float32, clear.float32.begin());
+                break;
+            case RACHIS_STORAGE_TEXTURE_CLEAR_UINT32:
+                std::ranges::copy(value->uint32, clear.uint32.begin());
+                break;
+            default:
+                std::ranges::copy(value->sint32, clear.sint32.begin());
+                break;
             }
             return recordCommand(*device, command, error, [&](rachis::CommandBuffer& commandBuffer) {
                 const auto* token = findView(device->tokens, view);

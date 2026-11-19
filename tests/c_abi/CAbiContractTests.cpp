@@ -25,6 +25,8 @@
 #include <Windows.h>
 #else
 #include <dlfcn.h>
+#include <sys/mman.h>
+#include <unistd.h>
 #endif
 
 #ifdef RACHIS_CABI_D3D12_DEVICE_REMOVAL
@@ -113,6 +115,60 @@ namespace
         requireOk(rachis_buffer_create(device, &desc, &buffer, &error), error);
         return buffer;
     }
+
+    class GuardedClearValue final
+    {
+    public:
+        GuardedClearValue(std::uint32_t type, std::size_t readableBytes)
+        {
+#ifdef _WIN32
+            SYSTEM_INFO system{};
+            GetSystemInfo(&system);
+            pageSize_ = system.dwPageSize;
+            base_ = static_cast<std::byte*>(
+                VirtualAlloc(nullptr, pageSize_ * 2U, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+            REQUIRE(base_ != nullptr);
+            DWORD previous = 0;
+            REQUIRE(VirtualProtect(base_ + pageSize_, pageSize_, PAGE_NOACCESS, &previous) != FALSE);
+#else
+            pageSize_ = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
+            void* const mapped =
+                mmap(nullptr, pageSize_ * 2U, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            REQUIRE(mapped != MAP_FAILED);
+            base_ = static_cast<std::byte*>(mapped);
+            REQUIRE(mprotect(base_ + pageSize_, pageSize_, PROT_NONE) == 0);
+#endif
+            readable_ = base_ + pageSize_ - readableBytes;
+            std::memcpy(readable_, &type, sizeof(type));
+        }
+
+        ~GuardedClearValue()
+        {
+#ifdef _WIN32
+            VirtualFree(base_, 0, MEM_RELEASE);
+#else
+            munmap(base_, pageSize_ * 2U);
+#endif
+        }
+
+        GuardedClearValue(const GuardedClearValue&) = delete;
+        GuardedClearValue& operator=(const GuardedClearValue&) = delete;
+
+        void write(std::size_t offset, const void* bytes, std::size_t size) noexcept
+        {
+            std::memcpy(readable_ + offset, bytes, size);
+        }
+
+        [[nodiscard]] const rachis_storage_texture_clear_value* get() const noexcept
+        {
+            return reinterpret_cast<const rachis_storage_texture_clear_value*>(readable_);
+        }
+
+    private:
+        std::size_t pageSize_ = 0;
+        std::byte* base_ = nullptr;
+        std::byte* readable_ = nullptr;
+    };
 
     [[nodiscard]] rachis_handle createTexture(rachis_device* device,
                                               std::uint32_t format,
@@ -2130,10 +2186,14 @@ TEST_CASE("C ABI runs indirect dispatch batches with a GPU count and clears stor
     rejectedClear.type = RACHIS_STORAGE_TEXTURE_CLEAR_SINT32 + 1;
     CHECK(rachis_command_clear_storage_texture(device.get(), command, storageView, &rejectedClear, &error) ==
           RACHIS_STATUS_INVALID_ARGUMENT);
-    rejectedClear.type = RACHIS_STORAGE_TEXTURE_CLEAR_FLOAT32;
-    CHECK(rachis_command_clear_storage_texture(device.get(), command, storageView, &rejectedClear, &error) ==
+    const GuardedClearValue floatOnly(RACHIS_STORAGE_TEXTURE_CLEAR_FLOAT32,
+                                      offsetof(rachis_storage_texture_clear_value, uint32));
+    CHECK(rachis_command_clear_storage_texture(device.get(), command, storageView, floatOnly.get(), &error) ==
           RACHIS_STATUS_INVALID_ARGUMENT);
-    requireOk(rachis_command_clear_storage_texture(device.get(), command, storageView, &clear, &error), error);
+    GuardedClearValue uintOnly(RACHIS_STORAGE_TEXTURE_CLEAR_UINT32,
+                               offsetof(rachis_storage_texture_clear_value, sint32));
+    uintOnly.write(offsetof(rachis_storage_texture_clear_value, uint32), clear.uint32, sizeof(clear.uint32));
+    requireOk(rachis_command_clear_storage_texture(device.get(), command, storageView, uintOnly.get(), &error), error);
 
     const std::array<rachis_buffer_barrier, 2> afterFill{
         bufferBarrier(counter,
