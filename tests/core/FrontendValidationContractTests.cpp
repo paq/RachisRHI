@@ -1642,11 +1642,6 @@ TEST_CASE("Device frontend restricts buffer fills and storage-texture clears to 
     CHECK(device.fillBuffer(cb, {}, std::numeric_limits<std::uint64_t>::max() - 3U, 8, 0).error().code ==
           ErrorCode::invalidArgument);
 
-    auto notFinite = StorageTextureClearValue{
-        .type = StorageTextureClearType::float32,
-        .float32 = {0.0F, std::numeric_limits<float>::infinity(), 0.0F, 0.0F},
-    };
-    CHECK(device.clearStorageTexture(cb, {}, notFinite).error().code == ErrorCode::invalidArgument);
     auto unknownType = uintValue;
     unknownType.type = static_cast<StorageTextureClearType>(3);
     CHECK(device.clearStorageTexture(cb, {}, unknownType).error().code == ErrorCode::invalidArgument);
@@ -1655,17 +1650,22 @@ TEST_CASE("Device frontend restricts buffer fills and storage-texture clears to 
     auto ignoredNaN = uintValue;
     ignoredNaN.float32[0] = std::numeric_limits<float>::quiet_NaN();
     CHECK(device.clearStorageTexture(cb, {}, ignoredNaN).has_value());
+    const auto notFiniteGreen = StorageTextureClearValue{
+        .type = StorageTextureClearType::float32,
+        .float32 = {0.0F, std::numeric_limits<float>::infinity(), 0.0F, 0.0F},
+    };
+    CHECK(device.clearStorageTexture(cb, {}, notFiniteGreen).has_value());
     CHECK(device.fillBuffer(cb, {}, 4, rachis::wholeResource, 0xFFFFFFFFU).has_value());
     CHECK(device.fillBuffer(cb, {}, std::numeric_limits<std::uint64_t>::max() - 7U, 4, 0).has_value());
     auto computeCb = makeCommandBuffer(raw->token, QueueType::compute);
     CHECK(device.fillBuffer(computeCb, {}, 0, 4, 0).has_value());
     CHECK(device.clearStorageTexture(computeCb, {}, uintValue).has_value());
-    CHECK(raw->backendInvocations == 5);
+    CHECK(raw->backendInvocations == 6);
 
     raw->state = DeviceOperationalState::lost;
     CHECK(device.fillBuffer(copyCb, {}, 0, 16, 0).error().code == ErrorCode::deviceLost);
-    CHECK(device.clearStorageTexture(cb, {}, notFinite).error().code == ErrorCode::deviceLost);
-    CHECK(raw->backendInvocations == 5);
+    CHECK(device.clearStorageTexture(cb, {}, unknownType).error().code == ErrorCode::deviceLost);
+    CHECK(raw->backendInvocations == 6);
 }
 
 TEST_CASE("Shared fill and clear rules resolve buffer ranges, usages, formats, and integer clear ranges",
@@ -1760,6 +1760,34 @@ TEST_CASE("Shared fill and clear rules resolve buffer ranges, usages, formats, a
     CHECK(rachis::detail::validateStorageTextureClear(
               signedTexture, TextureViewUsage::storage, Format::unknown, sintValue)
               .has_value());
+
+    auto floatTexture = storage;
+    floatTexture.format = Format::r32Float;
+    constexpr float nan = std::numeric_limits<float>::quiet_NaN();
+    constexpr float infinity = std::numeric_limits<float>::infinity();
+    const StorageTextureClearValue absentNaN{.type = StorageTextureClearType::float32,
+                                             .float32 = {1.0F, nan, infinity, nan}};
+    CHECK(
+        rachis::detail::validateStorageTextureClear(floatTexture, TextureViewUsage::storage, Format::unknown, absentNaN)
+            .has_value());
+    const StorageTextureClearValue presentNaN{.type = StorageTextureClearType::float32, .float32 = {nan}};
+    CHECK(rachis::detail::validateStorageTextureClear(
+              floatTexture, TextureViewUsage::storage, Format::unknown, presentNaN)
+              .error()
+              .code == ErrorCode::invalidArgument);
+    floatTexture.format = Format::rg16Float;
+    CHECK(
+        rachis::detail::validateStorageTextureClear(floatTexture, TextureViewUsage::storage, Format::unknown, absentNaN)
+            .error()
+            .code == ErrorCode::invalidArgument);
+    auto normalizedTexture = storage;
+    normalizedTexture.format = Format::rgba8Unorm;
+    const StorageTextureClearValue alphaInfinity{.type = StorageTextureClearType::float32,
+                                                 .float32 = {0.0F, 0.0F, 0.0F, -infinity}};
+    CHECK(rachis::detail::validateStorageTextureClear(
+              normalizedTexture, TextureViewUsage::storage, Format::unknown, alphaInfinity)
+              .error()
+              .code == ErrorCode::invalidArgument);
 }
 
 TEST_CASE("Device frontend validates binding layouts and pools while preserving capability-gated unsupported types",

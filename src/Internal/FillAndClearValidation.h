@@ -141,23 +141,11 @@ namespace rachis::detail
         }
     }
 
-    [[nodiscard]] inline Status validateStorageTextureClearValue(const StorageTextureClearValue& value)
+    [[nodiscard]] inline Status validateStorageTextureClearType(const StorageTextureClearValue& value)
     {
         switch (value.type)
         {
         case StorageTextureClearType::float32:
-            for (const float component : value.float32)
-            {
-                if (!std::isfinite(component))
-                {
-                    return std::unexpected(Error{
-                        ErrorCode::invalidArgument,
-                        0,
-                        "Storage-texture clear values of type float32 must be finite.",
-                    });
-                }
-            }
-            return {};
         case StorageTextureClearType::uint32:
         case StorageTextureClearType::sint32:
             return {};
@@ -167,6 +155,19 @@ namespace rachis::detail
             0,
             "The storage-texture clear value has an unknown type.",
         });
+    }
+
+    [[nodiscard]] inline bool storageTextureClearValueFinite(const StorageTextureClearFormat& format,
+                                                             const StorageTextureClearValue& value) noexcept
+    {
+        for (std::uint32_t channel = 0; channel < format.channelCount; ++channel)
+        {
+            if (format.type == StorageTextureClearType::float32 && !std::isfinite(value.float32[channel]))
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     [[nodiscard]] constexpr bool storageTextureClearValueFits(const StorageTextureClearFormat& format,
@@ -201,7 +202,7 @@ namespace rachis::detail
         Format viewFormat,
         const StorageTextureClearValue& value)
     {
-        if (auto valid = validateStorageTextureClearValue(value); !valid)
+        if (auto valid = validateStorageTextureClearType(value); !valid)
         {
             return std::unexpected(std::move(valid.error()));
         }
@@ -240,6 +241,14 @@ namespace rachis::detail
                 0,
                 "The storage-texture clear value type does not match the view format: use float32 for float and "
                 "normalized formats, uint32 for unsigned-integer formats, and sint32 for signed-integer formats.",
+            });
+        }
+        if (!storageTextureClearValueFinite(*format, value))
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidArgument,
+                0,
+                "A float32 storage-texture clear value is not finite in a channel of the view format.",
             });
         }
         if (!storageTextureClearValueFits(*format, value))

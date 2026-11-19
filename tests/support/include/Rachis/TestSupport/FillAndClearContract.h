@@ -702,7 +702,14 @@ namespace rachis::test::fill_and_clear
         REQUIRE(device.clearStorageTexture(*command, middleLayer, uintClear(0xDEADBEEFU)).has_value());
         REQUIRE(device.clearStorageTexture(*command, secondMip, uintClear(42)).has_value());
         REQUIRE(device.clearStorageTexture(*command, normalizedView, floatClear(1.0F, 0.2F, 0.0F, 0.6F)).has_value());
-        REQUIRE(device.clearStorageTexture(*command, floatingView, floatClear(-2.5F)).has_value());
+        REQUIRE(device
+                    .clearStorageTexture(*command,
+                                         floatingView,
+                                         floatClear(-2.5F,
+                                                    std::numeric_limits<float>::quiet_NaN(),
+                                                    std::numeric_limits<float>::infinity(),
+                                                    -std::numeric_limits<float>::infinity()))
+                    .has_value());
         REQUIRE(device.clearStorageTexture(*command, halfView, floatClear(0.5F, -1.0F, 2.0F, 0.25F)).has_value());
         REQUIRE(device.clearStorageTexture(*command, signedWideView, sintClear(-5)).has_value());
         REQUIRE(device.clearStorageTexture(*command, signedNarrowView, sintClear(-128, 127, -1, 3)).has_value());
@@ -787,6 +794,12 @@ namespace rachis::test::fill_and_clear
                                                            .height = 4,
                                                            .format = Format::rgba8Sint,
                                                        });
+        const auto floating = createStorageTexture(device,
+                                                   TextureDesc{
+                                                       .width = 4,
+                                                       .height = 4,
+                                                       .format = Format::r32Float,
+                                                   });
         auto withoutCopyDestination = device.createTexture(TextureDesc{
             .width = 4,
             .height = 4,
@@ -796,6 +809,7 @@ namespace rachis::test::fill_and_clear
         REQUIRE(withoutCopyDestination.has_value());
         const auto storageView = requireStorageView(device, storageUint.texture, TextureViewDimension::texture2D, 0);
         const auto signedView = requireStorageView(device, signedNarrow.texture, TextureViewDimension::texture2D, 0);
+        const auto floatView = requireStorageView(device, floating.texture, TextureViewDimension::texture2D, 0);
         const auto noCopyView = requireStorageView(device, *withoutCopyDestination, TextureViewDimension::texture2D, 0);
         auto sampledView = device.createTextureView(TextureViewDesc{
             .texture = storageUint.texture,
@@ -856,6 +870,15 @@ namespace rachis::test::fill_and_clear
                               TextureLayout::unorderedAccess);
         requireTextureBarrier(device,
                               *command,
+                              floating.texture,
+                              PipelineStage::all,
+                              Access::none,
+                              TextureLayout::undefined,
+                              PipelineStage::computeShader,
+                              Access::unorderedAccess,
+                              TextureLayout::unorderedAccess);
+        requireTextureBarrier(device,
+                              *command,
                               *withoutCopyDestination,
                               PipelineStage::all,
                               Access::none,
@@ -870,9 +893,10 @@ namespace rachis::test::fill_and_clear
         expectCode(device.clearStorageTexture(*command, storageView, uintClear(255, 256)), ErrorCode::invalidArgument);
         expectCode(device.clearStorageTexture(*command, signedView, sintClear(-129)), ErrorCode::invalidArgument);
         expectCode(device.clearStorageTexture(*command, signedView, sintClear(0, 128)), ErrorCode::invalidArgument);
-        expectCode(
-            device.clearStorageTexture(*command, signedView, floatClear(std::numeric_limits<float>::quiet_NaN())),
-            ErrorCode::invalidArgument);
+        expectCode(device.clearStorageTexture(*command, floatView, floatClear(std::numeric_limits<float>::quiet_NaN())),
+                   ErrorCode::invalidArgument);
+        expectCode(device.clearStorageTexture(*command, floatView, floatClear(std::numeric_limits<float>::infinity())),
+                   ErrorCode::invalidArgument);
         auto unknownType = uintClear(1);
         unknownType.type = static_cast<StorageTextureClearType>(9);
         expectCode(device.clearStorageTexture(*command, storageView, unknownType), ErrorCode::invalidArgument);
@@ -910,8 +934,10 @@ namespace rachis::test::fill_and_clear
         REQUIRE(device.destroyTextureView(*sampledView).has_value());
         REQUIRE(device.destroyTextureView(noCopyView).has_value());
         REQUIRE(device.destroyTextureView(signedView).has_value());
+        REQUIRE(device.destroyTextureView(floatView).has_value());
         REQUIRE(device.destroyTextureView(storageView).has_value());
         REQUIRE(device.destroyTexture(*withoutCopyDestination).has_value());
+        REQUIRE(device.destroyTexture(floating.texture).has_value());
         REQUIRE(device.destroyTexture(signedNarrow.texture).has_value());
         REQUIRE(device.destroyTexture(storageUint.texture).has_value());
         REQUIRE(device.destroyBuffer(ragged).has_value());

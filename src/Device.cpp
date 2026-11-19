@@ -2201,7 +2201,7 @@ namespace rachis
             {
                 return unconditional;
             }
-            if (auto valid = detail::validateStorageTextureClearValue(value); !valid)
+            if (auto valid = detail::validateStorageTextureClearType(value); !valid)
             {
                 return std::unexpected(detail::preferDeviceLossError(*backend_, std::move(valid.error())));
             }

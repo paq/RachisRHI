@@ -500,7 +500,7 @@ Rules for both commands:
 
 - **View and texture:** The view must be a `TextureViewUsage::storage` view in the texture's own format. The texture needs `TextureUsage::storage` and `TextureUsage::copyDestination` and one sample (`ErrorCode::invalidArgument` otherwise). A view in another format than the texture fails with `ErrorCode::unsupported`.
 - **Formats:** Uncompressed color formats with 8-, 16-, or 32-bit channels. `r64Uint`, depth, and block-compressed formats fail with `ErrorCode::unsupported`.
-- **Value:** `StorageTextureClearValue::type` selects the field that is used: `float32` for float and normalized formats, `uint32` for unsigned-integer formats, and `sint32` for signed-integer formats. A type that does not match the view format, a float that is not finite, or an integer that does not fit in the channel fails with `ErrorCode::invalidArgument`. Values for channels the format does not have are ignored. Float values are converted to the format the same way a shader write converts them.
+- **Value:** `StorageTextureClearValue::type` selects the field that is used: `float32` for float and normalized formats, `uint32` for unsigned-integer formats, and `sint32` for signed-integer formats. A type that does not match the view format, a float that is not finite, or an integer that does not fit in the channel fails with `ErrorCode::invalidArgument`. Values for channels the format does not have are ignored, NaN and infinity included. Float values are converted to the format the same way a shader write converts them.
 - **Layout:** The cleared subresources must be in `TextureLayout::unorderedAccess`, and the clear leaves them there. A clear in another layout fails with `ErrorCode::invalidState`, either when it is recorded or at `submit`.
 
 ---
