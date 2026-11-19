@@ -11,6 +11,8 @@ This page describes the host platforms RachisRHI targets, optional feature avail
 - [Direct3D 12 validation is process-wide](#direct3d-12-validation-is-process-wide)
 - [Vulkan copy queues](#vulkan-copy-queues)
 - [Indirect dispatch batches on Vulkan](#indirect-dispatch-batches-on-vulkan)
+- [GPU-counted draws on Vulkan](#gpu-counted-draws-on-vulkan)
+- [Draw index on Vulkan](#draw-index-on-vulkan)
 - [Conditional execution on Vulkan](#conditional-execution-on-vulkan)
 - [Attachment clears on Metal](#attachment-clears-on-metal)
 - [Scissors on Metal](#scissors-on-metal)
@@ -49,7 +51,7 @@ The table below shows which backends *can* report each feature (subject to adapt
 | --- | --- | --- | --- |
 | `rayTracing`, `rayQuery` | Yes | Yes | No |
 | `meshShaders`, `taskShaders` | Yes | Yes | Apple9 GPUs and later ([Mesh shaders on Metal](#mesh-shaders-on-metal)) |
-| `shaderDrawIndex` ([draw index in indirect calls](using.md#draw-index-in-indirect-calls)) | Yes | Yes, with `shaderDrawParameters` | Yes |
+| `shaderDrawIndex` ([draw index in indirect calls](using.md#draw-index-in-indirect-calls)) | Yes | Yes, with `shaderDrawParameters` ([Draw index on Vulkan](#draw-index-on-vulkan)) | Yes |
 | `geometryShaders`, `tessellationShaders` | Yes | Yes | No |
 | `variableRateShading`, `variableRateShadingTier2` | Yes | Yes | No |
 | `sparseBuffers`, `sparseTextures` | Yes | No | No |
@@ -100,6 +102,8 @@ On devices that report `rayTracing` or `rayQuery`, the backends implement these 
 | Bottom-level updates | Yes | No |
 | Compaction, serialization, and compacted-size and serialization-info queries | Yes | No |
 
+On Vulkan, an in-place top-level update waits for the shader stages that can trace the structure, so earlier traces of it in the same command buffer finish before the update overwrites it. Every build and update is followed by a barrier that makes the result visible to those stages: compute, ray-tracing, and every graphics stage the device enables. A build or update scratch size of `0` is valid, and any aligned offset inside the scratch buffer is accepted for it.
+
 ## Vulkan profile
 
 ### Loader and adapter filtering
@@ -124,8 +128,9 @@ When provided by the driver, RachisRHI also enables swapchain maintenance, prese
 
 Each `QueueType` receives its own native Vulkan queue when the device exposes enough queues:
 
+- **Graphics queue:** The first family that supports both graphics and compute, or the first graphics family when no family supports both.
 - **Compute queue selection order:**
-  1. A second queue from the graphics family (preferred first because concurrent submissions to the graphics queue and compute-only family on an RTX 4080 can trigger device loss under NVIDIA Windows driver `621.14`).
+  1. A second queue from the graphics family, when that family supports compute (preferred first because concurrent submissions to the graphics queue and compute-only family on an RTX 4080 can trigger device loss under NVIDIA Windows driver `621.14`).
   2. A compute family without graphics.
   3. Any remaining compute-capable family.
 - **Copy queue selection order:**
@@ -180,10 +185,20 @@ Core Vulkan dispatches one indirect record per call and has no GPU-counted dispa
 
 - **Multi-record batches** (`maxDispatchCount > 1`, no `countBuffer`): RachisRHI records one `vkCmdDispatchIndirect` per record, at `argumentOffset + index * stride`. Recording time grows with `maxDispatchCount`.
 - **GPU-counted batches** (`countBuffer` set): RachisRHI records an internal compute pass before the dispatches. One thread per record (64 threads per workgroup) copies the records into a new device-local scratch buffer of `12 * maxDispatchCount` bytes and sets the group counts of every record at or past `min(count, maxDispatchCount)` to zero. RachisRHI then records `maxDispatchCount` `vkCmdDispatchIndirect` calls on the scratch records; records past the count dispatch zero workgroups.
-- **Barriers:** The pass adds two barriers: indirect-argument reads to compute-shader reads before it, and compute-shader writes of the scratch buffer to indirect-argument reads after it. Work before the dispatch that writes the arguments or count still needs your own barrier to `PipelineStage::indirect`.
-- **Bound state:** The pass binds its own pipeline and push constants, then rebinds your compute pipeline and pushes your compute push constants again. Your binding sets stay bound. An active conditional execution scope is paused for the pass, so the pass always runs and only your dispatches are conditional.
+- **Parameters:** The pass reads its parameters from a small device-local buffer that the device keeps for each queue type. Each counted batch writes them with `vkCmdUpdateBuffer`.
+- **Barriers:** Before the pass, RachisRHI orders indirect-argument reads before compute-shader reads, and earlier passes before the parameter write; after the parameter write, it orders that write before the pass; after the pass, it orders the scratch writes before indirect-argument reads. Work before the dispatch that writes the arguments or count still needs your own barrier to `PipelineStage::indirect`.
+- **Bound state:** The pass pipeline uses no push constants and no binding sets. After the pass, RachisRHI rebinds your compute pipeline. Your push constants, including those you set for an earlier pipeline, and your binding sets are not changed. An active conditional execution scope is paused for the pass, so the pass always runs and only your dispatches are conditional.
 - **Lifetime:** The scratch buffer is freed when the command buffer completes, also for command pools with `CommandPoolFlag::unretainedResources`.
 - **Queries:** The pass counts towards `computeShaderInvocations` of an active pipeline-statistics query and adds its time to timestamps around the dispatch.
+
+## GPU-counted draws on Vulkan
+
+`drawIndirect`, `drawIndexedIndirect`, and `dispatchMeshIndirect` with a `countBuffer` record the native counted commands, which use `min(count, maxDrawCount)` records. Vulkan also requires the count that the GPU writes to be at most the device's `maxDrawIndirectCount` limit, even when `maxDrawCount` is smaller. RachisRHI cannot clamp the count inside a rendering scope, so the producer must keep it within that limit. A call whose `maxDrawCount` or `maxDispatchCount` is above the limit fails with `ErrorCode::unsupported`, and the error message gives the limit.
+
+## Draw index on Vulkan
+
+- **Task and mesh pipelines:** Vulkan defines `DrawIndex` only in the first stage of a task and mesh pipeline. `createGraphicsPipeline` fails with `ErrorCode::unsupported` when the mesh shader of a pipeline with a task shader reads the draw index. Read `rachisDrawIndex()` in the task shader and pass it to the mesh shader in the task payload. A mesh pipeline without a task shader reads the draw index in its mesh shader.
+- **Reflection:** A SPIR-V module reads the draw index when its entry point, or a function it calls, loads an input that is the `DrawIndex` builtin or the `DrawIndex` member of an input block. A `DrawIndex` variable that the entry point lists in its interface but never loads does not count. `createShaderModule` and the shader tool's reflection use the same rule.
 
 ## Conditional execution on Vulkan
 
@@ -285,6 +300,7 @@ On Vulkan:
 - **Pipeline layouts:** When a pipeline layout holds a set with an update-after-bind entry, the descriptors of all its sets must fit the device's update-after-bind limits (`maxPerStageDescriptorUpdateAfterBind*`, `maxPerStageUpdateAfterBindResources`, and `maxDescriptorSetUpdateAfterBind*`), and the sets without such an entry must still fit the regular limits. `createPipelineLayout` fails with `ErrorCode::unsupported` otherwise.
 - **Variable-count arrays:** An update-after-bind variable-count entry gets its capacity from the update-after-bind limits, capped by the `DeviceLimits` maximums in [Variable-count binding arrays](#variable-count-binding-arrays).
 - **Binding pools:** The first set with an update-after-bind entry in a binding pool adds a second native descriptor pool, created with `VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT` and sized like the first. Its descriptors count against the device's `maxUpdateAfterBindDescriptorsInAllPools`.
+- **Cost of in-place updates:** An in-place update stages and writes only the elements it changes, so its host time and memory grow with the number of writes, not with the size of the array. Work recorded before the update keeps both the elements it replaced and the new ones alive until it completes.
 
 ## Vulkan on macOS
 
