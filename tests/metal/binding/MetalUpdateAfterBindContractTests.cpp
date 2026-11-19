@@ -746,7 +746,8 @@ TEST_CASE("Metal commands keep elements written in place alive when a later upda
         elementWrite(0, first),
         elementWrite(1, reader),
     };
-    auto set = rachis::test::createBindingSet(device, {.layout = *layout, .writes = writes, .variableDescriptorCount = 2});
+    auto set =
+        rachis::test::createBindingSet(device, {.layout = *layout, .writes = writes, .variableDescriptorCount = 2});
     REQUIRE(set.has_value());
     const auto recordReadOfSecondElement = [&](rachis::CommandBuffer& command) {
         REQUIRE(device.bindComputePipeline(command, *pipeline).has_value());
