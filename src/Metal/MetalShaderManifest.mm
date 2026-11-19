@@ -939,6 +939,29 @@ namespace rachis::metal
                     return std::unexpected(std::move(reflected.error()));
                 }
             }
+            for (id item in array(entry[@"parameters"]))
+            {
+                NSDictionary* const parameter = dictionary(item);
+                NSString* const parameterName = string(parameter[@"name"]);
+                const auto* annotated = annotatedArray(parameterName != nil ? parameterName.UTF8String : nullptr);
+                if (annotated == nullptr || std::ranges::find(activeArrays, annotated->name) != activeArrays.end())
+                {
+                    continue;
+                }
+                auto used = activeBindingIsUsed(parameter);
+                if (!used)
+                {
+                    return std::unexpected(std::move(used.error()));
+                }
+                if (!*used)
+                {
+                    continue;
+                }
+                if (auto activated = activateArray(parameter, *annotated); !activated)
+                {
+                    return std::unexpected(std::move(activated.error()));
+                }
+            }
             const bool entryListsBindings = array(entry[@"bindings"]) != nil;
             for (auto& array : *argumentBuffers)
             {

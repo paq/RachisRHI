@@ -617,3 +617,48 @@ TEST_CASE("Metal reflection checks argument-buffer annotations against the refle
     })";
     CHECK_FALSE(rachis::metal::parseSlangReflectionJson(ordinaryUsage, "main", rachis::ShaderStage::compute));
 }
+
+TEST_CASE("Metal reflection reads argument-buffer arrays declared as entry-point parameters",
+          "[size:small][rhi][metal][reflection][binding]")
+{
+    constexpr std::string_view json = R"({
+        "parameters": [
+            {"name": "outputs", "bindings": [{"kind": "constantBuffer", "index": 0}, {"kind": "unorderedAccess", "index": 0}],
+             "type": {"kind": "resource", "baseShape": "structuredBuffer", "access": "readWrite"}}
+        ],
+        "entryPoints": [{
+            "name": "main",
+            "stage": "compute",
+            "parameters": [
+                {"name": "tex", "binding": {"kind": "shaderResource", "space": 1, "index": 0},
+                 "type": {"kind": "array", "elementCount": 0, "elementType": {"kind": "resource", "baseShape": "texture2D"}}}
+            ],
+            "threadGroupSize": [1, 1, 1],
+            "bindings": [
+                {"name": "outputs", "bindings": [{"kind": "constantBuffer", "index": 0, "used": 1}, {"kind": "unorderedAccess", "index": 0, "used": 0}]}
+            ]
+        }],
+        "rachisBindings": [{"name": "outputs", "set": 0, "binding": 0}],
+        "rachisArgumentBuffers": [
+            {"name": "tex", "type": "sampledTexture", "set": 1, "binding": 0, "index": 1, "capacity": 64}
+        ]
+    })";
+    const auto parsed = rachis::metal::parseSlangReflectionJson(json, "main", rachis::ShaderStage::compute);
+    REQUIRE(parsed.has_value());
+    REQUIRE(parsed->resources.size() == 2);
+    const auto array = std::ranges::find(parsed->resources, std::string("tex"), &rachis::metal::MetalReflectedResource::name);
+    REQUIRE(array != parsed->resources.end());
+    CHECK(array->argumentBuffer);
+    CHECK(array->metalIndex == 1);
+    CHECK(array->set == 1);
+
+    const std::array requirements{
+        rachis::ShaderBindingRequirement{0, 0, rachis::ShaderResourceType::storageBuffer, 1},
+        rachis::ShaderBindingRequirement{1, 0, rachis::ShaderResourceType::sampledTexture, rachis::unboundedBindingCount},
+    };
+    CHECK(rachis::metal::validateShaderInterface(
+        *parsed, {.bindings = requirements, .workgroupSize = rachis::ShaderWorkgroupSize{1, 1, 1}}));
+    const std::array withoutArray{requirements[0]};
+    CHECK_FALSE(rachis::metal::validateShaderInterface(
+        *parsed, {.bindings = withoutArray, .workgroupSize = rachis::ShaderWorkgroupSize{1, 1, 1}}));
+}
