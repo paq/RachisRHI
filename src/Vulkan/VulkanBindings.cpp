@@ -2222,7 +2222,6 @@ namespace rachis::vulkan
                 {
                     return reserved;
                 }
-                next.inPlace->record(retained);
             }
             writeDescriptorElements(*table_,
                                     device_,
@@ -2231,6 +2230,10 @@ namespace rachis::vulkan
                                     next.variableDescriptorCount,
                                     writes,
                                     next.versionLease->descriptorSet);
+            if (next.inPlace != nullptr)
+            {
+                next.inPlace->record(retained);
+            }
             recordPublishedDescriptors(statistics_, written, written);
             retired = std::exchange(*stored, std::move(updated));
         }
