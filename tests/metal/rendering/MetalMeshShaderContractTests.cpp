@@ -1,3 +1,4 @@
+#include "Metal/MetalTestHooks.h"
 #include "Rachis/Device.h"
 #include "RhiTestSupport.h"
 
@@ -177,6 +178,32 @@ namespace
     }
 
 } // namespace
+
+TEST_CASE("Metal draw barriers cover every render stage, including object and mesh shaders",
+          "[size:small][rhi][metal][mesh][barrier]")
+{
+    const rachis::metal::MetalBarrierStageMask everyRenderStage{
+        .vertex = true,
+        .object = true,
+        .mesh = true,
+        .fragment = true,
+    };
+    CHECK(rachis::metal::barrierStagesForTesting(rachis::PipelineStage::draw) == everyRenderStage);
+    CHECK(rachis::metal::barrierStagesForTesting(rachis::PipelineStage::taskShader) ==
+          rachis::metal::MetalBarrierStageMask{.object = true});
+    CHECK(rachis::metal::barrierStagesForTesting(rachis::PipelineStage::meshShader) ==
+          rachis::metal::MetalBarrierStageMask{.mesh = true});
+    CHECK(rachis::metal::barrierStagesForTesting(rachis::PipelineStage::vertexShader) ==
+          rachis::metal::MetalBarrierStageMask{.vertex = true});
+    CHECK(rachis::metal::barrierStagesForTesting(rachis::PipelineStage::draw | rachis::PipelineStage::computeShader) ==
+          rachis::metal::MetalBarrierStageMask{
+              .vertex = true,
+              .object = true,
+              .mesh = true,
+              .fragment = true,
+              .dispatch = true,
+          });
+}
 
 TEST_CASE("Metal reports mesh and task shaders on Apple9 GPUs with Metal mesh-grid limits",
           "[size:large][rhi][metal][mesh]")

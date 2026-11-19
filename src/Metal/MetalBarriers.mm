@@ -444,10 +444,13 @@ namespace rachis::metal
                 return MTLStageAll;
             }
             MTLStages flags = static_cast<MTLStages>(0);
+            if (hasAny(stages, PipelineStage::draw))
+            {
+                flags |= MTLStageVertex | MTLStageObject | MTLStageMesh | MTLStageFragment;
+            }
             if (hasAny(stages,
-                       PipelineStage::draw | PipelineStage::vertexInput | PipelineStage::vertexShader |
-                           PipelineStage::geometryShader | PipelineStage::hullShader | PipelineStage::domainShader |
-                           PipelineStage::streamOutput))
+                       PipelineStage::vertexInput | PipelineStage::vertexShader | PipelineStage::geometryShader |
+                           PipelineStage::hullShader | PipelineStage::domainShader | PipelineStage::streamOutput))
             {
                 flags |= MTLStageVertex;
             }
@@ -1415,5 +1418,19 @@ namespace rachis::metal
         metalStageLayoutTransitions(native->layoutState(), std::span(&resources.afterLayout, 1));
         return {};
     }
+
+#ifdef RACHIS_TESTING
+    MetalBarrierStageMask barrierStagesForTesting(PipelineStage stages) noexcept
+    {
+        const MTLStages flags = metalStages(stages);
+        return MetalBarrierStageMask{
+            .vertex = (flags & MTLStageVertex) != 0,
+            .object = (flags & MTLStageObject) != 0,
+            .mesh = (flags & MTLStageMesh) != 0,
+            .fragment = (flags & MTLStageFragment) != 0,
+            .dispatch = (flags & MTLStageDispatch) != 0,
+        };
+    }
+#endif
 
 } // namespace rachis::metal

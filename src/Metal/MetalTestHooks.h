@@ -4,6 +4,7 @@
 #include "Internal/MetalMacosProfile.h"
 #include "Rachis/Command.h"
 #include "Rachis/Presentation.h"
+#include "Rachis/Resource.h"
 
 #include <array>
 #include <atomic>
@@ -305,6 +306,19 @@ namespace rachis::metal
     [[nodiscard]] std::uint64_t boundSamplerGpuResourceId(SamplerHandle sampler) noexcept;
     [[nodiscard]] Status loadCookedMetallib(std::span<const std::byte> bytecode, std::string_view entryPoint = {});
     [[nodiscard]] Result<std::array<std::uint32_t, 8>> readLayoutFixtureSentinels(std::span<const std::byte> bytecode);
+
+    struct MetalBarrierStageMask final
+    {
+        bool vertex = false;
+        bool object = false;
+        bool mesh = false;
+        bool fragment = false;
+        bool dispatch = false;
+
+        friend constexpr bool operator==(const MetalBarrierStageMask&, const MetalBarrierStageMask&) noexcept = default;
+    };
+
+    [[nodiscard]] MetalBarrierStageMask barrierStagesForTesting(PipelineStage stages) noexcept;
 #endif
 
 } // namespace rachis::metal
