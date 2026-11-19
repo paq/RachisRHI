@@ -77,6 +77,7 @@ namespace rachis::vulkan
         VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
         std::uint32_t dynamicBufferCount = 0;
         std::span<const VulkanDynamicBufferBinding> dynamicBuffers = {};
+        std::vector<VulkanAccelerationStructureUse> accelerationStructureUses = {};
     };
 
     struct VulkanNativePipelineLayout final
@@ -222,6 +223,7 @@ namespace rachis::vulkan
             VkImageView imageView = VK_NULL_HANDLE;
             VkSampler sampler = VK_NULL_HANDLE;
             VkAccelerationStructureKHR accelerationStructure = VK_NULL_HANDLE;
+            VulkanAccelerationStructureUse accelerationStructureUse = {};
             std::uint64_t range = 0;
             std::uint64_t bufferSize = 0;
         };

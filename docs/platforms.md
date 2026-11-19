@@ -5,7 +5,7 @@ This page describes the host platforms RachisRHI targets, optional feature avail
 ## Contents
 
 - [Supported hosts](#supported-hosts)
-- [Optional features by backend](#optional-features-by-backend)
+- [Optional features by backend](#optional-features-by-backend) ([Acceleration-structure operations](#acceleration-structure-operations))
 - [Vulkan profile](#vulkan-profile)
 - [Fallback and validation](#fallback-and-validation)
 - [Direct3D 12 validation is process-wide](#direct3d-12-validation-is-process-wide)
@@ -58,6 +58,17 @@ The table below shows which backends *can* report each feature (subject to adapt
 | `updateAfterBindBindingArrays` | Yes | Yes | No |
 
 On Vulkan, `multiDispatchIndirect` and `dispatchIndirectCount` are emulated; see [Indirect dispatch batches on Vulkan](#indirect-dispatch-batches-on-vulkan).
+
+### Acceleration-structure operations
+
+On devices that report `rayTracing` or `rayQuery`, the backends implement these acceleration-structure operations. The others fail with `ErrorCode::unsupported`. Metal has no acceleration structures.
+
+| Operation | Direct3D 12 | Vulkan |
+| --- | --- | --- |
+| Bottom-level and top-level builds, including top-level builds from instance buffers | Yes | Yes |
+| Top-level updates, out-of-place and in place, from spans or instance buffers | Yes | Yes |
+| Bottom-level updates | Yes | No |
+| Compaction, serialization, and compacted-size and serialization-info queries | Yes | No |
 
 ## Vulkan profile
 

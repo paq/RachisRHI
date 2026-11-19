@@ -1271,6 +1271,7 @@ namespace rachis::vulkan
             slot.imageView = VK_NULL_HANDLE;
             slot.sampler = VK_NULL_HANDLE;
             slot.accelerationStructure = VK_NULL_HANDLE;
+            slot.accelerationStructureUse = {};
             slot.range = 0;
             slot.bufferSize = 0;
             return {};
@@ -1313,6 +1314,7 @@ namespace rachis::vulkan
             slot.imageView = VK_NULL_HANDLE;
             slot.sampler = VK_NULL_HANDLE;
             slot.accelerationStructure = VK_NULL_HANDLE;
+            slot.accelerationStructureUse = {};
             slot.range = *size;
             slot.bufferSize = source->desc.size;
             return {};
@@ -1352,6 +1354,7 @@ namespace rachis::vulkan
             slot.imageView = view->view;
             slot.sampler = VK_NULL_HANDLE;
             slot.accelerationStructure = VK_NULL_HANDLE;
+            slot.accelerationStructureUse = {};
             slot.range = 0;
             slot.bufferSize = 0;
             return {};
@@ -1397,6 +1400,7 @@ namespace rachis::vulkan
             slot.imageView = VK_NULL_HANDLE;
             slot.sampler = VK_NULL_HANDLE;
             slot.accelerationStructure = source->accelerationStructure;
+            slot.accelerationStructureUse = std::move(source->use);
             slot.range = 0;
             slot.bufferSize = 0;
             return {};
@@ -1426,6 +1430,7 @@ namespace rachis::vulkan
             slot.imageView = VK_NULL_HANDLE;
             slot.sampler = sampler->sampler;
             slot.accelerationStructure = VK_NULL_HANDLE;
+            slot.accelerationStructureUse = {};
             slot.range = 0;
             slot.bufferSize = 0;
             return {};
@@ -2537,6 +2542,19 @@ namespace rachis::vulkan
         auto owner = retainResources ? std::shared_ptr<void>(record.version)
                                      : std::shared_ptr<void>(record.version->versionLease);
         native.commandUse = VulkanCommandUse(std::move(counter), std::move(owner));
+        if (record.layout != nullptr &&
+            std::ranges::any_of(record.layout->entries, [](const BindingLayoutEntry& entry) {
+                return entry.type == BindingType::accelerationStructure;
+            }))
+        {
+            for (const auto& slot : record.version->slots)
+            {
+                if (slot.type == BindingType::accelerationStructure && slot.accelerationStructureUse.version != nullptr)
+                {
+                    native.accelerationStructureUses.push_back(slot.accelerationStructureUse);
+                }
+            }
+        }
         return native;
     }
 

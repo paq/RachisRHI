@@ -401,6 +401,47 @@ namespace rachis::vulkan
             return expectedDynamicOffsets;
         }
 
+        [[nodiscard]] Status retainAccelerationStructureConsumers(VulkanCommandBuffer& commandBuffer,
+                                                                  std::span<const VulkanNativeBindingSet> resolvedSets)
+        {
+            std::size_t useCount = 0;
+            const VulkanNativeBindingSet* onlySet = nullptr;
+            for (const auto& set : resolvedSets)
+            {
+                if (!set.accelerationStructureUses.empty())
+                {
+                    useCount += set.accelerationStructureUses.size();
+                    onlySet = onlySet == nullptr ? &set : onlySet;
+                }
+            }
+            if (useCount == 0)
+            {
+                return {};
+            }
+            if (useCount == onlySet->accelerationStructureUses.size())
+            {
+                return retainVulkanAccelerationStructureConsumers(commandBuffer, onlySet->accelerationStructureUses);
+            }
+            std::vector<VulkanAccelerationStructureUse> uses;
+            try
+            {
+                uses.reserve(useCount);
+                for (const auto& set : resolvedSets)
+                {
+                    uses.insert(uses.end(), set.accelerationStructureUses.begin(), set.accelerationStructureUses.end());
+                }
+            }
+            catch (const std::bad_alloc&)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::outOfMemory,
+                    0,
+                    "Acceleration-structure binding leases could not be retained.",
+                });
+            }
+            return retainVulkanAccelerationStructureConsumers(commandBuffer, uses);
+        }
+
         [[nodiscard]] Status retainBindingSetUses(VulkanCommandBuffer& commandBuffer,
                                                   std::span<VulkanNativeBindingSet> resolvedSets)
         {
@@ -476,6 +517,10 @@ namespace rachis::vulkan
                 !validOffsets)
             {
                 return validOffsets;
+            }
+            if (auto consumers = retainAccelerationStructureConsumers(commandBuffer, scratch.resolvedSets); !consumers)
+            {
+                return consumers;
             }
             if (auto usesRetained = retainBindingSetUses(commandBuffer, scratch.resolvedSets); !usesRetained)
             {

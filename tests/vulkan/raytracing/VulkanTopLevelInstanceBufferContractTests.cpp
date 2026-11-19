@@ -193,7 +193,7 @@ namespace
 
 } // namespace
 
-TEST_CASE("Vulkan TLAS builds read instance records that a compute pass writes",
+TEST_CASE("Vulkan TLAS builds and updates read instance records that a compute pass writes",
           "[size:medium][rhi][vulkan][ray-query]")
 {
     auto created = rachis::createDevice(vulkanDesc());
@@ -283,20 +283,26 @@ TEST_CASE("Vulkan TLAS builds read instance records that a compute pass writes",
                                      rachis::AccelerationStructureType::topLevel,
                                      topSizes->accelerationStructureSize,
                                      "Vulkan CPU-written TLAS"),
+        requireAccelerationStructure(device,
+                                     rachis::AccelerationStructureType::topLevel,
+                                     topSizes->accelerationStructureSize,
+                                     "Vulkan span-updated TLAS"),
     };
     const auto nearBottomLevel = structures[0].structure;
     const auto farBottomLevel = structures[1].structure;
     const auto builtTopLevel = structures[2].structure;
     const auto updatedTopLevel = structures[3].structure;
     const auto uploadedTopLevel = structures[4].structure;
-    const auto scratch =
-        requireBuffer(device,
-                      {
-                          .size = (std::max)(bottomSizes->buildScratchSize, topSizes->buildScratchSize),
-                          .usage = rachis::BufferUsage::accelerationStructureScratch,
-                          .memoryType = rachis::MemoryType::deviceLocal,
-                          .label = "Vulkan instance-buffer scratch",
-                      });
+    const auto spanTopLevel = structures[5].structure;
+    const auto scratch = requireBuffer(
+        device,
+        {
+            .size =
+                (std::max)({bottomSizes->buildScratchSize, topSizes->buildScratchSize, topSizes->updateScratchSize}),
+            .usage = rachis::BufferUsage::accelerationStructureScratch,
+            .memoryType = rachis::MemoryType::deviceLocal,
+            .label = "Vulkan instance-buffer scratch",
+        });
 
     auto nearReference = device.queryAccelerationStructureReference(nearBottomLevel);
     auto farReference = device.queryAccelerationStructureReference(farBottomLevel);
@@ -457,12 +463,35 @@ TEST_CASE("Vulkan TLAS builds read instance records that a compute pass writes",
         return results;
     };
 
-    const std::array inputs{
+    const auto writeInputs = [&](const std::array<InstanceInput, instanceRecordCount>& inputs) {
+        REQUIRE(device.writeBuffer(instanceInputs, 0, std::as_bytes(std::span(inputs))).has_value());
+    };
+    const auto recordWriterPass =
+        [&](rachis::CommandBuffer& command, rachis::PipelineStage stagesBefore, rachis::Access accessBefore) {
+            requireBarrier(device,
+                           command,
+                           instanceRecords,
+                           stagesBefore,
+                           accessBefore,
+                           rachis::PipelineStage::computeShader,
+                           rachis::Access::unorderedAccess);
+            REQUIRE(device.bindComputePipeline(command, writerPipeline).has_value());
+            REQUIRE(device.bindComputeBindingSet(command, 0, *writerSet).has_value());
+            REQUIRE(device.dispatch(command, 1).has_value());
+            requireBarrier(device,
+                           command,
+                           instanceRecords,
+                           rachis::PipelineStage::computeShader,
+                           rachis::Access::unorderedAccess,
+                           rachis::PipelineStage::accelerationStructureBuild,
+                           rachis::Access::accelerationStructureBuildInput);
+        };
+
+    writeInputs({
         instanceInput(*nearReference, -2.0F, 7),
         instanceInput(0, 0.0F, 11),
         instanceInput(*farReference, 2.0F, 9),
-    };
-    REQUIRE(device.writeBuffer(instanceInputs, 0, std::as_bytes(std::span(inputs))).has_value());
+    });
     {
         auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
         REQUIRE(command.has_value());
@@ -474,23 +503,7 @@ TEST_CASE("Vulkan TLAS builds read instance records that a compute pass writes",
                     .buildBottomLevelAccelerationStructure(
                         *command, {.destination = farBottomLevel, .input = farInput, .scratch = scratch})
                     .has_value());
-        requireBarrier(device,
-                       *command,
-                       instanceRecords,
-                       rachis::PipelineStage::all,
-                       rachis::Access::common,
-                       rachis::PipelineStage::computeShader,
-                       rachis::Access::unorderedAccess);
-        REQUIRE(device.bindComputePipeline(*command, writerPipeline).has_value());
-        REQUIRE(device.bindComputeBindingSet(*command, 0, *writerSet).has_value());
-        REQUIRE(device.dispatch(*command, 1).has_value());
-        requireBarrier(device,
-                       *command,
-                       instanceRecords,
-                       rachis::PipelineStage::computeShader,
-                       rachis::Access::unorderedAccess,
-                       rachis::PipelineStage::accelerationStructureBuild,
-                       rachis::Access::accelerationStructureBuildInput);
+        recordWriterPass(*command, rachis::PipelineStage::all, rachis::Access::common);
         const rachis::TopLevelAccelerationStructureBufferBuildDesc build{
             .destination = builtTopLevel,
             .instanceBuffer = instanceRecords,
@@ -508,38 +521,131 @@ TEST_CASE("Vulkan TLAS builds read instance records that a compute pass writes",
         auto rebuilt = device.buildTopLevelAccelerationStructureFromBuffer(*command, build);
         REQUIRE_FALSE(rebuilt.has_value());
         CHECK(rebuilt.error().code == rachis::ErrorCode::invalidState);
-
-        auto updated = device.updateTopLevelAccelerationStructureFromBuffer(*command,
-                                                                            {
-                                                                                .source = builtTopLevel,
-                                                                                .destination = updatedTopLevel,
-                                                                                .instanceBuffer = instanceRecords,
-                                                                                .instanceOffset = instanceRecordOffset,
-                                                                                .instanceCount = instanceRecordCount,
-                                                                                .flags = topLevelFlags,
-                                                                                .scratch = scratch,
-                                                                            });
-        REQUIRE_FALSE(updated.has_value());
-        CHECK(updated.error().code == rachis::ErrorCode::unsupported);
-        auto updatedInPlace =
-            device.updateTopLevelAccelerationStructureInPlaceFromBuffer(*command,
-                                                                        {
-                                                                            .target = builtTopLevel,
-                                                                            .instanceBuffer = instanceRecords,
-                                                                            .instanceOffset = instanceRecordOffset,
-                                                                            .instanceCount = instanceRecordCount,
-                                                                            .flags = topLevelFlags,
-                                                                            .scratch = scratch,
-                                                                        });
-        REQUIRE_FALSE(updatedInPlace.has_value());
-        CHECK(updatedInPlace.error().code == rachis::ErrorCode::unsupported);
-
         const auto results = traceAndRead(std::move(*command), builtTopLevel);
         INFO("build from GPU-written records");
         checkHit(results[0], 7, 1.0F, 0);
         checkMiss(results[1]);
         checkHit(results[2], 9, 1.5F, 2);
     }
+
+    writeInputs({
+        instanceInput(*farReference, -2.0F, 7),
+        instanceInput(0, 0.0F, 11),
+        instanceInput(*nearReference, 2.0F, 9),
+    });
+    {
+        auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+        REQUIRE(command.has_value());
+        recordWriterPass(*command,
+                         rachis::PipelineStage::accelerationStructureBuild,
+                         rachis::Access::accelerationStructureBuildInput);
+        rachis::TopLevelAccelerationStructureBufferUpdateDesc update{
+            .source = builtTopLevel,
+            .destination = updatedTopLevel,
+            .instanceBuffer = instanceRecords,
+            .instanceOffset = instanceRecordOffset,
+            .instanceCount = instanceRecordCount - 1,
+            .flags = topLevelFlags,
+            .scratch = scratch,
+        };
+        auto mismatchedCount = device.updateTopLevelAccelerationStructureFromBuffer(*command, update);
+        REQUIRE_FALSE(mismatchedCount.has_value());
+        CHECK(mismatchedCount.error().code == rachis::ErrorCode::invalidArgument);
+        update.instanceCount = instanceRecordCount;
+        auto changedFlags = update;
+        changedFlags.flags = rachis::AccelerationStructureBuildFlag::allowUpdate;
+        auto mismatchedFlags = device.updateTopLevelAccelerationStructureFromBuffer(*command, changedFlags);
+        REQUIRE_FALSE(mismatchedFlags.has_value());
+        CHECK(mismatchedFlags.error().code == rachis::ErrorCode::invalidArgument);
+        auto updated = device.updateTopLevelAccelerationStructureFromBuffer(*command, update);
+        if (!updated)
+        {
+            UNSCOPED_INFO(updated.error().message);
+        }
+        REQUIRE(updated.has_value());
+        auto updatedAgain = device.updateTopLevelAccelerationStructureFromBuffer(*command, update);
+        REQUIRE_FALSE(updatedAgain.has_value());
+        CHECK(updatedAgain.error().code == rachis::ErrorCode::invalidState);
+        const auto results = traceAndRead(std::move(*command), updatedTopLevel);
+        INFO("out-of-place update from GPU-written records");
+        checkHit(results[0], 7, 1.5F, 0);
+        checkMiss(results[1]);
+        checkHit(results[2], 9, 1.0F, 2);
+    }
+
+    const std::array readerWrites{
+        rachis::BindingWrite{.binding = 0, .resource = updatedTopLevel},
+        rachis::BindingWrite{
+            .binding = 1,
+            .resource =
+                rachis::BufferBinding{
+                    .buffer = rayResults,
+                    .size = instanceRecordCount * sizeof(RayResult),
+                    .structureByteStride = sizeof(RayResult),
+                },
+        },
+    };
+    auto readerSet = rachis::test::createBindingSet(
+        device, {.layout = *queryBindingLayout, .writes = readerWrites, .label = "Vulkan concurrent TLAS reader"});
+    REQUIRE(readerSet.has_value());
+    const auto recordReader = [&](rachis::CommandBuffer& reader) {
+        REQUIRE(device.bindComputePipeline(reader, queryPipeline).has_value());
+        return device.bindComputeBindingSet(reader, 0, *readerSet);
+    };
+
+    writeInputs({
+        instanceInput(*farReference, 2.0F, 5),
+        instanceInput(0, 0.0F, 11),
+        instanceInput(*nearReference, -2.0F, 3),
+    });
+    {
+        auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+        REQUIRE(command.has_value());
+        recordWriterPass(*command,
+                         rachis::PipelineStage::accelerationStructureBuild,
+                         rachis::Access::accelerationStructureBuildInput);
+        const rachis::TopLevelAccelerationStructureBufferInPlaceUpdateDesc update{
+            .target = updatedTopLevel,
+            .instanceBuffer = instanceRecords,
+            .instanceOffset = instanceRecordOffset,
+            .instanceCount = instanceRecordCount,
+            .flags = topLevelFlags,
+            .scratch = scratch,
+        };
+        {
+            auto reader = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+            REQUIRE(reader.has_value());
+            REQUIRE(recordReader(*reader).has_value());
+            auto blocked = device.updateTopLevelAccelerationStructureInPlaceFromBuffer(*command, update);
+            REQUIRE_FALSE(blocked.has_value());
+            CHECK(blocked.error().code == rachis::ErrorCode::invalidState);
+        }
+        auto updated = device.updateTopLevelAccelerationStructureInPlaceFromBuffer(*command, update);
+        if (!updated)
+        {
+            UNSCOPED_INFO(updated.error().message);
+        }
+        REQUIRE(updated.has_value());
+        {
+            auto reader = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+            REQUIRE(reader.has_value());
+            auto blockedReader = recordReader(*reader);
+            REQUIRE_FALSE(blockedReader.has_value());
+            CHECK(blockedReader.error().code == rachis::ErrorCode::invalidState);
+        }
+        const auto results = traceAndRead(std::move(*command), updatedTopLevel);
+        INFO("in-place update from GPU-written records");
+        checkHit(results[0], 3, 1.0F, 2);
+        checkMiss(results[1]);
+        checkHit(results[2], 5, 1.5F, 0);
+    }
+    device.collectGarbage();
+    {
+        auto reader = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+        REQUIRE(reader.has_value());
+        CHECK(recordReader(*reader).has_value());
+    }
+    REQUIRE(device.destroyBindingSet(*readerSet).has_value());
 
     {
         const auto uploadedRecords =
@@ -583,6 +689,94 @@ TEST_CASE("Vulkan TLAS builds read instance records that a compute pass writes",
         checkHit(results[0], 23, 1.5F, 2);
         checkMiss(results[1]);
         checkHit(results[2], 21, 1.0F, 0);
+    }
+
+    const auto spanInstance = [](rachis::AccelerationStructureHandle bottomLevel,
+                                 float translationX,
+                                 std::uint32_t instanceId,
+                                 std::uint32_t mask) {
+        rachis::AccelerationStructureInstance instance{
+            .bottomLevel = bottomLevel,
+            .instanceId = instanceId,
+            .instanceMask = mask,
+            .flags = rachis::AccelerationStructureInstanceFlag::triangleCullDisable,
+        };
+        instance.transform[3] = translationX;
+        return instance;
+    };
+    {
+        const std::array instances{
+            spanInstance(nearBottomLevel, -2.0F, 31, 0xFF),
+            spanInstance(farBottomLevel, 0.0F, 32, 0),
+            spanInstance(farBottomLevel, 2.0F, 33, 0xFF),
+        };
+        auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+        REQUIRE(command.has_value());
+        auto mismatchedCount =
+            device.updateTopLevelAccelerationStructure(*command,
+                                                       {
+                                                           .source = uploadedTopLevel,
+                                                           .destination = spanTopLevel,
+                                                           .instances = std::span(instances).first(2),
+                                                           .flags = topLevelFlags,
+                                                           .scratch = scratch,
+                                                       });
+        REQUIRE_FALSE(mismatchedCount.has_value());
+        CHECK(mismatchedCount.error().code == rachis::ErrorCode::invalidArgument);
+        auto sameHandles = device.updateTopLevelAccelerationStructure(*command,
+                                                                      {
+                                                                          .source = uploadedTopLevel,
+                                                                          .destination = uploadedTopLevel,
+                                                                          .instances = instances,
+                                                                          .flags = topLevelFlags,
+                                                                          .scratch = scratch,
+                                                                      });
+        REQUIRE_FALSE(sameHandles.has_value());
+        CHECK(sameHandles.error().code == rachis::ErrorCode::invalidArgument);
+        auto updated = device.updateTopLevelAccelerationStructure(*command,
+                                                                  {
+                                                                      .source = uploadedTopLevel,
+                                                                      .destination = spanTopLevel,
+                                                                      .instances = instances,
+                                                                      .flags = topLevelFlags,
+                                                                      .scratch = scratch,
+                                                                  });
+        if (!updated)
+        {
+            UNSCOPED_INFO(updated.error().message);
+        }
+        REQUIRE(updated.has_value());
+        const auto results = traceAndRead(std::move(*command), spanTopLevel);
+        INFO("out-of-place span update of a structure built from a buffer");
+        checkHit(results[0], 31, 1.0F, 0);
+        checkMiss(results[1]);
+        checkHit(results[2], 33, 1.5F, 2);
+    }
+    {
+        const std::array instances{
+            spanInstance(farBottomLevel, -2.0F, 41, 0xFF),
+            spanInstance(nearBottomLevel, 0.0F, 42, 0),
+            spanInstance(nearBottomLevel, 2.0F, 43, 0xFF),
+        };
+        auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+        REQUIRE(command.has_value());
+        auto updated = device.updateTopLevelAccelerationStructureInPlace(*command,
+                                                                         {
+                                                                             .target = spanTopLevel,
+                                                                             .instances = instances,
+                                                                             .flags = topLevelFlags,
+                                                                             .scratch = scratch,
+                                                                         });
+        if (!updated)
+        {
+            UNSCOPED_INFO(updated.error().message);
+        }
+        REQUIRE(updated.has_value());
+        const auto results = traceAndRead(std::move(*command), spanTopLevel);
+        INFO("in-place span update");
+        checkHit(results[0], 41, 1.5F, 0);
+        checkMiss(results[1]);
+        checkHit(results[2], 43, 1.0F, 2);
     }
 
     for (const auto set : querySets)

@@ -1,8 +1,10 @@
 #pragma once
 
+#include "Common/AccelerationStructureExecution.h"
 #include "Common/HandleTable.h"
 #include "Internal/BackendCommandBuffer.h"
 #include "Internal/VulkanRuntime.h"
+#include "Rachis/AccelerationStructure.h"
 #include "Rachis/Pipeline.h"
 
 #include <algorithm>
@@ -13,6 +15,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -24,20 +27,38 @@ namespace rachis::vulkan
     class VulkanCommandBuffer;
     class VulkanResourceAllocator;
 
+    struct VulkanAccelerationStructureVersion final
+    {
+        AccelerationStructureBuildFlag buildFlags = AccelerationStructureBuildFlag::none;
+        std::uint32_t instanceCount = 0;
+        std::vector<std::shared_ptr<void>> dependencies;
+        std::vector<std::shared_ptr<detail::AccelerationStructureExecutionTracker>> dependencyTrackers;
+    };
+
     struct VulkanAccelerationStructureVersionSlot final
     {
         std::mutex mutex;
-        std::shared_ptr<void> current;
+        std::shared_ptr<VulkanAccelerationStructureVersion> current;
     };
 
     struct VulkanAccelerationStructurePublication final
     {
         std::weak_ptr<VulkanAccelerationStructureVersionSlot> slot;
-        std::weak_ptr<void> published;
+        std::weak_ptr<VulkanAccelerationStructureVersion> published;
+        std::shared_ptr<VulkanAccelerationStructureVersion> previous;
+    };
+
+    struct VulkanAccelerationStructureUse final
+    {
+        std::shared_ptr<VulkanAccelerationStructureVersionSlot> version;
+        std::shared_ptr<detail::AccelerationStructureExecutionTracker> executionTracker;
     };
 
     void rollBackVulkanAccelerationStructurePublications(
         std::vector<VulkanAccelerationStructurePublication>& publications) noexcept;
+
+    [[nodiscard]] Status retainVulkanAccelerationStructureConsumers(
+        VulkanCommandBuffer& commandBuffer, std::span<const VulkanAccelerationStructureUse> uses);
 
     class VulkanCommandUse final
     {
@@ -241,6 +262,7 @@ namespace rachis::vulkan
         {
             return std::move(accelerationStructurePublications_);
         }
+        [[nodiscard]] std::uint64_t accelerationStructureRecordingId() noexcept;
         [[nodiscard]] Result<VulkanCommandUses*> reserveCommandUses(std::size_t additional);
         [[nodiscard]] const std::vector<VulkanCommandQueryPoolUse>& queryPoolUses() const noexcept
         {
@@ -275,6 +297,7 @@ namespace rachis::vulkan
         std::uint64_t deviceToken_ = 0;
         std::vector<std::shared_ptr<void>> retained_;
         std::vector<VulkanAccelerationStructurePublication> accelerationStructurePublications_;
+        std::uint64_t accelerationStructureRecordingId_ = 0;
         std::weak_ptr<VulkanCommandUses> commandUses_;
         std::vector<VulkanCommandQueryPoolUse> queryPoolUses_;
         std::array<std::byte, maxPushConstantBytes> computePushConstants_{};

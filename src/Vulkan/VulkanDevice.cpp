@@ -991,6 +991,7 @@ namespace rachis::vulkan
             return std::unexpected(
                 Error{ErrorCode::invalidArgument, 0, "The command buffer belongs to another device or backend."});
         }
+        submission_.collectGarbage();
         std::shared_ptr<VulkanCommandPoolState> owner{};
         const auto poolLock = lockCommandPoolIfPresent(*native, owner);
         return observe(acceleration_.updateTopLevelInPlace(*native, desc));
@@ -1064,6 +1065,7 @@ namespace rachis::vulkan
             return std::unexpected(
                 Error{ErrorCode::invalidArgument, 0, "The command buffer belongs to another device or backend."});
         }
+        submission_.collectGarbage();
         std::shared_ptr<VulkanCommandPoolState> owner{};
         const auto poolLock = lockCommandPoolIfPresent(*native, owner);
         return observe(acceleration_.updateTopLevelInPlaceFromBuffer(*native, desc));

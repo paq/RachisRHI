@@ -19,6 +19,8 @@ namespace rachis::vulkan
     namespace
     {
 
+        detail::AccelerationStructureRecordingSequence vulkanAccelerationStructureRecordings;
+
         [[nodiscard]] constexpr bool isValidQueueType(QueueType type) noexcept
         {
             switch (type)
@@ -362,16 +364,25 @@ namespace rachis::vulkan
             {
                 continue;
             }
-            std::shared_ptr<void> discarded;
+            std::shared_ptr<VulkanAccelerationStructureVersion> discarded;
             {
                 const std::scoped_lock lock(slot->mutex);
                 if (slot->current == published)
                 {
-                    discarded = std::exchange(slot->current, nullptr);
+                    discarded = std::exchange(slot->current, std::move(publication->previous));
                 }
             }
         }
         publications.clear();
+    }
+
+    std::uint64_t VulkanCommandBuffer::accelerationStructureRecordingId() noexcept
+    {
+        if (accelerationStructureRecordingId_ == 0)
+        {
+            accelerationStructureRecordingId_ = vulkanAccelerationStructureRecordings.next();
+        }
+        return accelerationStructureRecordingId_;
     }
 
     void VulkanCommandBuffer::clearRecordingState() noexcept
@@ -387,6 +398,7 @@ namespace rachis::vulkan
         queryPoolUses_.clear();
         computePushConstants_ = {};
         conditionalRendering_.reset();
+        accelerationStructureRecordingId_ = 0;
     }
 
     Result<VulkanCommandUses*> VulkanCommandBuffer::reserveCommandUses(std::size_t additional)

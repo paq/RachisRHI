@@ -9,12 +9,22 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
 #include <vector>
 #include <volk.h>
 
 namespace rachis::vulkan
 {
+
+    struct VulkanTopLevelInstances final
+    {
+        VkDeviceAddress deviceAddress = 0;
+        std::uint32_t count = 0;
+        std::vector<std::shared_ptr<void>> owners;
+        std::vector<std::shared_ptr<void>> dependencies;
+        std::vector<std::shared_ptr<detail::AccelerationStructureExecutionTracker>> dependencyTrackers;
+    };
 
     class VulkanAccelerationManager final
     {
@@ -26,7 +36,8 @@ namespace rachis::vulkan
             AccelerationStructureType type = AccelerationStructureType::bottomLevel;
             std::uint64_t size = 0;
             std::shared_ptr<void> keepAlive;
-            std::shared_ptr<void> version;
+            std::shared_ptr<VulkanAccelerationStructureVersion> version;
+            VulkanAccelerationStructureUse use;
         };
 
         VulkanAccelerationManager() = default;
@@ -114,11 +125,20 @@ namespace rachis::vulkan
             std::string label;
             VkAccelerationStructureKHR accelerationStructure = VK_NULL_HANDLE;
             VkDeviceAddress deviceAddress = 0;
-            AccelerationStructureBuildFlag buildFlags = AccelerationStructureBuildFlag::none;
             std::shared_ptr<AccelerationStructureKeepAlive> keepAlive;
             std::shared_ptr<AccelerationStructureStorageLease> storageLease;
             std::shared_ptr<VulkanAccelerationStructureVersionSlot> version =
                 std::make_shared<VulkanAccelerationStructureVersionSlot>();
+            std::shared_ptr<detail::AccelerationStructureExecutionTracker> executionTracker =
+                std::make_shared<detail::AccelerationStructureExecutionTracker>();
+        };
+
+        struct PublishedBuild final
+        {
+            std::shared_ptr<VulkanAccelerationStructureVersion> version;
+            std::vector<std::shared_ptr<void>> owners;
+            std::vector<std::shared_ptr<detail::AccelerationStructureExecutionTracker>> consumers;
+            detail::AccelerationStructureWrite write = detail::AccelerationStructureWrite::publishVersion;
         };
 
         [[nodiscard]] bool supported() const noexcept;
@@ -142,10 +162,9 @@ namespace rachis::vulkan
             std::shared_ptr<AccelerationStructureStorageLease> storageLease) const;
         [[nodiscard]] Result<AccelerationStructureHandle> registerRecord(
             std::shared_ptr<AccelerationStructureRecord> record);
-        [[nodiscard]] Status beginFirstBuild(VulkanCommandBuffer& commandBuffer,
-                                             AccelerationStructureHandle destination,
-                                             AccelerationStructureBuildFlag flags,
-                                             std::vector<std::shared_ptr<void>> buildOwners);
+        [[nodiscard]] Status publishBuild(VulkanCommandBuffer& commandBuffer,
+                                          AccelerationStructureHandle destination,
+                                          PublishedBuild build);
 
         struct TopLevelBuildTarget final
         {
@@ -156,10 +175,23 @@ namespace rachis::vulkan
             AccelerationStructureBuildFlag flags = AccelerationStructureBuildFlag::none;
         };
 
-        struct TopLevelInstanceData final
+        struct TopLevelUpdateRequest final
         {
-            VkDeviceAddress deviceAddress = 0;
-            std::uint32_t count = 0;
+            AccelerationStructureHandle source{};
+            AccelerationStructureHandle destination{};
+            std::size_t instanceCount = 0;
+            AccelerationStructureBuildFlag flags = AccelerationStructureBuildFlag::none;
+            BufferHandle scratch{};
+            std::uint64_t scratchOffset = 0;
+            bool inPlace = false;
+        };
+
+        struct TopLevelUpdateTarget final
+        {
+            TopLevelUpdateRequest request;
+            ResolvedAccelerationStructure source;
+            ResolvedAccelerationStructure destination;
+            VulkanResourceAllocator::ResolvedBindingBuffer scratch;
         };
 
         [[nodiscard]] Result<TopLevelBuildTarget> resolveTopLevelBuildTarget(const VulkanCommandBuffer& commandBuffer,
@@ -170,8 +202,19 @@ namespace rachis::vulkan
                                                                              std::uint64_t scratchOffset) const;
         [[nodiscard]] Status recordTopLevelBuild(VulkanCommandBuffer& commandBuffer,
                                                  const TopLevelBuildTarget& target,
-                                                 const TopLevelInstanceData& instances,
-                                                 std::vector<std::shared_ptr<void>> buildOwners);
+                                                 VulkanTopLevelInstances instances);
+        [[nodiscard]] Result<TopLevelUpdateTarget> resolveTopLevelUpdateTarget(
+            const VulkanCommandBuffer& commandBuffer, const TopLevelUpdateRequest& request) const;
+        [[nodiscard]] Status recordTopLevelUpdate(VulkanCommandBuffer& commandBuffer,
+                                                  const TopLevelUpdateTarget& target,
+                                                  VulkanTopLevelInstances instances);
+        [[nodiscard]] Status updateTopLevelFromSpan(VulkanCommandBuffer& commandBuffer,
+                                                    const TopLevelUpdateRequest& request,
+                                                    std::span<const AccelerationStructureInstance> instances);
+        [[nodiscard]] Status updateTopLevelFromInstanceBuffer(VulkanCommandBuffer& commandBuffer,
+                                                              const TopLevelUpdateRequest& request,
+                                                              BufferHandle instanceBuffer,
+                                                              std::uint64_t instanceOffset);
 
         VkDevice device_ = VK_NULL_HANDLE;
         const VolkDeviceTable* table_ = nullptr;

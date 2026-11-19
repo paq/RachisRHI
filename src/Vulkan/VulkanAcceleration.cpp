@@ -593,10 +593,12 @@ namespace rachis::vulkan
         [[nodiscard]] Result<std::vector<VkAccelerationStructureInstanceKHR>> nativeInstancesRetainingBottomLevels(
             const VulkanAccelerationManager& accelerationStructures,
             std::span<const AccelerationStructureInstance> instances,
-            std::vector<std::shared_ptr<void>>& retained)
+            VulkanTopLevelInstances& prepared)
         {
             std::vector<VkAccelerationStructureInstanceKHR> nativeInstances;
             nativeInstances.reserve(instances.size());
+            prepared.dependencies.reserve(instances.size() * 2U);
+            prepared.dependencyTrackers.reserve(instances.size());
             for (const auto& instance : instances)
             {
                 auto bottom = accelerationStructures.resolve(instance.bottomLevel);
@@ -610,9 +612,12 @@ namespace rachis::vulkan
                     });
                 }
                 nativeInstances.push_back(nativeInstance(instance, bottom->deviceAddress));
-                retained.push_back(bottom->keepAlive);
-                retained.push_back(bottom->version);
+                prepared.dependencies.push_back(std::move(bottom->keepAlive));
+                prepared.dependencies.push_back(std::move(bottom->version));
+                prepared.dependencyTrackers.push_back(std::move(bottom->use.executionTracker));
             }
+            detail::deduplicateSharedPointers(prepared.dependencies);
+            detail::deduplicateSharedPointers(prepared.dependencyTrackers);
             return nativeInstances;
         }
 
@@ -747,7 +752,124 @@ namespace rachis::vulkan
             }
             return buffer;
         }
+
+        [[nodiscard]] Result<VulkanTopLevelInstances> prepareSpanInstances(
+            const VulkanAccelerationManager& accelerationStructures,
+            VulkanResourceAllocator& resources,
+            std::span<const AccelerationStructureInstance> instances,
+            TemporaryBuffer& uploadOwner)
+        {
+            VulkanTopLevelInstances prepared;
+            auto native = nativeInstancesRetainingBottomLevels(accelerationStructures, instances, prepared);
+            if (!native)
+            {
+                return std::unexpected(std::move(native.error()));
+            }
+            auto uploaded = uploadInstances(resources, *native, uploadOwner);
+            if (!uploaded)
+            {
+                return std::unexpected(std::move(uploaded.error()));
+            }
+            prepared.deviceAddress = uploaded->deviceAddress;
+            prepared.count = static_cast<std::uint32_t>(native->size());
+            prepared.owners.push_back(std::move(uploaded->keepAlive));
+            return prepared;
+        }
+
+        [[nodiscard]] Result<VulkanTopLevelInstances> prepareBufferInstances(const VulkanResourceAllocator& resources,
+                                                                             BufferHandle instanceBuffer,
+                                                                             std::uint64_t instanceOffset,
+                                                                             std::uint32_t instanceCount)
+        {
+            auto buffer = validatedInstanceBuffer(resources, instanceBuffer, instanceOffset, instanceCount);
+            if (!buffer)
+            {
+                return std::unexpected(std::move(buffer.error()));
+            }
+            VulkanTopLevelInstances prepared;
+            prepared.deviceAddress = buffer->deviceAddress + instanceOffset;
+            prepared.count = instanceCount;
+            prepared.owners.push_back(std::move(buffer->keepAlive));
+            return prepared;
+        }
+
+        constexpr std::string_view inPlaceUpdateConsumerConflict =
+            "An acceleration structure cannot be read while another command recording updates it in place.";
+
+        [[nodiscard]] bool validUpdateScratchRange(const VulkanResourceAllocator::ResolvedBindingBuffer& scratch,
+                                                   std::uint64_t offset,
+                                                   std::uint32_t alignment,
+                                                   std::uint64_t updateScratchSize) noexcept
+        {
+            if (updateScratchSize != 0)
+            {
+                return validBuildScratchRange(scratch, offset, alignment, updateScratchSize);
+            }
+            return scratch.desc.usage == BufferUsage::accelerationStructureScratch && scratch.deviceAddress != 0 &&
+                   offset % alignment == 0 && (scratch.deviceAddress + offset) % alignment == 0 &&
+                   offset < scratch.desc.size;
+        }
+
+        struct AccelerationStructureConsumerHold final
+        {
+            detail::AccelerationStructureExecutionLease lease;
+            std::shared_ptr<VulkanAccelerationStructureVersion> version;
+        };
     } // namespace
+
+    Status retainVulkanAccelerationStructureConsumers(VulkanCommandBuffer& commandBuffer,
+                                                      std::span<const VulkanAccelerationStructureUse> uses)
+    {
+        if (uses.empty())
+        {
+            return {};
+        }
+        std::vector<std::shared_ptr<void>> holds;
+        try
+        {
+            holds.reserve(uses.size());
+            detail::reserveAdditional(commandBuffer.retained(), uses.size());
+            const auto recordingId = commandBuffer.accelerationStructureRecordingId();
+            for (const auto& use : uses)
+            {
+                if (use.version == nullptr || use.executionTracker == nullptr)
+                {
+                    continue;
+                }
+                const std::scoped_lock lock(use.version->mutex);
+                const auto version = use.version->current;
+                if (version == nullptr)
+                {
+                    continue;
+                }
+                std::vector<std::shared_ptr<detail::AccelerationStructureExecutionTracker>> trackers;
+                trackers.reserve(version->dependencyTrackers.size() + 1U);
+                trackers.push_back(use.executionTracker);
+                trackers.insert(trackers.end(), version->dependencyTrackers.begin(), version->dependencyTrackers.end());
+                auto lease = detail::AccelerationStructureExecutionLease::tryAcquireConsumers(trackers, recordingId);
+                if (!lease)
+                {
+                    return std::unexpected(
+                        Error{ErrorCode::invalidState, 0, std::string(inPlaceUpdateConsumerConflict)});
+                }
+                holds.push_back(std::make_shared<AccelerationStructureConsumerHold>(AccelerationStructureConsumerHold{
+                    .lease = std::move(*lease),
+                    .version = version,
+                }));
+            }
+        }
+        catch (const std::bad_alloc&)
+        {
+            return std::unexpected(Error{
+                ErrorCode::outOfMemory,
+                0,
+                "Acceleration-structure binding leases could not be retained.",
+            });
+        }
+        auto& retained = commandBuffer.retained();
+        std::ranges::move(holds, std::back_inserter(retained));
+        return {};
+    }
 
     VulkanAccelerationManager::AccelerationStructureKeepAlive::~AccelerationStructureKeepAlive()
     {
@@ -1121,7 +1243,7 @@ namespace rachis::vulkan
                 "The acceleration-structure handle is invalid or stale.",
             });
         }
-        std::shared_ptr<void> version;
+        std::shared_ptr<VulkanAccelerationStructureVersion> version;
         {
             const std::scoped_lock versionLock((*found)->version->mutex);
             version = (*found)->version->current;
@@ -1133,19 +1255,24 @@ namespace rachis::vulkan
             .size = (*found)->size,
             .keepAlive = (*found)->keepAlive,
             .version = std::move(version),
+            .use =
+                VulkanAccelerationStructureUse{
+                    .version = (*found)->version,
+                    .executionTracker = (*found)->executionTracker,
+                },
         };
     }
 
-    Status VulkanAccelerationManager::beginFirstBuild(VulkanCommandBuffer& commandBuffer,
-                                                      AccelerationStructureHandle destination,
-                                                      AccelerationStructureBuildFlag flags,
-                                                      std::vector<std::shared_ptr<void>> buildOwners)
+    Status VulkanAccelerationManager::publishBuild(VulkanCommandBuffer& commandBuffer,
+                                                   AccelerationStructureHandle destination,
+                                                   PublishedBuild build)
     {
-        std::shared_ptr<void> version;
+        const bool inPlace = build.write == detail::AccelerationStructureWrite::updateInPlace;
+        std::shared_ptr<detail::AccelerationStructureExecutionLease> executionLease;
         try
         {
-            version = std::make_shared<int>(0);
-            detail::reserveAdditional(commandBuffer.retained(), buildOwners.size() + 2U);
+            executionLease = std::make_shared<detail::AccelerationStructureExecutionLease>();
+            detail::reserveAdditional(commandBuffer.retained(), build.owners.size() + 4U);
             detail::reserveAdditional(commandBuffer.accelerationStructurePublications(), 1U);
         }
         catch (const std::bad_alloc&)
@@ -1156,6 +1283,7 @@ namespace rachis::vulkan
                 "Failed to allocate acceleration-structure build retention.",
             });
         }
+        const auto recordingId = commandBuffer.accelerationStructureRecordingId();
         const std::scoped_lock lock(mutex_);
         auto* record = structures_.find(destination);
         if (record == nullptr || *record == nullptr)
@@ -1167,19 +1295,52 @@ namespace rachis::vulkan
             });
         }
         const std::scoped_lock versionLock((*record)->version->mutex);
-        if ((*record)->version->current != nullptr)
+        auto& slot = *(*record)->version;
+        if (!inPlace && slot.current != nullptr)
         {
             return std::unexpected(Error{ErrorCode::invalidState, 0, std::string(immutableDestinationMessage)});
         }
-        (*record)->buildFlags = flags;
-        (*record)->version->current = version;
+        if (inPlace && slot.current == nullptr)
+        {
+            return std::unexpected(
+                Error{ErrorCode::invalidState, 0, "An in-place TLAS update requires a built target."});
+        }
+        if (inPlace && !(*record)->executionTracker->canUpdateInPlace(recordingId))
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidState,
+                0,
+                "An in-place TLAS update cannot overwrite an acceleration structure with active GPU execution.",
+            });
+        }
+        auto lease = detail::AccelerationStructureExecutionLease::tryAcquireProducer(
+            (*record)->executionTracker, recordingId, build.consumers, build.write);
+        if (!lease)
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidState,
+                0,
+                lease.error() == detail::AccelerationStructureLeaseConflict::consumer
+                    ? std::string(inPlaceUpdateConsumerConflict)
+                    : std::string("An acceleration-structure build cannot overwrite an acceleration structure with "
+                                  "active GPU execution."),
+            });
+        }
+        *executionLease = std::move(*lease);
+        auto previous = std::exchange(slot.current, build.version);
         auto& retained = commandBuffer.retained();
         retained.push_back((*record)->keepAlive);
-        retained.push_back(version);
-        std::ranges::move(buildOwners, std::back_inserter(retained));
+        retained.push_back(build.version);
+        retained.push_back(std::move(executionLease));
+        if (previous != nullptr)
+        {
+            retained.push_back(previous);
+        }
+        std::ranges::move(build.owners, std::back_inserter(retained));
         commandBuffer.accelerationStructurePublications().push_back(VulkanAccelerationStructurePublication{
             .slot = (*record)->version,
-            .published = version,
+            .published = build.version,
+            .previous = std::move(previous),
         });
         return {};
     }
@@ -1232,7 +1393,23 @@ namespace rachis::vulkan
             return std::unexpected(std::move(nativeInput.error()));
         }
         buildOwners.push_back(scratch->keepAlive);
-        if (auto begun = beginFirstBuild(commandBuffer, desc.destination, desc.input.flags, std::move(buildOwners));
+        std::shared_ptr<VulkanAccelerationStructureVersion> version;
+        try
+        {
+            version = std::make_shared<VulkanAccelerationStructureVersion>();
+        }
+        catch (const std::bad_alloc&)
+        {
+            return std::unexpected(Error{
+                ErrorCode::outOfMemory,
+                0,
+                "Failed to allocate acceleration-structure build retention.",
+            });
+        }
+        version->buildFlags = desc.input.flags;
+        if (auto begun = publishBuild(commandBuffer,
+                                      desc.destination,
+                                      PublishedBuild{.version = std::move(version), .owners = std::move(buildOwners)});
             !begun)
         {
             return begun;
@@ -1314,13 +1491,51 @@ namespace rachis::vulkan
         };
     }
 
+    namespace
+    {
+
+        [[nodiscard]] Result<std::shared_ptr<VulkanAccelerationStructureVersion>> makeTopLevelVersion(
+            AccelerationStructureBuildFlag flags, VulkanTopLevelInstances& instances)
+        {
+            try
+            {
+                auto version = std::make_shared<VulkanAccelerationStructureVersion>();
+                version->buildFlags = flags;
+                version->instanceCount = instances.count;
+                version->dependencies = std::move(instances.dependencies);
+                version->dependencyTrackers = instances.dependencyTrackers;
+                return version;
+            }
+            catch (const std::bad_alloc&)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::outOfMemory,
+                    0,
+                    "Failed to allocate acceleration-structure build retention.",
+                });
+            }
+        }
+
+    } // namespace
+
     Status VulkanAccelerationManager::recordTopLevelBuild(VulkanCommandBuffer& commandBuffer,
                                                           const TopLevelBuildTarget& target,
-                                                          const TopLevelInstanceData& instances,
-                                                          std::vector<std::shared_ptr<void>> buildOwners)
+                                                          VulkanTopLevelInstances instances)
     {
-        buildOwners.push_back(target.scratch.keepAlive);
-        if (auto begun = beginFirstBuild(commandBuffer, target.handle, target.flags, std::move(buildOwners)); !begun)
+        auto version = makeTopLevelVersion(target.flags, instances);
+        if (!version)
+        {
+            return std::unexpected(std::move(version.error()));
+        }
+        instances.owners.push_back(target.scratch.keepAlive);
+        if (auto begun = publishBuild(commandBuffer,
+                                      target.handle,
+                                      PublishedBuild{
+                                          .version = std::move(*version),
+                                          .owners = std::move(instances.owners),
+                                          .consumers = std::move(instances.dependencyTrackers),
+                                      });
+            !begun)
         {
             return begun;
         }
@@ -1346,27 +1561,13 @@ namespace rachis::vulkan
         {
             return std::unexpected(std::move(target.error()));
         }
-
-        std::vector<std::shared_ptr<void>> buildOwners;
-        auto instances = nativeInstancesRetainingBottomLevels(*this, desc.instances, buildOwners);
+        TemporaryBuffer instanceBuffer(*resources_);
+        auto instances = prepareSpanInstances(*this, *resources_, desc.instances, instanceBuffer);
         if (!instances)
         {
             return std::unexpected(std::move(instances.error()));
         }
-        TemporaryBuffer instanceBuffer(*resources_);
-        auto uploadedInstances = uploadInstances(*resources_, *instances, instanceBuffer);
-        if (!uploadedInstances)
-        {
-            return std::unexpected(std::move(uploadedInstances.error()));
-        }
-        buildOwners.push_back(uploadedInstances->keepAlive);
-        return recordTopLevelBuild(commandBuffer,
-                                   *target,
-                                   {
-                                       .deviceAddress = uploadedInstances->deviceAddress,
-                                       .count = static_cast<std::uint32_t>(instances->size()),
-                                   },
-                                   std::move(buildOwners));
+        return recordTopLevelBuild(commandBuffer, *target, std::move(*instances));
     }
 
     Status VulkanAccelerationManager::buildTopLevelFromBuffer(VulkanCommandBuffer& commandBuffer,
@@ -1379,33 +1580,254 @@ namespace rachis::vulkan
             return std::unexpected(std::move(target.error()));
         }
         auto instances =
-            validatedInstanceBuffer(*resources_, desc.instanceBuffer, desc.instanceOffset, desc.instanceCount);
+            prepareBufferInstances(*resources_, desc.instanceBuffer, desc.instanceOffset, desc.instanceCount);
         if (!instances)
         {
             return std::unexpected(std::move(instances.error()));
         }
-        std::vector<std::shared_ptr<void>> buildOwners;
-        buildOwners.push_back(instances->keepAlive);
-        return recordTopLevelBuild(commandBuffer,
-                                   *target,
-                                   {
-                                       .deviceAddress = instances->deviceAddress + desc.instanceOffset,
-                                       .count = desc.instanceCount,
-                                   },
-                                   std::move(buildOwners));
+        return recordTopLevelBuild(commandBuffer, *target, std::move(*instances));
     }
 
-    Status VulkanAccelerationManager::updateTopLevelFromBuffer(VulkanCommandBuffer&,
-                                                               const TopLevelAccelerationStructureBufferUpdateDesc&)
+    Result<VulkanAccelerationManager::TopLevelUpdateTarget> VulkanAccelerationManager::resolveTopLevelUpdateTarget(
+        const VulkanCommandBuffer& commandBuffer, const TopLevelUpdateRequest& request) const
     {
-        return std::unexpected(
-            Error{ErrorCode::unsupported, 0, "Vulkan out-of-place TLAS updates are not implemented."});
+        if (!supported())
+        {
+            return std::unexpected(Error{
+                ErrorCode::unsupported, 0, "Acceleration-structure updates require acceleration-structure support."});
+        }
+        if (!canRecordAccelerationStructureBuild(commandBuffer))
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidState,
+                0,
+                "A TLAS update requires a graphics or compute command buffer outside a rendering scope.",
+            });
+        }
+        if (request.inPlace != (request.source == request.destination) ||
+            request.instanceCount > std::numeric_limits<std::uint32_t>::max())
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidArgument,
+                0,
+                request.inPlace ? "An in-place TLAS update requires one target and a portable instance count."
+                                : "A TLAS update requires distinct handles and a portable instance count.",
+            });
+        }
+        auto sizes = queryTopLevelBuildSizes({
+            .instanceCount = static_cast<std::uint32_t>(request.instanceCount),
+            .flags = request.flags,
+        });
+        if (!sizes)
+        {
+            return std::unexpected(std::move(sizes.error()));
+        }
+        auto source = resolve(request.source);
+        if (!source)
+        {
+            return std::unexpected(std::move(source.error()));
+        }
+        auto destination = request.inPlace ? source : resolve(request.destination);
+        if (!destination)
+        {
+            return std::unexpected(std::move(destination.error()));
+        }
+        auto scratch = resources_->resolveBindingBuffer(request.scratch);
+        if (!scratch)
+        {
+            return std::unexpected(std::move(scratch.error()));
+        }
+        if (source->type != AccelerationStructureType::topLevel ||
+            destination->type != AccelerationStructureType::topLevel ||
+            !validUpdateScratchRange(*scratch, request.scratchOffset, scratchAlignment_, sizes->updateScratchSize))
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidArgument,
+                0,
+                "A TLAS update requires compatible TLAS handles, destination storage, and aligned update scratch.",
+            });
+        }
+        if (source->version == nullptr || (!request.inPlace && destination->version != nullptr))
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidState,
+                0,
+                request.inPlace ? "An in-place TLAS update requires a built target."
+                                : "A TLAS update requires a built source and an unbuilt immutable destination.",
+            });
+        }
+        if (destination->size < sizes->accelerationStructureSize)
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidArgument,
+                0,
+                "A TLAS update destination must fit the update input's prebuild size.",
+            });
+        }
+        if (!hasAny(source->version->buildFlags, AccelerationStructureBuildFlag::allowUpdate) ||
+            request.flags != source->version->buildFlags || request.instanceCount != source->version->instanceCount)
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidArgument,
+                0,
+                "A TLAS update must preserve the update-enabled source flags and instance count.",
+            });
+        }
+        return TopLevelUpdateTarget{
+            .request = request,
+            .source = std::move(*source),
+            .destination = std::move(*destination),
+            .scratch = std::move(*scratch),
+        };
+    }
+
+    Status VulkanAccelerationManager::recordTopLevelUpdate(VulkanCommandBuffer& commandBuffer,
+                                                           const TopLevelUpdateTarget& target,
+                                                           VulkanTopLevelInstances instances)
+    {
+        auto version = makeTopLevelVersion(target.request.flags, instances);
+        if (!version)
+        {
+            return std::unexpected(std::move(version.error()));
+        }
+        auto consumers = std::move(instances.dependencyTrackers);
+        instances.owners.push_back(target.scratch.keepAlive);
+        if (!target.request.inPlace)
+        {
+            consumers.push_back(target.source.use.executionTracker);
+            instances.owners.push_back(target.source.keepAlive);
+            instances.owners.push_back(target.source.version);
+        }
+        if (auto begun =
+                publishBuild(commandBuffer,
+                             target.request.destination,
+                             PublishedBuild{
+                                 .version = std::move(*version),
+                                 .owners = std::move(instances.owners),
+                                 .consumers = std::move(consumers),
+                                 .write = target.request.inPlace ? detail::AccelerationStructureWrite::updateInPlace
+                                                                 : detail::AccelerationStructureWrite::publishVersion,
+                             });
+            !begun)
+        {
+            return begun;
+        }
+
+        const auto geometry = nativeInstancesGeometry(instances.deviceAddress);
+        auto info = nativeBuildGeometryInfo(VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
+                                            target.request.flags,
+                                            std::span(&geometry, 1),
+                                            target.destination.accelerationStructure,
+                                            target.scratch.deviceAddress + target.request.scratchOffset);
+        info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
+        info.srcAccelerationStructure = target.source.accelerationStructure;
+        const auto range = nativeBuildRange(instances.count);
+        const VkAccelerationStructureBuildRangeInfoKHR* rangePointer = &range;
+        table_->vkCmdBuildAccelerationStructuresKHR(commandBuffer.native(), 1, &info, &rangePointer);
+        return recordBuildBarrier(commandBuffer.native(), commandBuffer.queueType());
+    }
+
+    Status VulkanAccelerationManager::updateTopLevelFromSpan(VulkanCommandBuffer& commandBuffer,
+                                                             const TopLevelUpdateRequest& request,
+                                                             std::span<const AccelerationStructureInstance> instances)
+    {
+        auto target = resolveTopLevelUpdateTarget(commandBuffer, request);
+        if (!target)
+        {
+            return std::unexpected(std::move(target.error()));
+        }
+        TemporaryBuffer instanceBuffer(*resources_);
+        auto prepared = prepareSpanInstances(*this, *resources_, instances, instanceBuffer);
+        if (!prepared)
+        {
+            return std::unexpected(std::move(prepared.error()));
+        }
+        return recordTopLevelUpdate(commandBuffer, *target, std::move(*prepared));
+    }
+
+    Status VulkanAccelerationManager::updateTopLevelFromInstanceBuffer(VulkanCommandBuffer& commandBuffer,
+                                                                       const TopLevelUpdateRequest& request,
+                                                                       BufferHandle instanceBuffer,
+                                                                       std::uint64_t instanceOffset)
+    {
+        auto target = resolveTopLevelUpdateTarget(commandBuffer, request);
+        if (!target)
+        {
+            return std::unexpected(std::move(target.error()));
+        }
+        auto prepared = prepareBufferInstances(
+            *resources_, instanceBuffer, instanceOffset, static_cast<std::uint32_t>(request.instanceCount));
+        if (!prepared)
+        {
+            return std::unexpected(std::move(prepared.error()));
+        }
+        return recordTopLevelUpdate(commandBuffer, *target, std::move(*prepared));
+    }
+
+    Status VulkanAccelerationManager::updateTopLevel(VulkanCommandBuffer& commandBuffer,
+                                                     const TopLevelAccelerationStructureUpdateDesc& desc)
+    {
+        return updateTopLevelFromSpan(commandBuffer,
+                                      {
+                                          .source = desc.source,
+                                          .destination = desc.destination,
+                                          .instanceCount = desc.instances.size(),
+                                          .flags = desc.flags,
+                                          .scratch = desc.scratch,
+                                          .scratchOffset = desc.scratchOffset,
+                                          .inPlace = false,
+                                      },
+                                      desc.instances);
+    }
+
+    Status VulkanAccelerationManager::updateTopLevelInPlace(VulkanCommandBuffer& commandBuffer,
+                                                            const TopLevelAccelerationStructureInPlaceUpdateDesc& desc)
+    {
+        return updateTopLevelFromSpan(commandBuffer,
+                                      {
+                                          .source = desc.target,
+                                          .destination = desc.target,
+                                          .instanceCount = desc.instances.size(),
+                                          .flags = desc.flags,
+                                          .scratch = desc.scratch,
+                                          .scratchOffset = desc.scratchOffset,
+                                          .inPlace = true,
+                                      },
+                                      desc.instances);
+    }
+
+    Status VulkanAccelerationManager::updateTopLevelFromBuffer(
+        VulkanCommandBuffer& commandBuffer, const TopLevelAccelerationStructureBufferUpdateDesc& desc)
+    {
+        return updateTopLevelFromInstanceBuffer(commandBuffer,
+                                                {
+                                                    .source = desc.source,
+                                                    .destination = desc.destination,
+                                                    .instanceCount = desc.instanceCount,
+                                                    .flags = desc.flags,
+                                                    .scratch = desc.scratch,
+                                                    .scratchOffset = desc.scratchOffset,
+                                                    .inPlace = false,
+                                                },
+                                                desc.instanceBuffer,
+                                                desc.instanceOffset);
     }
 
     Status VulkanAccelerationManager::updateTopLevelInPlaceFromBuffer(
-        VulkanCommandBuffer&, const TopLevelAccelerationStructureBufferInPlaceUpdateDesc&)
+        VulkanCommandBuffer& commandBuffer, const TopLevelAccelerationStructureBufferInPlaceUpdateDesc& desc)
     {
-        return std::unexpected(Error{ErrorCode::unsupported, 0, "Vulkan in-place TLAS updates are not implemented."});
+        return updateTopLevelFromInstanceBuffer(commandBuffer,
+                                                {
+                                                    .source = desc.target,
+                                                    .destination = desc.target,
+                                                    .instanceCount = desc.instanceCount,
+                                                    .flags = desc.flags,
+                                                    .scratch = desc.scratch,
+                                                    .scratchOffset = desc.scratchOffset,
+                                                    .inPlace = true,
+                                                },
+                                                desc.instanceBuffer,
+                                                desc.instanceOffset);
     }
 
     Result<AccelerationStructureInstanceLayout> VulkanAccelerationManager::instanceLayout() const
@@ -1466,23 +1888,10 @@ namespace rachis::vulkan
             Error{ErrorCode::unsupported, 0, "Vulkan out-of-place BLAS updates are not implemented."});
     }
 
-    Status VulkanAccelerationManager::updateTopLevel(VulkanCommandBuffer&,
-                                                     const TopLevelAccelerationStructureUpdateDesc&)
-    {
-        return std::unexpected(
-            Error{ErrorCode::unsupported, 0, "Vulkan out-of-place TLAS updates are not implemented."});
-    }
-
     Status VulkanAccelerationManager::updateBottomLevelInPlace(VulkanCommandBuffer&,
                                                                const BottomLevelAccelerationStructureInPlaceUpdateDesc&)
     {
         return std::unexpected(Error{ErrorCode::unsupported, 0, "Vulkan in-place BLAS updates are not implemented."});
-    }
-
-    Status VulkanAccelerationManager::updateTopLevelInPlace(VulkanCommandBuffer&,
-                                                            const TopLevelAccelerationStructureInPlaceUpdateDesc&)
-    {
-        return std::unexpected(Error{ErrorCode::unsupported, 0, "Vulkan in-place TLAS updates are not implemented."});
     }
 
     Status VulkanAccelerationManager::compact(VulkanCommandBuffer&, const AccelerationStructureCompactionDesc&)
