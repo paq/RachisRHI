@@ -4,9 +4,13 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
+#include <span>
 #include <vector>
 
 namespace
@@ -34,6 +38,53 @@ namespace
         stream.seekg(0, std::ios::beg);
         stream.read(reinterpret_cast<char*>(result.data()), end);
         return stream ? result : std::vector<std::byte>{};
+    }
+
+    [[nodiscard]] std::uint32_t readU32(std::span<const std::byte> bytes, std::size_t offset)
+    {
+        REQUIRE(offset + sizeof(std::uint32_t) <= bytes.size());
+        std::uint32_t value = 0;
+        std::memcpy(&value, bytes.data() + offset, sizeof(value));
+        return value;
+    }
+
+    void writeU32(std::span<std::byte> bytes, std::size_t offset, std::uint32_t value)
+    {
+        REQUIRE(offset + sizeof(std::uint32_t) <= bytes.size());
+        std::memcpy(bytes.data() + offset, &value, sizeof(value));
+    }
+
+    [[nodiscard]] std::size_t psvPartOffset(std::span<const std::byte> container)
+    {
+        constexpr std::uint32_t psv0 = 0x30565350U;
+        const auto partCount = readU32(container, 28);
+        for (std::uint32_t index = 0; index < partCount; ++index)
+        {
+            const auto partOffset = readU32(container, 32 + index * sizeof(std::uint32_t));
+            if (readU32(container, partOffset) == psv0)
+            {
+                return partOffset + 8;
+            }
+        }
+        FAIL("The DXIL container has no PSV0 part.");
+        return 0;
+    }
+
+    [[nodiscard]] rachis::Result<rachis::ShaderModuleHandle> createDrawIndexVertex(rachis::Device& device,
+                                                                                   std::span<const std::byte> bytecode,
+                                                                                   bool drawIndex)
+    {
+        static constexpr std::array locations{0U};
+        return device.createShaderModule(rachis::ShaderModuleDesc{
+            .stage = rachis::ShaderStage::vertex,
+            .bytecode = bytecode,
+            .entryPoint = "drawIndexVertex",
+            .shaderInterface =
+                rachis::ShaderInterfaceDesc{
+                    .vertexInputLocations = locations,
+                    .drawIndex = drawIndex,
+                },
+        });
     }
 
 } // namespace
@@ -70,4 +121,46 @@ TEST_CASE("Direct3D 12 indirect draws and mesh dispatches give each record its d
                                               .mesh = mesh,
                                               .pixel = pixel,
                                           });
+}
+
+TEST_CASE("Direct3D 12 rejects draw-index modules whose DXIL resource table cannot be read",
+          "[size:medium][rhi][draw-index][warp]")
+{
+    auto created = rachis::createDevice(rachis::DeviceDesc{
+        .adapterPreference = rachis::AdapterPreference::warp,
+        .validation = rachis::ValidationLevel::standard,
+        .requireValidation = false,
+        .diagnosticCallback = &printDiagnostic,
+    });
+    if (!created)
+    {
+        INFO(created.error().message);
+    }
+    REQUIRE(created.has_value());
+    auto device = std::move(*created);
+    const auto vertex = loadShader(RACHIS_TEST_DRAW_INDEX_VERTEX_SHADER_PATH);
+    REQUIRE_FALSE(vertex.empty());
+
+    auto valid = createDrawIndexVertex(device, vertex, true);
+    REQUIRE(valid.has_value());
+    REQUIRE(device.destroyShaderModule(*valid).has_value());
+
+    const auto psv = psvPartOffset(vertex);
+    const auto resourceCountOffset = psv + 4 + readU32(vertex, psv);
+    REQUIRE(readU32(vertex, resourceCountOffset) > 0);
+    auto truncated = vertex;
+    writeU32(truncated, resourceCountOffset, 0x0010'0000U);
+    for (const bool drawIndex : {true, false})
+    {
+        INFO("Declared draw index: " << drawIndex);
+        const auto rejected = createDrawIndexVertex(device, truncated, drawIndex);
+        REQUIRE_FALSE(rejected.has_value());
+        CHECK(rejected.error().code == rachis::ErrorCode::invalidArgument);
+    }
+
+    auto withoutPsv = vertex;
+    withoutPsv[psv - 8] = std::byte{'X'};
+    const auto unverifiable = createDrawIndexVertex(device, withoutPsv, true);
+    REQUIRE_FALSE(unverifiable.has_value());
+    CHECK(unverifiable.error().code == rachis::ErrorCode::invalidArgument);
 }

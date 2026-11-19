@@ -449,17 +449,18 @@ namespace rachis::d3d12::dxil
         {
             return std::unexpected(malformed("has an unknown PSV0 resource record size"));
         }
+        const auto table = cursor.take(std::uint64_t{*bindSize} * *resources);
+        if (!table.has_value())
+        {
+            return std::unexpected(malformed("has a truncated PSV0 resource table"));
+        }
         for (std::uint32_t index = 0; index < *resources; ++index)
         {
-            const auto record = cursor.take(*bindSize);
-            if (!record.has_value())
-            {
-                return std::unexpected(malformed("has a truncated PSV0 resource table"));
-            }
-            const auto type = readU32(*record, 0);
-            const auto space = readU32(*record, 4);
-            const auto lowerBound = readU32(*record, 8);
-            const auto upperBound = readU32(*record, 12);
+            const auto record = table->subspan(std::size_t{index} * *bindSize, *bindSize);
+            const auto type = readU32(record, 0);
+            const auto space = readU32(record, 4);
+            const auto lowerBound = readU32(record, 8);
+            const auto upperBound = readU32(record, 12);
             if (type == constantBufferType && space == registerSpace && lowerBound <= shaderRegister &&
                 shaderRegister <= upperBound)
             {
@@ -467,6 +468,43 @@ namespace rachis::d3d12::dxil
             }
         }
         return std::optional{false};
+    }
+
+    [[nodiscard]] inline Status validateDrawIndexDeclaration(std::span<const std::byte> container,
+                                                             std::uint32_t shaderRegister,
+                                                             std::uint32_t registerSpace,
+                                                             bool declared)
+    {
+        auto binds = bindsConstantBuffer(container, shaderRegister, registerSpace);
+        if (!binds)
+        {
+            return std::unexpected(std::move(binds.error()));
+        }
+        if (!binds->has_value())
+        {
+            if (!declared)
+            {
+                return {};
+            }
+            return std::unexpected(Error{
+                ErrorCode::invalidArgument,
+                0,
+                "The shader interface declares the draw index, but the bytecode has no PSV0 resource table that "
+                "shows its constant buffer at register b0, space5.",
+            });
+        }
+        if (**binds == declared)
+        {
+            return {};
+        }
+        return std::unexpected(Error{
+            ErrorCode::invalidArgument,
+            0,
+            declared ? "The shader interface declares the draw index, but the DXIL binds no constant buffer at "
+                       "register b0, space5."
+                     : "The DXIL binds the draw-index constant buffer at register b0, space5, but the shader "
+                       "interface does not declare the draw index.",
+        });
     }
 
 } // namespace rachis::d3d12::dxil

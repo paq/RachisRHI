@@ -15,6 +15,7 @@ namespace
     using rachis::d3d12::dxil::readExpectedWaveLaneCounts;
     using rachis::d3d12::dxil::readStageSignature;
     using rachis::d3d12::dxil::SignaturePart;
+    using rachis::d3d12::dxil::validateDrawIndexDeclaration;
     using rachis::detail::StageComponentType;
     using rachis::detail::StageInterfaceVariable;
 
@@ -295,4 +296,51 @@ TEST_CASE("The DXIL signature reader leaves out pixel inputs nothing reads", "[s
     REQUIRE((*inputs)->size() == 2);
     CHECK((**inputs)[0].variable == StageInterfaceVariable{.location = 0, .componentCount = 2});
     CHECK((**inputs)[1].variable == StageInterfaceVariable{.location = 2, .componentCount = 2});
+}
+
+namespace
+{
+
+    constexpr std::size_t runtimeInfoOffset = 48;
+    constexpr std::size_t resourceCountOffset = runtimeInfoOffset + 48;
+    constexpr std::size_t resourceRecordOffset = resourceCountOffset + 8;
+
+} // namespace
+
+TEST_CASE("Direct3D 12 draw-index declarations need a readable PSV0 resource table",
+          "[size:small][rhi][d3d12][draw-index]")
+{
+    constexpr std::uint32_t constantBufferType = 2;
+    auto binding = container({}, {});
+    writeU32(binding, resourceRecordOffset, constantBufferType);
+    writeU32(binding, resourceRecordOffset + 4, 5);
+    CHECK(validateDrawIndexDeclaration(binding, 0, 5, true).has_value());
+    const auto undeclared = validateDrawIndexDeclaration(binding, 0, 5, false);
+    REQUIRE_FALSE(undeclared.has_value());
+    CHECK(undeclared.error().code == rachis::ErrorCode::invalidArgument);
+
+    const auto other = container({}, {});
+    CHECK(validateDrawIndexDeclaration(other, 0, 5, false).has_value());
+    const auto unbound = validateDrawIndexDeclaration(other, 0, 5, true);
+    REQUIRE_FALSE(unbound.has_value());
+    CHECK(unbound.error().code == rachis::ErrorCode::invalidArgument);
+
+    auto truncated = binding;
+    writeU32(truncated, resourceCountOffset, 1000);
+    for (const bool declared : {true, false})
+    {
+        INFO("Declared: " << declared);
+        const auto result = validateDrawIndexDeclaration(truncated, 0, 5, declared);
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().code == rachis::ErrorCode::invalidArgument);
+    }
+
+    auto withoutPsv = binding;
+    withoutPsv[36] = std::byte{'X'};
+    CHECK(validateDrawIndexDeclaration(withoutPsv, 0, 5, false).has_value());
+    const auto unverifiable = validateDrawIndexDeclaration(withoutPsv, 0, 5, true);
+    REQUIRE_FALSE(unverifiable.has_value());
+    CHECK(unverifiable.error().code == rachis::ErrorCode::invalidArgument);
+
+    CHECK_FALSE(validateDrawIndexDeclaration(std::vector<std::byte>(8), 0, 5, false).has_value());
 }

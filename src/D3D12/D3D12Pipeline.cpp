@@ -597,19 +597,7 @@ namespace rachis::d3d12
 
         [[nodiscard]] Status validateDrawIndexBytecode(std::span<const std::byte> bytecode, bool declared)
         {
-            const auto binds = dxil::bindsConstantBuffer(bytecode, drawIndexRegister, drawIndexRegisterSpace);
-            if (!binds || !binds->has_value() || **binds == declared)
-            {
-                return {};
-            }
-            return std::unexpected(Error{
-                ErrorCode::invalidArgument,
-                0,
-                declared ? "The shader interface declares the draw index, but the DXIL binds no constant buffer at "
-                           "register b0, space5."
-                         : "The DXIL binds the draw-index constant buffer at register b0, space5, but the shader "
-                           "interface does not declare the draw index.",
-            });
+            return dxil::validateDrawIndexDeclaration(bytecode, drawIndexRegister, drawIndexRegisterSpace, declared);
         }
 
         [[nodiscard]] Status validateVertexInterface(const ShaderModuleRecord& shader,
