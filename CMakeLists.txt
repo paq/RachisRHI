@@ -1325,6 +1325,20 @@ if(RACHIS_ENABLE_METAL AND rachis_build_tests)
     rachis_rhi_slang_metallib(MetalMeshShader.missing.ps.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalMeshShader.slang" meshPixelMissing)
     rachis_rhi_slang_metallib(MetalIndirectCount.cs.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalIndirectCount.slang" countMain)
     rachis_rhi_slang_metallib(MetalBindingArrays.cs.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalBindingArrays.slang" bindingArraysMain)
+    rachis_cook_slang_metallib(
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/GraphicsTriangle.hlsl"
+        ENTRY inputVertex
+        STAGE vertex
+        OUTPUT "${rachis_rhi_metallib_dir}/GraphicsTriangle.input.vs.metallib"
+        COMMENT "Cooking Metal metallib GraphicsTriangle.input.vs"
+    )
+    rachis_cook_slang_metallib(
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/GraphicsTriangle.hlsl"
+        ENTRY pixelMain
+        STAGE pixel
+        OUTPUT "${rachis_rhi_metallib_dir}/GraphicsTriangle.ps.metallib"
+        COMMENT "Cooking Metal metallib GraphicsTriangle.ps"
+    )
     add_custom_target(RachisRHITestMetalShaders ALL
         DEPENDS
             "${rachis_rhi_metallib_dir}/MetalMeshShader.as.metallib"
@@ -1341,6 +1355,10 @@ if(RACHIS_ENABLE_METAL AND rachis_build_tests)
             "${rachis_rhi_metallib_dir}/MetalIndirectCount.cs.pnms"
             "${rachis_rhi_metallib_dir}/MetalBindingArrays.cs.metallib"
             "${rachis_rhi_metallib_dir}/MetalBindingArrays.cs.pnms"
+            "${rachis_rhi_metallib_dir}/GraphicsTriangle.input.vs.metallib"
+            "${rachis_rhi_metallib_dir}/GraphicsTriangle.input.vs.pnms"
+            "${rachis_rhi_metallib_dir}/GraphicsTriangle.ps.metallib"
+            "${rachis_rhi_metallib_dir}/GraphicsTriangle.ps.pnms"
             "${rachis_rhi_metallib_dir}/BootstrapTriangle.vs.metallib"
             "${rachis_rhi_metallib_dir}/BootstrapTriangle.vs.pnms"
             "${rachis_rhi_metallib_dir}/BootstrapTriangle.ps.metallib"
@@ -1616,6 +1634,7 @@ if(RACHIS_ENABLE_METAL)
         src/Metal/MetalDevice.mm
         src/Metal/MetalDiagnostics.mm
         src/Metal/MetalEncoding.mm
+        src/Metal/MetalFillAndClear.mm
         src/Metal/MetalIndirectRecords.mm
         src/Metal/MetalPipelines.mm
         src/Metal/MetalQueries.mm
@@ -2865,6 +2884,7 @@ if(rachis_build_tests)
             tests/metal/rendering/MetalUnsupportedRasterFeatureContractTests.cpp
             tests/metal/resources/MetalBufferContractTests.cpp
             tests/metal/resources/MetalCopiesContractTests.cpp
+            tests/metal/resources/MetalFillAndClearContractTests.cpp
             tests/metal/resources/MetalImageUtilityContractTests.cpp
             tests/metal/resources/MetalTextureContractTests.cpp
             tests/metal/shaders/MetalShaderArithmeticContractTests.cpp

@@ -1050,6 +1050,8 @@ namespace rachis::metal
         __strong id<MTLBuffer> mipmapEncodeOn;
         __strong id<MTLComputePipelineState> indirectClampCompute;
         __strong id<MTLRenderPipelineState> indirectClampRender;
+        __strong id<MTLComputePipelineState> fillBufferPipeline;
+        std::array<__strong id<MTLComputePipelineState>, 15> clearTexturePipelines{};
         std::uint64_t nextAllocationId = 1;
         mutable std::vector<std::weak_ptr<MetalAllocationTelemetry>> allocations;
         std::size_t nextAllocationPruneThreshold = 64;

@@ -274,6 +274,14 @@ namespace rachis::metal
                                           const IndirectDrawDesc& desc) override;
         [[nodiscard]] Status drawIndexedIndirect(detail::BackendCommandBuffer& commandBuffer,
                                                  const IndirectDrawDesc& desc) override;
+        [[nodiscard]] Status fillBuffer(detail::BackendCommandBuffer& commandBuffer,
+                                        BufferHandle buffer,
+                                        std::uint64_t offset,
+                                        std::uint64_t size,
+                                        std::uint32_t value) override;
+        [[nodiscard]] Status clearStorageTexture(detail::BackendCommandBuffer& commandBuffer,
+                                                 TextureViewHandle view,
+                                                 const StorageTextureClearValue& value) override;
         [[nodiscard]] Status dispatchMesh(detail::BackendCommandBuffer& commandBuffer,
                                           std::uint32_t groupCountX,
                                           std::uint32_t groupCountY,
