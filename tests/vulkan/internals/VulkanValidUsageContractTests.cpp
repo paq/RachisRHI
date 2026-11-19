@@ -473,6 +473,14 @@ namespace
     thread_local std::uint32_t gHostAllocationsUntilFailure = 0;
     thread_local bool gHostAllocationFailureInjected = false;
 
+    template<typename Record>
+    void recordWithoutInjectedFailure(Record&& record)
+    {
+        const auto remaining = std::exchange(gHostAllocationsUntilFailure, 0U);
+        std::forward<Record>(record)();
+        gHostAllocationsUntilFailure = remaining;
+    }
+
 } // namespace
 
 void* operator new(std::size_t size)
@@ -554,6 +562,13 @@ namespace
         VkPipelineStageFlags2 dstStageMask = 0;
     };
 
+    struct RecordedImageLayoutUse final
+    {
+        VkCommandBuffer command = VK_NULL_HANDLE;
+        VkImage image = VK_NULL_HANDLE;
+        VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    };
+
     struct RecordedMemoryBarrier final
     {
         VkCommandBuffer command = VK_NULL_HANDLE;
@@ -600,6 +615,7 @@ namespace
         resolveImage,
         pushConstants,
         setDepthBias,
+        clearColorImage,
     };
 
     struct CommandOpEvent final
@@ -643,6 +659,8 @@ namespace
         VkResult fenceStatus = VK_SUCCESS;
         std::size_t fenceResets = 0;
         std::size_t clearColorImages = 0;
+        std::vector<RecordedImageLayoutUse> clearColorLayouts;
+        std::vector<RecordedImageLayoutUse> copyImageDestinationLayouts;
     };
 
     thread_local MockVulkanDispatch* gMock = nullptr;
@@ -908,22 +926,30 @@ namespace
     VKAPI_ATTR void VKAPI_CALL mockCmdCopyImage(VkCommandBuffer commandBuffer,
                                                 VkImage,
                                                 VkImageLayout,
-                                                VkImage,
-                                                VkImageLayout,
+                                                VkImage dstImage,
+                                                VkImageLayout dstImageLayout,
                                                 std::uint32_t,
                                                 const VkImageCopy*)
     {
-        gMock->timelineEvents.push_back({.kind = CommandOpKind::copyImage, .command = commandBuffer});
+        recordWithoutInjectedFailure([&] {
+            gMock->timelineEvents.push_back({.kind = CommandOpKind::copyImage, .command = commandBuffer});
+            gMock->copyImageDestinationLayouts.push_back(
+                {.command = commandBuffer, .image = dstImage, .layout = dstImageLayout});
+        });
     }
 
-    VKAPI_ATTR void VKAPI_CALL mockCmdClearColorImage(VkCommandBuffer,
-                                                      VkImage,
-                                                      VkImageLayout,
+    VKAPI_ATTR void VKAPI_CALL mockCmdClearColorImage(VkCommandBuffer commandBuffer,
+                                                      VkImage image,
+                                                      VkImageLayout imageLayout,
                                                       const VkClearColorValue*,
                                                       std::uint32_t,
                                                       const VkImageSubresourceRange*)
     {
         ++gMock->clearColorImages;
+        recordWithoutInjectedFailure([&] {
+            gMock->clearColorLayouts.push_back({.command = commandBuffer, .image = image, .layout = imageLayout});
+            gMock->timelineEvents.push_back({.kind = CommandOpKind::clearColorImage, .command = commandBuffer});
+        });
     }
 
     VKAPI_ATTR void VKAPI_CALL mockCmdResolveImage(VkCommandBuffer commandBuffer,
@@ -5126,6 +5152,7 @@ namespace
         rachis::CommandPoolHandle pool{};
         rachis::TextureHandle texture{};
         rachis::TextureHandle other{};
+        rachis::TextureHandle copySource{};
         rachis::TextureViewHandle view{};
 
         MockStorageClearFixture()
@@ -5169,6 +5196,13 @@ namespace
                                                             .usage = rachis::TextureUsage::storage});
             REQUIRE(unrelated.has_value());
             other = *unrelated;
+            auto source = resources.adoptSwapchainImage(fakeHandle<VkImage>(0x7103),
+                                                        {.width = 8,
+                                                         .height = 8,
+                                                         .format = rachis::Format::rgba8Unorm,
+                                                         .usage = rachis::TextureUsage::copySource});
+            REQUIRE(source.has_value());
+            copySource = *source;
             auto storage = resources.createTextureView({
                 .texture = texture,
                 .usage = rachis::TextureViewUsage::storage,
@@ -5224,6 +5258,16 @@ namespace
                                                      .float32 = {1.0F, 0.5F, 0.25F, 1.0F},
                                                  },
                                                  nullptr);
+        }
+
+        [[nodiscard]] rachis::Status copyIntoLayerZero(const auto& commandBuffer)
+        {
+            const std::array regions{
+                rachis::TextureCopyRegion{
+                    .extent = {.width = 8, .height = 8, .depth = 1},
+                },
+            };
+            return resources.copyTextureRegions(native(commandBuffer), copySource, texture, regions);
         }
 
         template<typename CommandBuffer>
@@ -5286,6 +5330,81 @@ TEST_CASE("Vulkan storage clears that fail to allocate leave no layout requireme
     }
     CHECK(recorded);
     CHECK(injectedFailures > 1);
+}
+
+TEST_CASE("Vulkan storage clears and copies in one command buffer agree on the subresource's native layout",
+          "[size:small][rhi][vulkan][vuid][layouts-mock][fill-and-clear]")
+{
+    using rachis::TextureLayout;
+    MockStorageClearFixture fixture;
+    const auto image = fakeHandle<VkImage>(0x7101);
+    {
+        auto initial = fixture.acquire();
+        REQUIRE(fixture.transition(initial, TextureLayout::undefined, TextureLayout::copyDestination));
+        REQUIRE(fixture.transition(initial, TextureLayout::undefined, TextureLayout::copySource, fixture.copySource));
+        REQUIRE(fixture.submit(std::move(initial)));
+    }
+
+    SECTION("a clear after a copy moves the copied subresource to the clear's layout inside the command buffer")
+    {
+        auto copied = fixture.acquire();
+        const auto native = MockStorageClearFixture::native(copied);
+        REQUIRE(fixture.copyIntoLayerZero(copied).has_value());
+        REQUIRE(fixture.mock.copyImageDestinationLayouts.size() == 1);
+        CHECK(fixture.mock.copyImageDestinationLayouts[0].layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        const auto barriersBefore = fixture.mock.imageBarriers.size();
+        REQUIRE(fixture.clear(copied).has_value());
+        REQUIRE(fixture.mock.imageBarriers.size() == barriersBefore + 1);
+        const auto& moved = fixture.mock.imageBarriers.back();
+        CHECK(moved.command == native);
+        CHECK(moved.image == image);
+        CHECK(moved.baseArrayLayer == 0);
+        CHECK(moved.oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        CHECK(moved.newLayout == VK_IMAGE_LAYOUT_GENERAL);
+        REQUIRE(fixture.mock.clearColorLayouts.size() == 1);
+        CHECK(fixture.mock.clearColorLayouts[0].layout == VK_IMAGE_LAYOUT_GENERAL);
+        REQUIRE_FALSE(fixture.mock.timelineEvents.empty());
+        CHECK(fixture.mock.timelineEvents.back().kind == CommandOpKind::clearColorImage);
+        CHECK(fixture.mock.timelineEvents[fixture.mock.timelineEvents.size() - 2].kind == CommandOpKind::imageBarrier);
+
+        auto toStorage = fixture.acquire();
+        REQUIRE(fixture.transition(toStorage, TextureLayout::copyDestination, TextureLayout::unorderedAccess));
+        fixture.mock.imageBarriers.clear();
+        std::array ordered{std::move(toStorage), std::move(copied)};
+        REQUIRE(fixture.queueManager.submit(ordered, {}).has_value());
+        REQUIRE(fixture.mock.lastSubmittedCommands.size() == 3);
+        CHECK(fixture.mock.lastSubmittedCommands[2] == native);
+        const auto bridge = fixture.mock.lastSubmittedCommands[1];
+        const auto bridged = std::ranges::count_if(
+            fixture.mock.imageBarriers, [&](const RecordedImageBarrier& barrier) { return barrier.command == bridge; });
+        CHECK(bridged == 1);
+        const auto preBridge = std::ranges::find_if(
+            fixture.mock.imageBarriers, [&](const RecordedImageBarrier& barrier) { return barrier.command == bridge; });
+        REQUIRE(preBridge != fixture.mock.imageBarriers.end());
+        CHECK(preBridge->baseArrayLayer == 0);
+        CHECK(preBridge->oldLayout == VK_IMAGE_LAYOUT_GENERAL);
+        CHECK(preBridge->newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+        auto after = fixture.acquire();
+        REQUIRE(fixture.transition(after, TextureLayout::unorderedAccess, TextureLayout::shaderResource));
+        REQUIRE(fixture.submit(std::move(after)));
+        CHECK(fixture.mock.lastSubmittedCommands.size() == 1);
+    }
+
+    SECTION("a copy after a clear uses the layout the clear established for the command buffer")
+    {
+        auto cleared = fixture.acquire();
+        REQUIRE(fixture.clear(cleared).has_value());
+        REQUIRE(fixture.copyIntoLayerZero(cleared).has_value());
+        REQUIRE(fixture.mock.copyImageDestinationLayouts.size() == 1);
+        CHECK(fixture.mock.copyImageDestinationLayouts[0].layout == VK_IMAGE_LAYOUT_GENERAL);
+
+        auto toStorage = fixture.acquire();
+        REQUIRE(fixture.transition(toStorage, TextureLayout::copyDestination, TextureLayout::unorderedAccess));
+        std::array ordered{std::move(toStorage), std::move(cleared)};
+        REQUIRE(fixture.queueManager.submit(ordered, {}).has_value());
+        CHECK(fixture.mock.lastSubmittedCommands.size() == 2);
+    }
 }
 
 TEST_CASE("Vulkan storage clears leave a first use to submission, where earlier command buffers of the batch count",

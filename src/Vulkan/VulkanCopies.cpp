@@ -633,6 +633,34 @@ namespace rachis::vulkan
             return copies;
         }
 
+        [[nodiscard]] VkImageMemoryBarrier2 storageClearEntryTransition(VkImage image,
+                                                                        const VkImageSubresourceRange& range,
+                                                                        std::uint32_t layer,
+                                                                        VkImageLayout earlierLayout) noexcept
+        {
+            return VkImageMemoryBarrier2{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                .pNext = {},
+                .srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                .oldLayout = earlierLayout,
+                .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = image,
+                .subresourceRange =
+                    {
+                        .aspectMask = range.aspectMask,
+                        .baseMipLevel = range.baseMipLevel,
+                        .levelCount = 1,
+                        .baseArrayLayer = layer,
+                        .layerCount = 1,
+                    },
+            };
+        }
+
         void retainKeepAlive(std::vector<std::shared_ptr<void>>* retained,
                              const std::shared_ptr<VulkanNativeKeepAlive>& keepAlive)
         {
@@ -1365,6 +1393,7 @@ namespace rachis::vulkan
             .layerCount = volume ? 1U : view->resolved.layerCount,
         };
         const auto* state = commandLayoutState(command);
+        bool transitionsCopiedLayer = false;
         for (std::uint32_t layer = range.baseArrayLayer; layer < range.baseArrayLayer + range.layerCount; ++layer)
         {
             const TextureSubresource subresource{.mipLevel = range.baseMipLevel, .arrayLayer = layer};
@@ -1376,6 +1405,7 @@ namespace rachis::vulkan
             const LayoutCell key{texture->submittedLayouts.get(), cell};
             if (!state->writeIndex.contains(key))
             {
+                transitionsCopiedLayer = transitionsCopiedLayer || nonGeneralTransferLayout(*state, key).has_value();
                 continue;
             }
             const auto known = commandPublicLayout(state, key);
@@ -1390,6 +1420,14 @@ namespace rachis::vulkan
                 });
             }
         }
+        if (transitionsCopiedLayer && table_->vkCmdPipelineBarrier2 == nullptr)
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidState,
+                0,
+                "Vulkan storage-texture clears are unavailable because the device table is incomplete.",
+            });
+        }
         if (retained != nullptr)
         {
             detail::reserveAdditional(*retained, 2U);
@@ -1403,8 +1441,10 @@ namespace rachis::vulkan
             {
                 const TextureSubresource subresource{.mipLevel = range.baseMipLevel, .arrayLayer = layer};
                 const auto cell = static_cast<std::size_t>(layer) * texture->desc.mipLevels + range.baseMipLevel;
-                if (cell < texture->submittedLayouts->size() &&
-                    !commandPublicLayout(&commandState, LayoutCell{texture->submittedLayouts.get(), cell}).has_value())
+                const LayoutCell key{texture->submittedLayouts.get(), cell};
+                const bool transition =
+                    !commandState.writeIndex.contains(key) && nonGeneralTransferLayout(commandState, key).has_value();
+                if (cell < texture->submittedLayouts->size() && !commandPublicLayout(&commandState, key).has_value())
                 {
                     commandState.entries.push_back(LayoutEntryRequirement{
                         .submittedPublic = texture->submittedPublicLayouts,
@@ -1413,6 +1453,17 @@ namespace rachis::vulkan
                         .subresource = subresource,
                         .entryLayoutUnknown = texture->shared,
                     });
+                }
+                if (transition)
+                {
+                    stageLayoutWrite(commandState,
+                                     {
+                                         .submitted = texture->submittedLayouts,
+                                         .index = cell,
+                                         .layout = VK_IMAGE_LAYOUT_GENERAL,
+                                         .submittedPublic = texture->submittedPublicLayouts,
+                                         .publicLayout = TextureLayout::unorderedAccess,
+                                     });
                 }
                 recordTransferRequirementLocked(command,
                                                 *texture,
@@ -1434,6 +1485,10 @@ namespace rachis::vulkan
         }
         retainKeepAlive(retained, view->keepAlive);
         retainKeepAlive(retained, texture->keepAlive);
+        if (transitionsCopiedLayer)
+        {
+            recordStorageClearEntryTransitionsLocked(command, *texture, range, mark);
+        }
 
         VkClearColorValue clear{};
         switch (format->type)
@@ -1450,6 +1505,43 @@ namespace rachis::vulkan
         }
         table_->vkCmdClearColorImage(command, texture->image, VK_IMAGE_LAYOUT_GENERAL, &clear, 1, &range);
         return {};
+    }
+
+    void VulkanResourceAllocator::recordStorageClearEntryTransitionsLocked(VkCommandBuffer command,
+                                                                           TextureRecord& texture,
+                                                                           const VkImageSubresourceRange& range,
+                                                                           const CommandLayoutMark& mark)
+    {
+        const auto* state = commandLayoutState(command);
+        if (state == nullptr || texture.submittedLayouts == nullptr)
+        {
+            return;
+        }
+        for (std::uint32_t layer = range.baseArrayLayer; layer < range.baseArrayLayer + range.layerCount; ++layer)
+        {
+            const LayoutCell key{texture.submittedLayouts.get(),
+                                 static_cast<std::size_t>(layer) * texture.desc.mipLevels + range.baseMipLevel};
+            const auto staged = state->writeIndex.find(key);
+            const auto earlier = nonGeneralTransferLayout(*state, key);
+            if (staged == state->writeIndex.end() || staged->second < mark.writes || !earlier.has_value())
+            {
+                continue;
+            }
+            const auto barrier = storageClearEntryTransition(texture.image, range, layer, *earlier);
+            noteBarrierOldLayoutLocked(command, texture, barrier.subresourceRange, barrier.oldLayout);
+            const VkDependencyInfo dependency{
+                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                .pNext = {},
+                .dependencyFlags = {},
+                .memoryBarrierCount = 0,
+                .pMemoryBarriers = nullptr,
+                .bufferMemoryBarrierCount = 0,
+                .pBufferMemoryBarriers = nullptr,
+                .imageMemoryBarrierCount = 1,
+                .pImageMemoryBarriers = &barrier,
+            };
+            table_->vkCmdPipelineBarrier2(command, &dependency);
+        }
     }
 
     Result<VulkanResourceAllocator::NativeTexture> VulkanResourceAllocator::nativeTexture(

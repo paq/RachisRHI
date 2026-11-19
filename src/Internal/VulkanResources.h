@@ -730,12 +730,19 @@ namespace rachis::vulkan
         };
         struct CommandLayoutMark final
         {
+            std::size_t writes = 0;
             std::size_t transfers = 0;
             std::size_t entries = 0;
         };
         [[nodiscard]] const CommandLayoutState* commandLayoutState(VkCommandBuffer command) const noexcept;
         [[nodiscard]] CommandLayoutMark markCommandLayoutsLocked(VkCommandBuffer command) const noexcept;
         void rollBackCommandLayoutsLocked(VkCommandBuffer command, const CommandLayoutMark& mark) noexcept;
+        [[nodiscard]] static std::optional<VkImageLayout> nonGeneralTransferLayout(const CommandLayoutState& state,
+                                                                                   const LayoutCell& cell) noexcept;
+        void recordStorageClearEntryTransitionsLocked(VkCommandBuffer command,
+                                                      TextureRecord& texture,
+                                                      const VkImageSubresourceRange& range,
+                                                      const CommandLayoutMark& mark);
         [[nodiscard]] static std::optional<TextureLayout> commandPublicLayout(const CommandLayoutState* state,
                                                                               const LayoutCell& cell) noexcept;
         static void stageLayoutWrite(CommandLayoutState& state, const LayoutWrite& write);

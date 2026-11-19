@@ -1459,10 +1459,14 @@ namespace rachis::vulkan
         }
         if (const auto* state = commandLayoutState(command); state != nullptr)
         {
-            if (const auto write = state->writeIndex.find(LayoutCell{record.submittedLayouts.get(), index});
-                write != state->writeIndex.end())
+            const LayoutCell cell{record.submittedLayouts.get(), index};
+            if (const auto write = state->writeIndex.find(cell); write != state->writeIndex.end())
             {
                 return state->writes[write->second].layout;
+            }
+            if (const auto transfer = state->transferIndex.find(cell); transfer != state->transferIndex.end())
+            {
+                return state->transfers[transfer->second].expectedLayout;
             }
         }
         return (*record.submittedLayouts)[index];
@@ -1594,7 +1598,23 @@ namespace rachis::vulkan
         {
             return {};
         }
-        return CommandLayoutMark{.transfers = state->transfers.size(), .entries = state->entries.size()};
+        return CommandLayoutMark{
+            .writes = state->writes.size(),
+            .transfers = state->transfers.size(),
+            .entries = state->entries.size(),
+        };
+    }
+
+    std::optional<VkImageLayout> VulkanResourceAllocator::nonGeneralTransferLayout(const CommandLayoutState& state,
+                                                                                   const LayoutCell& cell) noexcept
+    {
+        const auto transfer = state.transferIndex.find(cell);
+        if (transfer == state.transferIndex.end() ||
+            state.transfers[transfer->second].expectedLayout == VK_IMAGE_LAYOUT_GENERAL)
+        {
+            return std::nullopt;
+        }
+        return state.transfers[transfer->second].expectedLayout;
     }
 
     void VulkanResourceAllocator::rollBackCommandLayoutsLocked(VkCommandBuffer command,
@@ -1606,6 +1626,15 @@ namespace rachis::vulkan
             return;
         }
         auto& state = found->second;
+        for (auto index = mark.writes; index < state.writes.size(); ++index)
+        {
+            const auto& write = state.writes[index];
+            state.writeIndex.erase(LayoutCell{write.submitted.get(), write.index});
+        }
+        if (mark.writes < state.writes.size())
+        {
+            state.writes.erase(state.writes.begin() + static_cast<std::ptrdiff_t>(mark.writes), state.writes.end());
+        }
         for (auto index = mark.transfers; index < state.transfers.size(); ++index)
         {
             const auto& transfer = state.transfers[index];
