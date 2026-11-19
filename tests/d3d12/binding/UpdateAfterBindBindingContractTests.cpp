@@ -22,6 +22,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -768,6 +769,71 @@ TEST_CASE("an update-after-bind element written in place stays alive for submitt
     checkCleanDiagnostics(device);
 }
 
+TEST_CASE("update-after-bind elements that no submission saw are released when they are replaced",
+          "[size:medium][rhi][binding][compute][warp]")
+{
+    auto device = createWarpDevice();
+    REQUIRE(rachis::test::requireCapabilities(device).updateAfterBindBindingArrays);
+    LargeArrayFixture fixture(device, rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind);
+    const std::array selections{Selection{.element = 0, .slot = 0}};
+    auto command = fixture.record(selections);
+    fixture.recordReadback(command);
+    constexpr std::array<std::string_view, 5> labels{
+        "Streamed element 0", "Streamed element 1", "Streamed element 2", "Streamed element 3", "Streamed element 4"};
+    for (const auto label : labels)
+    {
+        const auto streamed = fixture.createValueBuffer(replacementValues, label);
+        REQUIRE(update(device, fixture.set(), 1, 2, slice(streamed, 0)).has_value());
+        REQUIRE(device.destroyBuffer(streamed).has_value());
+    }
+    for (std::size_t index = 0; index + 1 < labels.size(); ++index)
+    {
+        CAPTURE(labels[index]);
+        CHECK_FALSE(memoryEntry(device, labels[index]).has_value());
+    }
+    checkRetainedAfterDestruction(device, labels.back());
+
+    QueueBlocker blocker(device);
+    auto submitted = device.submit(std::move(command));
+    REQUIRE(submitted.has_value());
+    REQUIRE(update(device, fixture.set(), 1, 2, slice(fixture.values(), 3)).has_value());
+    checkRetainedAfterDestruction(device, labels.back());
+    blocker.release();
+    REQUIRE(device.wait(*submitted).has_value());
+    CHECK_FALSE(memoryEntry(device, labels.back()).has_value());
+    CHECK(fixture.result(0) == sliceValues[0]);
+
+    checkCleanDiagnostics(device);
+}
+
+TEST_CASE("work that bound a set needs no residency of an update-after-bind element replaced before submission",
+          "[size:medium][rhi][binding][compute][residency][warp]")
+{
+    auto device = createWarpDevice();
+    REQUIRE(rachis::test::requireCapabilities(device).updateAfterBindBindingArrays);
+    REQUIRE(rachis::test::requireCapabilities(device).manualResidency);
+    LargeArrayFixture fixture(device, rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind);
+    const auto manual =
+        fixture.createValueBuffer(replacementValues, replacementLabel, rachis::ResourceAllocationFlag::manualResidency);
+    const std::array manualBuffers{manual};
+
+    REQUIRE(update(device, fixture.set(), 1, 1, slice(manual, 0)).has_value());
+    const std::array selections{Selection{.element = 1, .slot = 1}};
+    auto command = fixture.record(selections);
+    fixture.recordReadback(command);
+    REQUIRE(update(device, fixture.set(), 1, 1, slice(fixture.values(), 2)).has_value());
+    REQUIRE(device.evict({.buffers = manualBuffers}).has_value());
+
+    auto submitted = device.submit(std::move(command));
+    REQUIRE(submitted.has_value());
+    REQUIRE(device.wait(*submitted).has_value());
+    CHECK(fixture.result(sizeof(std::uint32_t)) == sliceValues[2]);
+
+    fixture.destroySet();
+    REQUIRE(device.destroyBuffer(manual).has_value());
+    checkCleanDiagnostics(device);
+}
+
 TEST_CASE("an update-after-bind element written in place must be resident when work that bound the set before the "
           "update is submitted",
           "[size:medium][rhi][binding][compute][residency][warp]")
@@ -857,6 +923,7 @@ namespace
         rachis::BindingSetHandle set = {};
         rachis::BufferHandle buffer = {};
         std::future<rachis::Status> result;
+        bool blockedBySubmission = false;
         bool finishedDuringSubmission = false;
     };
 
@@ -865,10 +932,17 @@ namespace
     void startUpdateDuringSubmission() noexcept
     {
         auto& state = *g_concurrentUpdate;
+        auto& contention = rachis::d3d12::test::inPlacePublicationContentionCount();
+        const auto before = contention.load(std::memory_order_acquire);
         state.result = std::async(std::launch::async,
                                   [&state] { return update(*state.device, state.set, 1, 1, slice(state.buffer, 0)); });
-        state.finishedDuringSubmission =
-            state.result.wait_for(std::chrono::milliseconds(200)) == std::future_status::ready;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (contention.load(std::memory_order_acquire) == before && std::chrono::steady_clock::now() < deadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        state.blockedBySubmission = contention.load(std::memory_order_acquire) != before;
+        state.finishedDuringSubmission = state.result.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
     }
 
 } // namespace
@@ -898,6 +972,7 @@ TEST_CASE("an update-after-bind write in place waits for a submission that is re
     REQUIRE(submitted.has_value());
     REQUIRE(concurrent.result.valid());
     CHECK(concurrent.result.get().has_value());
+    CHECK(concurrent.blockedBySubmission);
     CHECK_FALSE(concurrent.finishedDuringSubmission);
 
     REQUIRE(device.wait(*submitted).has_value());

@@ -124,7 +124,7 @@ namespace rachis::d3d12
             std::span<const ResourceRetention> resources,
             std::span<const std::shared_ptr<SwapchainImageLeaseState>> leases,
             std::span<const TimelinePoint> sparseMappingDependencies = {},
-            std::span<const InPlaceResidencyReference> inPlaceResidencies = {}) const;
+            std::span<const InPlacePublicationReference> inPlacePublications = {}) const;
         [[nodiscard]] Result<std::uint64_t> recordingId(detail::BackendCommandBuffer& commandBuffer) const;
         [[nodiscard]] Result<std::shared_ptr<void>> recordingDescriptorArena(
             detail::BackendCommandBuffer& commandBuffer) const;

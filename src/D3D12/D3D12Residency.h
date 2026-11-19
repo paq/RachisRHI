@@ -1,6 +1,5 @@
 #pragma once
 
-#include "Common/InPlaceBindingRetention.h"
 #include "D3D12/D3D12TestHooks.h"
 #include "Rachis/Error.h"
 #include "Rachis/Resource.h"
@@ -14,6 +13,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <span>
+#include <unordered_map>
 #include <vector>
 
 namespace rachis::d3d12
@@ -62,7 +62,29 @@ namespace rachis::d3d12
     [[nodiscard]] Status appendResidencyLeases(std::vector<ResidencyLease>& destination,
                                                std::span<const std::shared_ptr<ResidencyRecord>> records);
 
-    using InPlaceResidencyLog = detail::InPlaceBindingRetention<std::shared_ptr<ResidencyRecord>>;
+    struct InPlaceResidencyUse final
+    {
+        std::shared_ptr<ResidencyRecord> record;
+        std::uint32_t count = 0;
+    };
+
+    using InPlaceResidencyUses = std::unordered_map<const ResidencyRecord*, InPlaceResidencyUse>;
+
+    class InPlaceDescriptorEpoch final
+    {
+    public:
+        InPlaceDescriptorEpoch() = default;
+        ~InPlaceDescriptorEpoch();
+
+        InPlaceDescriptorEpoch(const InPlaceDescriptorEpoch&) = delete;
+        InPlaceDescriptorEpoch& operator=(const InPlaceDescriptorEpoch&) = delete;
+        InPlaceDescriptorEpoch(InPlaceDescriptorEpoch&&) = delete;
+        InPlaceDescriptorEpoch& operator=(InPlaceDescriptorEpoch&&) = delete;
+
+        std::atomic_bool observed = false;
+        std::vector<std::shared_ptr<void>> replaced;
+        std::shared_ptr<InPlaceDescriptorEpoch> newer;
+    };
 
     struct InPlaceDescriptorPublication final
     {
@@ -82,13 +104,12 @@ namespace rachis::d3d12
 
         mutable std::shared_mutex mutex;
         mutable std::atomic_uint32_t submissions = 0;
-        InPlaceResidencyLog residencies;
+        InPlaceResidencyUses residencies;
+        std::shared_ptr<InPlaceDescriptorEpoch> epoch = std::make_shared<InPlaceDescriptorEpoch>();
+        std::weak_ptr<InPlaceDescriptorEpoch> previous;
+        std::uint64_t epochIndex = 0;
     };
 
-    struct InPlaceResidencyReference final
-    {
-        std::shared_ptr<const InPlaceDescriptorPublication> publication;
-        std::uint64_t sequence = 0;
-    };
+    using InPlacePublicationReference = std::shared_ptr<const InPlaceDescriptorPublication>;
 
 } // namespace rachis::d3d12

@@ -126,7 +126,7 @@ namespace rachis::d3d12
             std::vector<std::shared_ptr<void>> retainedResources;
             std::vector<std::shared_ptr<SwapchainImageCommandReference>> swapchainImageReferences;
             std::vector<ResidencyLease> residencyLeases;
-            std::vector<InPlaceResidencyReference> inPlaceResidencies;
+            std::vector<InPlacePublicationReference> inPlacePublications;
             std::vector<TimelinePoint> sparseMappingDependencies;
             std::vector<AccelerationStructureExecutionLease> accelerationStructureLeases;
             std::vector<AccelerationStructurePublication> accelerationStructurePublications;
@@ -145,7 +145,7 @@ namespace rachis::d3d12
             entry.retainedResources.clear();
             entry.swapchainImageReferences.clear();
             entry.residencyLeases.clear();
-            entry.inPlaceResidencies.clear();
+            entry.inPlacePublications.clear();
             entry.sparseMappingDependencies.clear();
             entry.accelerationStructureLeases.clear();
             entry.accelerationStructurePublications.clear();
@@ -166,7 +166,7 @@ namespace rachis::d3d12
             std::vector<std::shared_ptr<void>> retainedResources;
             std::vector<std::shared_ptr<SwapchainImageCommandReference>> swapchainImageReferences;
             std::vector<ResidencyLease> residencyLeases;
-            std::vector<InPlaceResidencyReference> inPlaceResidencies;
+            std::vector<InPlacePublicationReference> inPlacePublications;
             std::vector<TimelinePoint> sparseMappingDependencies;
             std::vector<AccelerationStructureExecutionLease> accelerationStructureLeases;
         };
@@ -177,7 +177,7 @@ namespace rachis::d3d12
                 .retainedResources = std::move(entry.retainedResources),
                 .swapchainImageReferences = std::move(entry.swapchainImageReferences),
                 .residencyLeases = std::move(entry.residencyLeases),
-                .inPlaceResidencies = std::move(entry.inPlaceResidencies),
+                .inPlacePublications = std::move(entry.inPlacePublications),
                 .sparseMappingDependencies = std::move(entry.sparseMappingDependencies),
                 .accelerationStructureLeases = std::move(entry.accelerationStructureLeases),
             };
@@ -1280,22 +1280,19 @@ namespace rachis::d3d12
         [[nodiscard]] static Status acquireInPlaceResidencies(const PoolEntry& entry,
                                                               std::vector<ResidencyLease>& staged)
         {
-            if (entry.inPlaceResidencies.empty())
+            if (entry.inPlacePublications.empty())
             {
                 return {};
             }
             try
             {
                 std::vector<std::shared_ptr<ResidencyRecord>> residencies;
-                for (const auto& reference : entry.inPlaceResidencies)
+                for (const auto& publication : entry.inPlacePublications)
                 {
-                    reference.publication->residencies.visitSince(
-                        reference.sequence, [&](const std::shared_ptr<ResidencyRecord>& residency) {
-                            if (residency != nullptr)
-                            {
-                                residencies.push_back(residency);
-                            }
-                        });
+                    for (const auto& [key, use] : publication->residencies)
+                    {
+                        residencies.push_back(use.record);
+                    }
                 }
                 return appendResidencyLeases(staged, residencies);
             }
@@ -1454,7 +1451,7 @@ namespace rachis::d3d12
                         pending.entry->retainedResources.clear();
                         pending.entry->swapchainImageReferences.clear();
                         pending.entry->residencyLeases.clear();
-                        pending.entry->inPlaceResidencies.clear();
+                        pending.entry->inPlacePublications.clear();
                         pending.entry->sparseMappingDependencies.clear();
                         pending.entry->accelerationStructureLeases.clear();
                         pending.entry->accelerationStructurePublications.clear();
@@ -1518,7 +1515,7 @@ namespace rachis::d3d12
                     entry->retainedResources.clear();
                     entry->swapchainImageReferences.clear();
                     entry->residencyLeases.clear();
-                    entry->inPlaceResidencies.clear();
+                    entry->inPlacePublications.clear();
                     entry->sparseMappingDependencies.clear();
                     entry->accelerationStructureLeases.clear();
                     entry->accelerationStructurePublications.clear();
@@ -1994,7 +1991,7 @@ namespace rachis::d3d12
                     batch.entries[index]->retainedResources.clear();
                     batch.entries[index]->swapchainImageReferences.clear();
                     batch.entries[index]->residencyLeases.clear();
-                    batch.entries[index]->inPlaceResidencies.clear();
+                    batch.entries[index]->inPlacePublications.clear();
                     batch.entries[index]->sparseMappingDependencies.clear();
                     batch.entries[index]->accelerationStructureLeases.clear();
                     batch.entries[index]->legacyTextureStates.clear();
@@ -2170,6 +2167,11 @@ namespace rachis::d3d12
             return {};
         }
 
+        [[nodiscard]] bool retainsInPlaceEpochs(const D3D12CommandBuffer& command) noexcept
+        {
+            return command.owner() == nullptr || !hasAny(command.owner()->flags, CommandPoolFlag::unretainedResources);
+        }
+
         void assignBatchRetirementFenceValue(QueueState& state,
                                              std::size_t batchSize,
                                              std::uint64_t fenceValue) noexcept
@@ -2275,9 +2277,9 @@ namespace rachis::d3d12
         {
             for (const auto* native : nativeCommands)
             {
-                for (const auto& reference : native->entry()->inPlaceResidencies)
+                for (const auto& reference : native->entry()->inPlacePublications)
                 {
-                    publications.push_back(reference.publication);
+                    publications.push_back(reference);
                 }
             }
             std::ranges::sort(publications, {}, &std::shared_ptr<const InPlaceDescriptorPublication>::get);
@@ -2352,8 +2354,12 @@ namespace rachis::d3d12
         {
             for (std::size_t index = 0; index < nativeCommands.size(); ++index)
             {
-                auto& leases = nativeCommands[index]->entry()->residencyLeases;
-                leases.reserve(leases.size() + inPlaceLeases[index].size());
+                auto& entry = *nativeCommands[index]->entry();
+                entry.residencyLeases.reserve(entry.residencyLeases.size() + inPlaceLeases[index].size());
+                if (retainsInPlaceEpochs(*nativeCommands[index]))
+                {
+                    detail::reserveAdditional(entry.retainedResources, entry.inPlacePublications.size());
+                }
             }
         }
         catch (const std::bad_alloc&)
@@ -2374,10 +2380,18 @@ namespace rachis::d3d12
 
         for (std::size_t index = 0; index < nativeCommands.size(); ++index)
         {
-            auto& leases = nativeCommands[index]->entry()->residencyLeases;
-            leases.insert(leases.end(),
-                          std::make_move_iterator(inPlaceLeases[index].begin()),
-                          std::make_move_iterator(inPlaceLeases[index].end()));
+            auto& entry = *nativeCommands[index]->entry();
+            entry.residencyLeases.insert(entry.residencyLeases.end(),
+                                         std::make_move_iterator(inPlaceLeases[index].begin()),
+                                         std::make_move_iterator(inPlaceLeases[index].end()));
+            if (retainsInPlaceEpochs(*nativeCommands[index]))
+            {
+                for (const auto& publication : entry.inPlacePublications)
+                {
+                    publication->epoch->observed.store(true, std::memory_order_release);
+                    entry.retainedResources.push_back(publication->epoch);
+                }
+            }
             static_cast<void>(nativeCommands[index]->release());
             commandBuffers[index].reset();
         }
@@ -2908,11 +2922,12 @@ namespace rachis::d3d12
         return {};
     }
 
-    Status QueueManager::retainCommandDependencies(detail::BackendCommandBuffer& commandBuffer,
-                                                   std::span<const ResourceRetention> resources,
-                                                   std::span<const std::shared_ptr<SwapchainImageLeaseState>> leases,
-                                                   std::span<const TimelinePoint> sparseMappingDependencies,
-                                                   std::span<const InPlaceResidencyReference> inPlaceResidencies) const
+    Status QueueManager::retainCommandDependencies(
+        detail::BackendCommandBuffer& commandBuffer,
+        std::span<const ResourceRetention> resources,
+        std::span<const std::shared_ptr<SwapchainImageLeaseState>> leases,
+        std::span<const TimelinePoint> sparseMappingDependencies,
+        std::span<const InPlacePublicationReference> inPlacePublications) const
     {
         auto live =
             requireLiveD3D12Command(&commandBuffer,
@@ -2927,13 +2942,13 @@ namespace rachis::d3d12
         auto& entry = *native->entry();
         const auto retainedResourceCount = entry.retainedResources.size();
         const auto residencyLeaseCount = entry.residencyLeases.size();
-        const auto inPlaceResidencyCount = entry.inPlaceResidencies.size();
+        const auto inPlaceResidencyCount = entry.inPlacePublications.size();
         const auto swapchainReferenceCount = entry.swapchainImageReferences.size();
         const auto sparseMappingDependencyCount = entry.sparseMappingDependencies.size();
         const auto rollback = [&]() noexcept {
             entry.retainedResources.resize(retainedResourceCount);
             entry.residencyLeases.resize(residencyLeaseCount);
-            entry.inPlaceResidencies.resize(inPlaceResidencyCount);
+            entry.inPlacePublications.resize(inPlaceResidencyCount);
             entry.swapchainImageReferences.resize(swapchainReferenceCount);
             entry.sparseMappingDependencies.resize(sparseMappingDependencyCount);
         };
@@ -2967,14 +2982,13 @@ namespace rachis::d3d12
                 rollback();
                 return retainedSparseDependencies;
             }
-            for (const auto& reference : inPlaceResidencies)
+            for (const auto& reference : inPlacePublications)
             {
-                const bool repeated = !entry.inPlaceResidencies.empty() &&
-                                      entry.inPlaceResidencies.back().publication == reference.publication &&
-                                      entry.inPlaceResidencies.back().sequence <= reference.sequence;
+                const bool repeated =
+                    !entry.inPlacePublications.empty() && entry.inPlacePublications.back() == reference;
                 if (!repeated)
                 {
-                    entry.inPlaceResidencies.push_back(reference);
+                    entry.inPlacePublications.push_back(reference);
                 }
             }
         }

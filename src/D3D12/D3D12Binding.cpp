@@ -105,46 +105,14 @@ namespace rachis::d3d12
             std::vector<std::shared_ptr<void>> samplerOwners;
         };
 
-        struct ReplacedDescriptorSources final
-        {
-            ReplacedDescriptorSources() = default;
-            ReplacedDescriptorSources(const ReplacedDescriptorSources&) = delete;
-            ReplacedDescriptorSources& operator=(const ReplacedDescriptorSources&) = delete;
-            ReplacedDescriptorSources(ReplacedDescriptorSources&&) = delete;
-            ReplacedDescriptorSources& operator=(ReplacedDescriptorSources&&) = delete;
-
-            ~ReplacedDescriptorSources()
-            {
-                auto pending = std::move(newer);
-                while (pending != nullptr && pending.use_count() == 1)
-                {
-                    auto following = std::move(pending->newer);
-                    pending.reset();
-                    pending = std::move(following);
-                }
-            }
-
-            std::vector<ResourceDescriptorSource> sources;
-            std::shared_ptr<ReplacedDescriptorSources> newer;
-        };
-
         struct InPlaceDescriptorRetention final
         {
             std::shared_ptr<InPlaceDescriptorPublication> publication =
                 std::make_shared<InPlaceDescriptorPublication>();
-            std::shared_ptr<ReplacedDescriptorSources> replaced = std::make_shared<ReplacedDescriptorSources>();
             std::uint64_t writeGeneration = 0;
         };
 
         using DescriptorResidencies = std::vector<std::shared_ptr<ResidencyRecord>>;
-
-        struct DescriptorResidencyUse final
-        {
-            std::shared_ptr<ResidencyRecord> record;
-            std::uint32_t count = 0;
-        };
-
-        using DescriptorResidencyUses = std::unordered_map<const ResidencyRecord*, DescriptorResidencyUse>;
 
         struct BindingSetRecord final
         {
@@ -161,7 +129,7 @@ namespace rachis::d3d12
             std::vector<ResourceDescriptorSource> resourceSources;
             std::vector<SamplerDescriptorSourceVariant> samplerSources;
             std::shared_ptr<const DescriptorResidencies> residencies;
-            DescriptorResidencyUses residencyUses;
+            std::vector<std::uint64_t> sourceEpochs;
             std::array<std::uint32_t, maxDynamicBufferOffsetsPerBindingSet> dynamicResourceIndices{};
             std::uint32_t dynamicResourceCount = 0;
             std::uint32_t variableDescriptorCount = 0;
@@ -1479,21 +1447,60 @@ namespace rachis::d3d12
             return residency != nullptr ? residency->get() : nullptr;
         }
 
-        [[nodiscard]] DescriptorResidencyUses countDescriptorResidencyUses(
-            const std::vector<ResourceDescriptorSource>& sources)
+        void addInPlaceResidencyUse(InPlaceResidencyUses& uses, const ResourceDescriptorSource& source)
         {
-            DescriptorResidencyUses uses;
-            for (const auto& source : sources)
+            const auto* residency = descriptorResidency(source);
+            if (residency != nullptr && *residency != nullptr)
             {
-                const auto* residency = descriptorResidency(source);
-                if (residency != nullptr && *residency != nullptr)
+                auto& use = uses[residency->get()];
+                use.record = *residency;
+                ++use.count;
+            }
+        }
+
+        struct DescriptorResidencyPartition final
+        {
+            DescriptorResidencies fixed;
+            InPlaceResidencyUses inPlace;
+        };
+
+        [[nodiscard]] DescriptorResidencyPartition partitionDescriptorResidencies(const BindingSetRecord& record)
+        {
+            DescriptorResidencyPartition partition;
+            if (record.inPlace == nullptr)
+            {
+                partition.fixed = collectUniqueDescriptorResidencies(record.resourceSources);
+                return partition;
+            }
+            std::vector<std::uint8_t> inPlace(record.resourceSources.size(), 0);
+            for (const auto& entry : record.layout->entries)
+            {
+                if (entry.entry.type == BindingType::sampler ||
+                    !hasAny(entry.entry.flags, BindingFlag::updateAfterBind))
                 {
-                    auto& use = uses[residency->get()];
-                    use.record = *residency;
-                    ++use.count;
+                    continue;
+                }
+                const bool variable = hasAny(entry.entry.flags, BindingFlag::variableDescriptorCount);
+                const auto count = variable ? (std::max)(record.variableDescriptorCount, 1U) : entry.entry.count;
+                for (std::uint32_t element = 0; element < count; ++element)
+                {
+                    inPlace[entry.descriptorOffset + element] = 1;
                 }
             }
-            return uses;
+            partition.fixed.reserve(record.resourceSources.size());
+            for (std::size_t index = 0; index < record.resourceSources.size(); ++index)
+            {
+                if (inPlace[index] != 0)
+                {
+                    addInPlaceResidencyUse(partition.inPlace, record.resourceSources[index]);
+                }
+                else
+                {
+                    retainDescriptorResidencies(record.resourceSources[index], partition.fixed);
+                }
+            }
+            deduplicateSharedPointers(partition.fixed);
+            return partition;
         }
 
         struct StagedDescriptorHandles final
@@ -1514,6 +1521,7 @@ namespace rachis::d3d12
             std::optional<StagedDescriptorHandles> resources;
             std::optional<StagedDescriptorHandles> samplers;
             SamplerTableIdentity samplerIdentity;
+            InPlaceResidencyUses inPlaceResidencies;
         };
 
         [[nodiscard]] bool reusesPublishedDescriptorTable(const std::vector<std::uint8_t>& prepared,
@@ -1883,14 +1891,16 @@ namespace rachis::d3d12
             }
 
             std::shared_ptr<const DescriptorResidencies> residencies;
-            DescriptorResidencyUses residencyUses;
+            InPlaceResidencyUses inPlaceResidencies;
+            std::vector<std::uint64_t> sourceEpochs;
             try
             {
-                residencies = std::make_shared<const DescriptorResidencies>(
-                    collectUniqueDescriptorResidencies(record.resourceSources));
+                auto partition = partitionDescriptorResidencies(record);
+                residencies = std::make_shared<const DescriptorResidencies>(std::move(partition.fixed));
+                inPlaceResidencies = std::move(partition.inPlace);
                 if (record.inPlace != nullptr)
                 {
-                    residencyUses = countDescriptorResidencyUses(record.resourceSources);
+                    sourceEpochs.resize(record.resourceSources.size(), 0);
                 }
             }
             catch (const std::bad_alloc&)
@@ -1915,6 +1925,7 @@ namespace rachis::d3d12
             StagedBindingSetDescriptors staged{
                 .resources = std::move(*resourceHandles),
                 .samplers = std::move(*samplerHandles),
+                .inPlaceResidencies = std::move(inPlaceResidencies),
             };
             if (staged.samplers.has_value())
             {
@@ -1928,7 +1939,7 @@ namespace rachis::d3d12
                     return std::holds_alternative<SamplerFeedbackDescriptorSource>(source);
                 });
             record.residencies = std::move(residencies);
-            record.residencyUses = std::move(residencyUses);
+            record.sourceEpochs = std::move(sourceEpochs);
             return staged;
         }
 
@@ -2346,6 +2357,7 @@ namespace rachis::d3d12
             ResourceDescriptorSource source;
             std::shared_ptr<CpuDescriptorLease> staging;
             D3D12_CPU_DESCRIPTOR_HANDLE handle{};
+            std::shared_ptr<ResourceDescriptorSource> replaced;
         };
 
         [[nodiscard]] Result<InPlaceWrite> prepareInPlaceWrite(const BindingSourceManagers& managers,
@@ -2439,131 +2451,176 @@ namespace rachis::d3d12
             }
         }
 
+        [[nodiscard]] const ResourceDescriptorSource& proposedSource(const BindingSetRecord& record,
+                                                                     std::span<const InPlaceWrite> writes,
+                                                                     std::size_t index) noexcept
+        {
+            const auto found = std::ranges::lower_bound(writes, index, {}, &InPlaceWrite::offset);
+            return found != writes.end() && found->offset == index ? found->source : record.resourceSources[index];
+        }
+
+        [[nodiscard]] Status validateProposedSamplerFeedbackPairing(const BindingSetRecord& record,
+                                                                    std::span<const InPlaceWrite> writes)
+        {
+            const auto count = record.resourceSources.size();
+            for (std::size_t index = 0; index < count; ++index)
+            {
+                const auto* feedback =
+                    std::get_if<SamplerFeedbackDescriptorSource>(&proposedSource(record, writes, index));
+                if (feedback == nullptr)
+                {
+                    continue;
+                }
+                bool paired = false;
+                for (std::size_t candidate = 0; candidate < count && !paired; ++candidate)
+                {
+                    const auto* texture =
+                        std::get_if<TextureDescriptorSource>(&proposedSource(record, writes, candidate));
+                    paired = texture != nullptr && texture->source.usage == TextureViewUsage::sampled &&
+                             texture->source.texture.resource == feedback->source.targetedResource;
+                }
+                if (!paired)
+                {
+                    return std::unexpected(Error{
+                        ErrorCode::invalidArgument,
+                        0,
+                        "A sampler-feedback binding requires a sampled view of its immutable paired texture in the "
+                        "same binding set.",
+                    });
+                }
+            }
+            return {};
+        }
+
         struct StagedInPlaceRetention final
         {
-            std::shared_ptr<const DescriptorResidencies> residencies;
-            DescriptorResidencyUses residencyUses;
-            std::vector<InPlaceResidencyLog::Write> residencyWrites;
-            std::shared_ptr<ReplacedDescriptorSources> nextReplaced;
+            InPlaceResidencyUses residencyAdditions;
+            std::shared_ptr<InPlaceDescriptorEpoch> nextEpoch;
+            std::shared_ptr<InPlaceDescriptorEpoch> retainingEpoch;
         };
 
-        [[nodiscard]] bool changesDescriptorResidencies(const BindingSetRecord& record,
-                                                        std::span<const InPlaceWrite> writes) noexcept
-        {
-            return std::ranges::any_of(writes, [&](const InPlaceWrite& write) {
-                return manualResidency(record.resourceSources[write.offset]) != manualResidency(write.source);
-            });
-        }
-
-        void stageDescriptorResidencyChanges(const BindingSetRecord& record,
-                                             std::span<const InPlaceWrite> writes,
-                                             StagedInPlaceRetention& staged)
-        {
-            auto uses = record.residencyUses;
-            for (const auto& write : writes)
-            {
-                if (const auto* before = manualResidency(record.resourceSources[write.offset]); before != nullptr)
-                {
-                    const auto found = uses.find(before);
-                    if (found != uses.end() && --found->second.count == 0)
-                    {
-                        uses.erase(found);
-                    }
-                }
-                if (const auto* after = descriptorResidency(write.source); after != nullptr && *after != nullptr)
-                {
-                    auto& use = uses[after->get()];
-                    use.record = *after;
-                    ++use.count;
-                }
-            }
-            DescriptorResidencies residencies;
-            residencies.reserve(uses.size());
-            for (const auto& [key, use] : uses)
-            {
-                residencies.push_back(use.record);
-            }
-            staged.residencies = std::make_shared<const DescriptorResidencies>(std::move(residencies));
-            staged.residencyUses = std::move(uses);
-        }
-
         [[nodiscard]] Result<StagedInPlaceRetention> stageInPlaceRetention(const BindingSetRecord& record,
-                                                                           std::span<const InPlaceWrite> writes)
+                                                                           std::span<InPlaceWrite> writes)
         {
-            auto& inPlace = *record.inPlace;
+            auto& publication = *record.inPlace->publication;
             StagedInPlaceRetention staged;
+            const bool advance = publication.epoch->observed.load(std::memory_order_acquire);
+            const auto writeEpoch = advance ? publication.epochIndex + 1 : publication.epochIndex;
+            staged.retainingEpoch = advance ? publication.epoch : publication.previous.lock();
             try
             {
+                if (advance)
+                {
+                    staged.nextEpoch = std::make_shared<InPlaceDescriptorEpoch>();
+                }
+                std::size_t visible = 0;
+                if (staged.retainingEpoch != nullptr)
+                {
+                    for (auto& write : writes)
+                    {
+                        if (record.sourceEpochs[write.offset] < writeEpoch)
+                        {
+                            write.replaced = std::make_shared<ResourceDescriptorSource>();
+                            ++visible;
+                        }
+                    }
+                    staged.retainingEpoch->replaced.reserve(staged.retainingEpoch->replaced.size() + visible);
+                }
                 for (const auto& write : writes)
                 {
                     const auto* residency = descriptorResidency(write.source);
-                    const bool manual = residency != nullptr && *residency != nullptr;
-                    if (manual || inPlace.publication->residencies.contains(write.offset))
+                    if (residency != nullptr && *residency != nullptr &&
+                        !publication.residencies.contains(residency->get()))
                     {
-                        staged.residencyWrites.push_back(InPlaceResidencyLog::Write{
-                            .index = write.offset,
-                            .element = manual ? *residency : std::shared_ptr<ResidencyRecord>{},
-                        });
+                        auto& addition = staged.residencyAdditions[residency->get()];
+                        addition.record = *residency;
                     }
                 }
-                if (changesDescriptorResidencies(record, writes))
-                {
-                    stageDescriptorResidencyChanges(record, writes, staged);
-                }
-                if (inPlace.replaced.use_count() > 1)
-                {
-                    inPlace.replaced->sources.reserve(inPlace.replaced->sources.size() + writes.size());
-                    staged.nextReplaced = std::make_shared<ReplacedDescriptorSources>();
-                }
+                publication.residencies.reserve(publication.residencies.size() + staged.residencyAdditions.size());
             }
             catch (const std::bad_alloc&)
             {
+                for (auto& write : writes)
+                {
+                    write.replaced.reset();
+                }
                 return std::unexpected(Error{
                     ErrorCode::outOfMemory,
                     0,
                     "Failed to prepare update-after-bind binding retention.",
                 });
             }
-            if (auto reserved = inPlace.publication->residencies.reserve(staged.residencyWrites); !reserved)
-            {
-                return std::unexpected(std::move(reserved.error()));
-            }
             return staged;
         }
 
-        void swapInPlaceSources(BindingSetRecord& record, std::span<InPlaceWrite> writes) noexcept
+        void releaseInPlaceResidency(InPlaceResidencyUses& uses, const ResourceDescriptorSource& source) noexcept
         {
-            for (auto& write : writes)
+            const auto* residency = manualResidency(source);
+            if (residency == nullptr)
             {
-                std::swap(record.resourceSources[write.offset], write.source);
+                return;
+            }
+            const auto found = uses.find(residency);
+            if (found != uses.end() && --found->second.count == 0)
+            {
+                uses.erase(found);
             }
         }
 
-        void commitInPlaceRetention(BindingSetRecord& record,
-                                    std::span<InPlaceWrite> writes,
-                                    StagedInPlaceRetention& staged) noexcept
+        void acquireInPlaceResidency(InPlaceResidencyUses& uses,
+                                     InPlaceResidencyUses& additions,
+                                     const ResourceDescriptorSource& source) noexcept
+        {
+            const auto* residency = manualResidency(source);
+            if (residency == nullptr)
+            {
+                return;
+            }
+            if (const auto found = uses.find(residency); found != uses.end())
+            {
+                ++found->second.count;
+                return;
+            }
+            auto node = additions.extract(residency);
+            if (node.empty())
+            {
+                return;
+            }
+            node.mapped().count = 1;
+            static_cast<void>(uses.insert(std::move(node)));
+        }
+
+        void commitInPlaceWrites(BindingSetRecord& record,
+                                 std::span<InPlaceWrite> writes,
+                                 StagedInPlaceRetention& staged) noexcept
         {
             auto& inPlace = *record.inPlace;
+            auto& publication = *inPlace.publication;
+            if (staged.nextEpoch != nullptr)
+            {
+                publication.epoch->newer = staged.nextEpoch;
+                publication.previous = publication.epoch;
+                publication.epoch = std::move(staged.nextEpoch);
+                ++publication.epochIndex;
+            }
             for (auto& write : writes)
             {
+                std::swap(record.resourceSources[write.offset], write.source);
                 record.resourceStagingDescriptors[write.offset] = std::move(write.staging);
+                record.sourceEpochs[write.offset] = publication.epochIndex;
+                acquireInPlaceResidency(
+                    publication.residencies, staged.residencyAdditions, record.resourceSources[write.offset]);
             }
-            if (staged.residencies != nullptr)
+            for (auto& write : writes)
             {
-                record.residencies = std::move(staged.residencies);
-                record.residencyUses = std::move(staged.residencyUses);
-            }
-            static_cast<void>(inPlace.publication->residencies.record(staged.residencyWrites));
-            ++inPlace.writeGeneration;
-            if (staged.nextReplaced != nullptr)
-            {
-                for (auto& write : writes)
+                releaseInPlaceResidency(publication.residencies, write.source);
+                if (write.replaced != nullptr)
                 {
-                    inPlace.replaced->sources.push_back(std::move(write.source));
+                    *write.replaced = std::move(write.source);
+                    staged.retainingEpoch->replaced.push_back(std::move(write.replaced));
                 }
-                inPlace.replaced->newer = staged.nextReplaced;
-                inPlace.replaced = std::move(staged.nextReplaced);
             }
+            ++inPlace.writeGeneration;
         }
 
     } // namespace
@@ -2706,8 +2763,9 @@ namespace rachis::d3d12
             {
                 candidate->poolVersion = std::move(nextPoolVersion);
             }
-            if (nextInPlace != nullptr && (idle || candidate->resources != current->resources))
+            if (nextInPlace != nullptr)
             {
+                nextInPlace->publication->residencies = std::move(staged.inPlaceResidencies);
                 candidate->inPlace = std::move(nextInPlace);
             }
             retired = std::exchange(*stored, std::move(candidate));
@@ -2718,7 +2776,12 @@ namespace rachis::d3d12
                                                   const std::shared_ptr<BindingSetRecord>& current,
                                                   std::vector<InPlaceWrite>& writes)
         {
-            const std::unique_lock publicationLock(current->inPlace->publication->mutex);
+            std::unique_lock publicationLock(current->inPlace->publication->mutex, std::try_to_lock);
+            if (!publicationLock.owns_lock())
+            {
+                test::inPlacePublicationContentionCount().fetch_add(1, std::memory_order_relaxed);
+                publicationLock.lock();
+            }
             {
                 const std::scoped_lock lock(mutex);
                 const auto* stored = sets.find(handle);
@@ -2739,19 +2802,17 @@ namespace rachis::d3d12
                     });
                 }
             }
+            if (current->hasSamplerFeedback)
+            {
+                if (auto paired = validateProposedSamplerFeedbackPairing(*current, writes); !paired)
+                {
+                    return paired;
+                }
+            }
             auto staged = stageInPlaceRetention(*current, writes);
             if (!staged)
             {
                 return std::unexpected(std::move(staged.error()));
-            }
-            swapInPlaceSources(*current, writes);
-            if (current->hasSamplerFeedback)
-            {
-                if (auto paired = validateSamplerFeedbackPairing(*current); !paired)
-                {
-                    swapInPlaceSources(*current, writes);
-                    return paired;
-                }
             }
             for (const auto& write : writes)
             {
@@ -2760,7 +2821,7 @@ namespace rachis::d3d12
                                               write.handle,
                                               D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
             }
-            commitInPlaceRetention(*current, writes, *staged);
+            commitInPlaceWrites(*current, writes, *staged);
             counters.resourceDescriptorsPrepared.fetch_add(writes.size(), std::memory_order_relaxed);
             counters.resourceTablePublishCount.fetch_add(1, std::memory_order_relaxed);
             counters.resourceDescriptorsPublished.fetch_add(writes.size(), std::memory_order_relaxed);
@@ -3168,6 +3229,10 @@ namespace rachis::d3d12
         {
             return std::unexpected(std::move(published.error()));
         }
+        if (record->inPlace != nullptr)
+        {
+            record->inPlace->publication->residencies = std::move(staged->inPlaceResidencies);
+        }
 
         const std::scoped_lock lock(impl_->mutex);
         return impl_->sets.emplace(std::move(record));
@@ -3340,16 +3405,11 @@ namespace rachis::d3d12
             }
             const auto& found = retained->record;
             std::shared_lock<std::shared_mutex> publicationLock;
-            InPlaceResidencyReference inPlaceResidencies;
-            std::shared_ptr<const void> replacedSources;
+            std::shared_ptr<const InPlaceDescriptorPublication> inPlacePublication;
             if (found->inPlace != nullptr)
             {
                 publicationLock = std::shared_lock(found->inPlace->publication->mutex);
-                inPlaceResidencies = InPlaceResidencyReference{
-                    .publication = found->inPlace->publication,
-                    .sequence = found->inPlace->publication->residencies.sequence(),
-                };
-                replacedSources = found->inPlace->replaced;
+                inPlacePublication = found->inPlace->publication;
             }
             const auto staticResidencies = found->residencies;
 
@@ -3410,8 +3470,7 @@ namespace rachis::d3d12
                                          : std::span<const std::shared_ptr<ResidencyRecord>>{},
                 .staticResidencyOwner = staticResidencies,
                 .extraResidencies = std::move(captures.extraResidencies),
-                .inPlaceResidencies = std::move(inPlaceResidencies),
-                .inPlaceReplacedSources = std::move(replacedSources),
+                .inPlacePublication = std::move(inPlacePublication),
                 .swapchainImageLeases = std::move(captures.swapchainImageLeases),
                 .sparseMappingOwners = std::move(captures.sparseMappingOwners),
                 .sparseMappingDependencies = std::move(captures.sparseMappingDependencies),

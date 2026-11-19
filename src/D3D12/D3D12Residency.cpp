@@ -9,6 +9,34 @@
 namespace rachis::d3d12
 {
 
+    namespace
+    {
+
+        thread_local bool t_releasingEpochs = false;
+        thread_local std::shared_ptr<InPlaceDescriptorEpoch> t_releasedEpoch;
+
+    } // namespace
+
+    InPlaceDescriptorEpoch::~InPlaceDescriptorEpoch()
+    {
+        auto next = std::move(newer);
+        if (t_releasingEpochs)
+        {
+            if (t_releasedEpoch == nullptr)
+            {
+                t_releasedEpoch = std::move(next);
+            }
+            return;
+        }
+        t_releasingEpochs = true;
+        while (next != nullptr)
+        {
+            next.reset();
+            next = std::move(t_releasedEpoch);
+        }
+        t_releasingEpochs = false;
+    }
+
     ResidencyLease::ResidencyLease(std::shared_ptr<ResidencyRecord> record) noexcept : record_(std::move(record))
     {
     }
