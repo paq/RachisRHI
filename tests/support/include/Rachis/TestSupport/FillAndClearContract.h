@@ -39,11 +39,10 @@ namespace rachis::test::fill_and_clear
 
     [[nodiscard]] inline std::vector<std::byte> readBytes(Device& device, BufferHandle buffer, std::size_t size)
     {
-        auto mapped = device.mapBuffer(buffer);
-        REQUIRE(mapped.has_value());
         std::vector<std::byte> bytes(size);
-        std::memcpy(bytes.data(), mapped->data, size);
-        REQUIRE(device.unmapBuffer(buffer).has_value());
+        const auto read = device.readBuffer(buffer, 0, bytes);
+        INFO((read ? std::string{} : read.error().message));
+        REQUIRE(read.has_value());
         return bytes;
     }
 

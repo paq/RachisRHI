@@ -276,16 +276,15 @@ namespace rachis::test::draw_index
             REQUIRE(device_->wait(*submitted).has_value());
             firstPass_ = false;
 
-            auto mapped = device_->mapBuffer(readback_);
-            REQUIRE(mapped.has_value());
+            std::vector<std::byte> pixels(readbackSize);
+            REQUIRE(device_->readBuffer(readback_, 0, pixels).has_value());
             Columns columns{};
             for (std::uint32_t column = 0; column < columnCount; ++column)
             {
                 const auto offset =
                     std::size_t{targetHeight / 2} * rowPitch + std::size_t{column * columnWidth + columnWidth / 2} * 4U;
-                columns[column] = classify(mapped->data + offset);
+                columns[column] = classify(pixels.data() + offset);
             }
-            REQUIRE(device_->unmapBuffer(readback_).has_value());
             return columns;
         }
 
