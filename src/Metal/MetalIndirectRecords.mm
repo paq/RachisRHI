@@ -37,8 +37,8 @@ static void rachisClampRecord(constant RachisIndirectClamp& clamp, uint record)
         return;
     }
     const uint active = min(*clamp.count, clamp.maxRecords);
-    device const uint* source = clamp.source + record * clamp.strideWords;
-    device uint* destination = clamp.destination + record * clamp.recordWords;
+    device const uint* source = clamp.source + ulong(record) * ulong(clamp.strideWords);
+    device uint* destination = clamp.destination + ulong(record) * ulong(clamp.recordWords);
     for (uint word = 0; word < clamp.recordWords; ++word)
     {
         const bool zero = record >= active && word >= clamp.zeroFirstWord &&
