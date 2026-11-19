@@ -2417,7 +2417,8 @@ namespace rachis::shader_tool
         [[nodiscard]] inline MetalBufferSlots occupiedMetalBufferSlots(std::string_view source,
                                                                        const JsonValue& metalRoot,
                                                                        std::string_view entryPoint,
-                                                                       const JsonArray* entryBindings)
+                                                                       const JsonArray* entryBindings,
+                                                                       std::span<const std::string> replacedArrays)
         {
             MetalBufferSlots occupied{};
             constexpr std::string_view attribute = "[[buffer(";
@@ -2444,7 +2445,8 @@ namespace rachis::shader_tool
             }
             for (const auto& parameter : collectUsedMetalParameters(metalRoot, entryPoint, entryBindings))
             {
-                if (parameter.kindClass == metalBufferKindClass)
+                if (parameter.kindClass == metalBufferKindClass &&
+                    std::ranges::find(replacedArrays, parameter.name) == replacedArrays.end())
                 {
                     occupyMetalBufferSlots(occupied, parameter.unshiftedMetalIndex, parameter.count);
                 }
@@ -2606,7 +2608,14 @@ namespace rachis::shader_tool
             }
             resolved.push_back(std::move(found));
         }
-        auto occupied = detail::occupiedMetalBufferSlots(metalSource, *metalRoot, entryPoint, *entryBindings);
+        std::vector<std::string> replacedArrays;
+        replacedArrays.reserve(resolved.size());
+        for (const auto& array : resolved)
+        {
+            replacedArrays.push_back(array.name);
+        }
+        auto occupied =
+            detail::occupiedMetalBufferSlots(metalSource, *metalRoot, entryPoint, *entryBindings, replacedArrays);
         for (std::size_t index = 0; index < parameters.size(); ++index)
         {
             const auto& parameter = parameters[index];

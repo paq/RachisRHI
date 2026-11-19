@@ -2063,6 +2063,32 @@ struct KernelContext_0
 #endif
 }
 
+TEST_CASE("ShaderBinaryTool gives an unbounded array the buffer slot its reflection reports",
+          "[size:small][rhi][shader][tooling]")
+{
+    std::string source = "#include <metal_stdlib>\nusing namespace metal;\n[[kernel]] void slotsMain(";
+    std::string metalJson = R"({"parameters": [)";
+    for (std::uint32_t slot = 0; slot < 30; ++slot)
+    {
+        source += "uint device* b" + std::to_string(slot) + "_1 [[buffer(" + std::to_string(slot) + ")]], ";
+        metalJson += R"({"name": "b)" + std::to_string(slot) +
+                     R"(", "binding": {"kind": "constantBuffer", "index": )" + std::to_string(slot) +
+                     R"(}, "type": {"kind": "resource", "baseShape": "structuredBuffer", "access": "readWrite"}}, )";
+    }
+    source += "uint device*  values_1[])\n{\n    b0_1[0] = values_1[0][0];\n}\n";
+    metalJson += R"({"name": "values", "bindings": [{"kind": "constantBuffer", "space": 1, "index": 30},
+                    {"kind": "shaderResource", "index": 0, "count": 0}],
+                    "type": {"kind": "array", "elementCount": 0,
+                             "elementType": {"kind": "resource", "baseShape": "structuredBuffer"}}}]})";
+    constexpr std::string_view spirvJson = R"({"parameters": [
+        {"name": "values", "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 0}}]})";
+    const auto planned = rachis::shader_tool::planMetalArgumentBufferArrays(source, spirvJson, metalJson);
+    INFO((planned.has_value() ? std::string{} : planned.error()));
+    REQUIRE(planned.has_value());
+    REQUIRE(planned->size() == 1);
+    CHECK((*planned)[0].metalIndex == 30);
+}
+
 TEST_CASE("ShaderBinaryTool ignores array brackets in Metal preprocessor lines, comments, and literals",
           "[size:small][rhi][shader][tooling]")
 {
