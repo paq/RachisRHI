@@ -1775,6 +1775,69 @@ TEST_CASE("VulkanPipelineManager reuses immutable nativePipeline records in O(1)
     shaders.shutdown();
 }
 
+TEST_CASE("VulkanPipelineManager counts color attachments against the fragment stage's resource limit",
+          "[size:small][rhi][vulkan]")
+{
+    ScopedPerfMock mock;
+    rachis::vulkan::VulkanInstanceTable instanceTable{};
+    VolkDeviceTable table{};
+    populatePerfTables(instanceTable, table);
+
+    const auto device = fakeVk<VkDevice>(0x311);
+    const auto physical = fakeVk<VkPhysicalDevice>(0x312);
+    const auto caps = baselinePerfCapabilities();
+    rachis::vulkan::VulkanShaderManager shaders;
+    shaders.initialize(device, &table, caps, &instanceTable);
+    rachis::vulkan::VulkanBindingManager bindings;
+    bindings.initialize(device, &table, caps, &instanceTable, {}, {.maxPerStageResources = 4});
+    rachis::vulkan::VulkanPipelineManager pipelines;
+    pipelines.initialize(device, &table, physical, caps, &shaders, &bindings, &instanceTable, true);
+
+    const auto gfxSpv = makeMinimalGraphicsSpirv();
+    const auto vs = shaders.createShaderModule({
+        .stage = rachis::ShaderStage::vertex,
+        .bytecode = gfxSpv.bytes(),
+        .entryPoint = "vsMain",
+    });
+    const auto ps = shaders.createShaderModule({
+        .stage = rachis::ShaderStage::pixel,
+        .bytecode = gfxSpv.bytes(),
+        .entryPoint = "psMain",
+    });
+    REQUIRE(vs.has_value());
+    REQUIRE(ps.has_value());
+    const auto pipelineLayoutWith = [&](std::uint32_t fragmentBuffers) {
+        const std::array entries{rachis::BindingLayoutEntry{
+            .binding = 0,
+            .type = rachis::BindingType::uniformBuffer,
+            .visibility = rachis::ShaderStage::pixel,
+            .count = fragmentBuffers,
+        }};
+        const auto setLayout = bindings.createBindingLayout({.entries = entries});
+        REQUIRE(setLayout.has_value());
+        const auto layout = bindings.createPipelineLayout({.bindingLayouts = std::array{*setLayout}});
+        REQUIRE(layout.has_value());
+        return *layout;
+    };
+    const std::array colorTargets{rachis::ColorTargetState{.format = rachis::Format::rgba8Unorm}};
+    const auto pipelineFor = [&](rachis::PipelineLayoutHandle layout) {
+        return pipelines.createGraphicsPipeline({
+            .layout = layout,
+            .vertexShader = *vs,
+            .pixelShader = *ps,
+            .colorTargets = colorTargets,
+        });
+    };
+
+    CHECK(pipelineFor(pipelineLayoutWith(3)).has_value());
+    const auto full = pipelineFor(pipelineLayoutWith(4));
+    REQUIRE_FALSE(full.has_value());
+    CHECK(full.error().code == rachis::ErrorCode::unsupported);
+    pipelines.shutdown();
+    bindings.shutdown();
+    shaders.shutdown();
+}
+
 TEST_CASE("VulkanPipelineManager defers VkPipeline destruction until CommandBufferData retention clears",
           "[size:small][rhi][vulkan]")
 {

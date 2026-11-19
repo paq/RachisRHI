@@ -2651,6 +2651,17 @@ namespace rachis::vulkan
                 "The pipeline layout exceeds the device's per-stage or per-pipeline-layout descriptor limits.",
             });
         }
+        constexpr auto pixelStage =
+            static_cast<std::size_t>(std::countr_zero(static_cast<unsigned>(ShaderStage::pixel)));
+        const auto& regularFragment = anyUpdateAfterBind ? withoutUpdateAfterBind : totals;
+        auto fragmentOutputCapacity =
+            remainingDescriptors(descriptorLimits_.maxPerStageResources, regularFragment.perStageResources[pixelStage]);
+        if (anyUpdateAfterBind)
+        {
+            fragmentOutputCapacity = (std::min)(fragmentOutputCapacity,
+                                                remainingDescriptors(updateAfterBindLimits_.maxPerStageResources,
+                                                                     totals.perStageResources[pixelStage]));
+        }
 
         auto record = std::make_shared<PipelineLayoutRecord>();
         record->label = std::string(desc.label);
@@ -2665,6 +2676,7 @@ namespace rachis::vulkan
             validation_detail::mergePushConstantRangesPerStage(enabledPushConstantRanges);
         record->pushConstantBytes = *pushConstantSize;
         record->drawIndex = desc.drawIndex;
+        record->fragmentOutputCapacity = fragmentOutputCapacity;
         record->sets = std::move(*sets);
         auto keepAlive = createNativePipelineLayout(*record);
         if (!keepAlive)
@@ -2807,6 +2819,7 @@ namespace rachis::vulkan
             });
         }
         native.drawIndex = (*found)->drawIndex;
+        native.fragmentOutputCapacity = (*found)->fragmentOutputCapacity;
         return native;
     }
 

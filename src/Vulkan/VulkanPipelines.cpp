@@ -1788,6 +1788,15 @@ namespace rachis::vulkan
                     "A graphics pipeline references an invalid or stale layout or shader module.",
                 });
             }
+            if (desc.pixelShader.isValid() && desc.colorTargets.size() > layout->fragmentOutputCapacity)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::unsupported,
+                    0,
+                    "The color attachments of this graphics pipeline and the fragment-stage descriptors of its "
+                    "layout exceed the device's per-stage resource limit.",
+                });
+            }
             prepared.layout = std::move(*layout);
         }
         if (auto resolved = resolveGraphicsShaders(desc, prepared); !resolved)

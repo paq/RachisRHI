@@ -90,6 +90,7 @@ namespace rachis::vulkan
         std::vector<PushConstantRange> nativePushConstantRanges = {};
         std::vector<VulkanNativeBindingLayout> sets = {};
         bool drawIndex = false;
+        std::uint64_t fragmentOutputCapacity = std::numeric_limits<std::uint64_t>::max();
     };
 
     class VulkanBindingManager final
@@ -294,6 +295,7 @@ namespace rachis::vulkan
             std::vector<PushConstantRange> nativePushConstantRanges;
             std::uint32_t pushConstantBytes = 0;
             bool drawIndex = false;
+            std::uint64_t fragmentOutputCapacity = std::numeric_limits<std::uint64_t>::max();
             std::string label;
             std::shared_ptr<PipelineLayoutKeepAlive> keepAlive;
         };
