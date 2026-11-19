@@ -1361,14 +1361,22 @@ TEST_CASE("Vulkan shader modules gate storage-buffer 64-bit atomics on shaderInt
     CHECK(accepted.has_value());
 }
 
-TEST_CASE("Vulkan shader modules need no 64-bit atomic capability for a 32-bit atomic beside Int64Atomics",
+TEST_CASE("Vulkan shader modules declaring Int64Atomics need one 64-bit atomic feature, not one per 32-bit atomic",
           "[size:small][rhi][vulkan][shader][module]")
 {
     rachis::DeviceCapabilities capabilities{};
     capabilities.limits.maxComputeWorkgroupSize = {1024, 1024, 64};
     capabilities.limits.maxComputeWorkgroupInvocations = 1024;
     capabilities.shaderInt64 = true;
-    auto accepted = createWithoutDevice(int64AtomicsModuleWith32BitGroupSharedAtomic(), capabilities);
+    const auto bytecode = int64AtomicsModuleWith32BitGroupSharedAtomic();
+
+    auto rejected = createWithoutDevice(bytecode, capabilities);
+    REQUIRE_FALSE(rejected.has_value());
+    CHECK(rejected.error().code == rachis::ErrorCode::unsupported);
+    CHECK(rejected.error().message.find("Int64Atomics") != std::string::npos);
+
+    capabilities.shaderInt64AtomicStorageBuffer = true;
+    auto accepted = createWithoutDevice(bytecode, capabilities);
     if (!accepted)
     {
         UNSCOPED_INFO(accepted.error().message);

@@ -3488,6 +3488,7 @@ namespace rachis::vulkan
             bool pushConstant16Bit = false;
             bool inputOutput16Bit = false;
             bool subgroups = false;
+            bool int64AtomicsCapability = false;
             bool groupSharedInt64Atomics = false;
             bool typedInt64Atomics = false;
             bool storageInt64Atomics = false;
@@ -3544,8 +3545,11 @@ namespace rachis::vulkan
                 requirements.inputOutput16Bit = true;
                 break;
             case spirvCapabilityInt64:
+                requirements.int64 = true;
+                break;
             case spirvCapabilityInt64Atomics:
                 requirements.int64 = true;
+                requirements.int64AtomicsCapability = true;
                 break;
             case spirvCapabilityInt64ImageExt:
                 requirements.int64 = true;
@@ -3778,6 +3782,11 @@ namespace rachis::vulkan
                                     "16-bit shader stage inputs and outputs are not available on this device."},
                 FeatureSupportCheck{requirements.subgroups && !capabilities.subgroupOperations,
                                     "Shader subgroup operations are not available on this device."},
+                FeatureSupportCheck{requirements.int64AtomicsCapability && !capabilities.shaderInt64AtomicGroupShared &&
+                                        !capabilities.shaderInt64AtomicTypedResource &&
+                                        !capabilities.shaderInt64AtomicStorageBuffer,
+                                    "The SPIR-V Int64Atomics capability needs a 64-bit integer atomic feature that "
+                                    "this device does not enable."},
                 FeatureSupportCheck{requirements.groupSharedInt64Atomics && !capabilities.shaderInt64AtomicGroupShared,
                                     "Group-shared 64-bit integer atomics are not available on this device."},
                 FeatureSupportCheck{requirements.typedInt64Atomics && !capabilities.shaderInt64AtomicTypedResource,
