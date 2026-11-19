@@ -1263,17 +1263,7 @@ namespace rachis::metal
         {
             auto& version = versions[index];
             entry->boundComputeVersions[firstSet + index] = version;
-            for (const auto& slot : version->slots)
-            {
-                if (slot.buffer != nil)
-                {
-                    metalRetainResidency(*entry, slot.buffer);
-                }
-                if (slot.texture != nil)
-                {
-                    metalRetainResidency(*entry, slot.texture);
-                }
-            }
+            metalRetainBindingSetResidency(*entry, *version);
         }
         entry->computeTableDirty = true;
         return {};
@@ -2700,18 +2690,7 @@ namespace rachis::metal
         {
             auto& version = versions[index];
             entry->boundGraphicsVersions[firstSet + index] = version;
-
-            for (const auto& slot : version->slots)
-            {
-                if (slot.buffer != nil)
-                {
-                    metalRetainResidency(*entry, slot.buffer);
-                }
-                if (slot.texture != nil)
-                {
-                    metalRetainResidency(*entry, slot.texture);
-                }
-            }
+            metalRetainBindingSetResidency(*entry, *version);
             state.boundBindingSets[firstSet + index] = true;
         }
         entry->vertexTableDirty = true;

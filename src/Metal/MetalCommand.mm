@@ -256,6 +256,7 @@ namespace rachis::metal
         entry.residencyDirty = false;
         entry.residency = nil;
         entry.residentAllocations.clear();
+        entry.usedResidencySets.clear();
         entry.pendingBarrierAfterStages = static_cast<MTLStages>(0);
         entry.pendingBarrierBeforeStages = static_cast<MTLStages>(0);
         entry.waitedDrawables.clear();
@@ -329,6 +330,7 @@ namespace rachis::metal
         entry.residencyBound = false;
         entry.residencyDirty = false;
         entry.residentAllocations.clear();
+        entry.usedResidencySets.clear();
         if (entry.residency == nil)
         {
             endMetalRecording(entry);
@@ -448,6 +450,31 @@ namespace rachis::metal
         {
             [entry.command useResidencySet:entry.residency];
             entry.residencyBound = true;
+        }
+    }
+
+    void metalRetainBindingSetResidency(MetalCommandEntry& entry, const MetalBindingSetVersion& version) noexcept
+    {
+        const bool argumentBuffer = version.argumentResidency != nil;
+        if (argumentBuffer && entry.command != nil &&
+            entry.usedResidencySets.insertIfAbsent((__bridge const void*)version.argumentResidency))
+        {
+            [entry.command useResidencySet:version.argumentResidency];
+        }
+        for (const auto& slot : version.slots)
+        {
+            if (argumentBuffer && metalIsArgumentBufferSlot(version, slot))
+            {
+                continue;
+            }
+            if (slot.buffer != nil)
+            {
+                metalRetainResidency(entry, slot.buffer);
+            }
+            if (slot.texture != nil)
+            {
+                metalRetainResidency(entry, slot.texture);
+            }
         }
     }
 

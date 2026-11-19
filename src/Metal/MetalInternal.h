@@ -718,6 +718,7 @@ namespace rachis::metal
         MetalDeferredStoreActions renderStoreActions{};
         __strong id<MTLResidencySet> residency;
         MetalPointerSet residentAllocations;
+        MetalPointerSet usedResidencySets;
         MetalCommandBuffer* lease = nullptr;
         bool inFlight = false;
         bool begun = false;
@@ -1591,6 +1592,7 @@ namespace rachis::metal
     [[nodiscard]] Result<MetalBatchLayouts> metalPlanBatchLayouts(std::span<MetalCommandBuffer* const> commands);
     void metalPublishBatchLayouts(MetalBatchLayouts& layouts) noexcept;
     void metalRetainResidency(MetalCommandEntry& entry, id<MTLAllocation> allocation) noexcept;
+    void metalRetainBindingSetResidency(MetalCommandEntry& entry, const MetalBindingSetVersion& version) noexcept;
     [[nodiscard]] MetalWaitedDrawable metalSwapchainImageReference(const MetalDeviceNative& native,
                                                                    const MetalTextureRecord& texture);
     [[nodiscard]] Status metalReserveWaitedDrawableTracking(MetalCommandEntry* entry,
