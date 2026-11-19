@@ -137,11 +137,8 @@ TEST_CASE("Shader interface reflection keeps the resources the entry point uses"
 
     const auto vulkan =
         reflectShaderInterface(computeHlslJson, InterfaceBackend::vulkan, "main", InterfaceStage::compute);
-    REQUIRE(vulkan.has_value());
-    CHECK(vulkan->pushConstantBytes == 0);
-    REQUIRE(vulkan->bindings.size() == 3);
-    CHECK(vulkan->bindings[2].set == 4);
-    CHECK(vulkan->bindings[2].type == "uniformBuffer");
+    REQUIRE_FALSE(vulkan.has_value());
+    CHECK(vulkan.error().find("'push' is in binding set 4") != std::string::npos);
 }
 
 TEST_CASE("Shader interface reflection reads vertex input locations per backend",
@@ -514,6 +511,56 @@ namespace
         return bytes;
     }
 
+    [[nodiscard]] std::vector<std::byte> computeModuleWithSamplerInSet(std::uint32_t set)
+    {
+        constexpr std::uint32_t mainName = 0x6E69616DU;
+        const std::vector<std::uint32_t> words{
+            0x07230203U,
+            0x00010600U,
+            0U,
+            6U,
+            0U,
+            (2U << 16U) | 17U,
+            1U,
+            (3U << 16U) | 14U,
+            0U,
+            1U,
+            (6U << 16U) | 15U,
+            5U,
+            1U,
+            mainName,
+            0U,
+            4U,
+            (6U << 16U) | 16U,
+            1U,
+            17U,
+            1U,
+            1U,
+            1U,
+            (4U << 16U) | 71U,
+            4U,
+            34U,
+            set,
+            (4U << 16U) | 71U,
+            4U,
+            33U,
+            0U,
+            (2U << 16U) | 26U,
+            2U,
+            (4U << 16U) | 32U,
+            3U,
+            0U,
+            2U,
+            (4U << 16U) | 59U,
+            3U,
+            4U,
+            0U,
+        };
+        std::vector<std::byte> bytes(words.size() * sizeof(std::uint32_t));
+        std::memcpy(bytes.data(), words.data(), bytes.size());
+        return bytes;
+    }
+
     [[nodiscard]] std::vector<std::byte> pnmsShader(std::string_view json)
     {
         constexpr std::array metallib{std::byte{'M'}, std::byte{'T'}, std::byte{'L'}, std::byte{'B'}, std::byte{0}};
@@ -813,4 +860,43 @@ TEST_CASE("Generated binding layouts of unbounded arrays pass binding layout val
         CHECK(generated::bindingPoolSizes(backend, 1).empty());
     }
     CHECK(backends > 0);
+}
+
+TEST_CASE("Shader interface reflection rejects resources outside binding sets 0 to 3",
+          "[size:small][rhi][tooling][shader-interface]")
+{
+    const auto inSetThree = rachis::shader_tool::reflectSpirvShaderInterface(
+        computeModuleWithSamplerInSet(3), "main", InterfaceStage::compute);
+    INFO((inSetThree ? std::string{} : inSetThree.error()));
+    REQUIRE(inSetThree.has_value());
+    REQUIRE(inSetThree->bindings.size() == 1);
+    CHECK(inSetThree->bindings[0].set == 3);
+
+    for (const std::uint32_t set : {4U, 5U})
+    {
+        INFO("set " << set);
+        const auto rejected = rachis::shader_tool::reflectSpirvShaderInterface(
+            computeModuleWithSamplerInSet(set), "main", InterfaceStage::compute);
+        REQUIRE_FALSE(rejected.has_value());
+        CHECK(rejected.error().find("binding set " + std::to_string(set)) != std::string::npos);
+    }
+
+    const auto computeJson = [](std::string_view binding) {
+        return std::string(R"({"parameters": [{"name": "table", "binding": )") + std::string(binding) +
+               R"(, "type": {"kind": "resource", "baseShape": "texture2D"}}],
+            "entryPoints": [{"name": "main", "stage": "compute", "threadGroupSize": [1, 1, 1]}]})";
+    };
+    const auto vulkan =
+        reflectShaderInterface(computeJson(R"({"kind": "descriptorTableSlot", "space": 6, "index": 0})"),
+                               InterfaceBackend::vulkan,
+                               "main",
+                               InterfaceStage::compute);
+    REQUIRE_FALSE(vulkan.has_value());
+    CHECK(vulkan.error().find("binding set 6") != std::string::npos);
+    const auto d3d12 = reflectShaderInterface(computeJson(R"({"kind": "shaderResource", "space": 4, "index": 0})"),
+                                              InterfaceBackend::d3d12,
+                                              "main",
+                                              InterfaceStage::compute);
+    REQUIRE_FALSE(d3d12.has_value());
+    CHECK(d3d12.error().find("binding set 4") != std::string::npos);
 }

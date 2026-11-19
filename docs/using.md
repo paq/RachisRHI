@@ -410,7 +410,7 @@ VertexOutput vertexMain(float3 position : TEXCOORD0)
 
 - Only vertex, task, and mesh shaders can read the draw index. Pass it to later stages through a `nointerpolation` output. `drawIndex` on a shader interface of any other stage fails with `ErrorCode::invalidArgument`.
 - The header is in the package's include directory, and `rachis_add_shader` puts that directory on the include path. When you cook shaders yourself, pass it as described in [Cooking manually](#cooking-manually-for-c-or-custom-build-systems).
-- On Direct3D 12 and Metal the header reads a constant buffer at `register(b0, space5)` (`drawIndexRegister`, `drawIndexRegisterSpace`); space 5 is reserved for it, as space 4 is for push constants. On Vulkan it reads the SPIR-V `DrawIndex` builtin. `REFLECT` and `RachisShaderBinaryTool` reject any other resource in space 5, on every backend.
+- On Direct3D 12 and Metal the header reads a constant buffer at `register(b0, space5)` (`drawIndexRegister`, `drawIndexRegisterSpace`); space 5 is reserved for it, as space 4 is for push constants. On Vulkan it reads the SPIR-V `DrawIndex` builtin. `REFLECT` and `RachisShaderBinaryTool` reject any other resource in space 5, and any resource in a binding set above 3 that is not a push-constant block, on every backend and for GLSL too.
 - GLSL shaders read `gl_DrawID` and need no header.
 
 ### Declaring the draw index

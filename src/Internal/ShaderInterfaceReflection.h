@@ -39,6 +39,7 @@ namespace rachis::shader_tool
     inline constexpr std::uint32_t d3d12PushConstantSpace = 4;
     inline constexpr std::uint32_t drawIndexRegister = 0;
     inline constexpr std::uint32_t drawIndexSpace = 5;
+    inline constexpr std::uint32_t bindingSetLimit = 4;
     inline constexpr std::uint32_t unboundedResourceCount = 0xFFFFFFFFU;
 
     struct ReflectedBinding final
@@ -479,8 +480,28 @@ namespace rachis::shader_tool
             return {};
         }
 
+        [[nodiscard]] inline std::expected<void, std::string> validateBindingSets(
+            const std::vector<ReflectedBinding>& bindings)
+        {
+            for (const auto& binding : bindings)
+            {
+                if (binding.set >= bindingSetLimit)
+                {
+                    return std::unexpected("The resource '" + binding.name + "' is in binding set " +
+                                           std::to_string(binding.set) +
+                                           ". RachisRHI binding sets are 0 to 3; register space 4 is reserved for "
+                                           "push constants and space 5 for the draw index.");
+                }
+            }
+            return {};
+        }
+
         [[nodiscard]] inline std::expected<void, std::string> sortBindings(std::vector<ReflectedBinding>& bindings)
         {
+            if (auto sets = validateBindingSets(bindings); !sets)
+            {
+                return sets;
+            }
             std::ranges::sort(bindings, [](const ReflectedBinding& left, const ReflectedBinding& right) {
                 return std::pair{left.set, left.binding} < std::pair{right.set, right.binding};
             });
