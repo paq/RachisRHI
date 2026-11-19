@@ -1312,6 +1312,10 @@ namespace rachis::metal
                 return kept;
             }
         }
+        if (auto reserved = metalReserveBindingSetResidency(*entry, versions.size()); !reserved)
+        {
+            return reserved;
+        }
         if (auto counted = retainMetalBindingSetRetentions(*native, retentions); !counted)
         {
             return counted;
@@ -2742,6 +2746,10 @@ namespace rachis::metal
         if (entry->boundGraphicsVersions.size() < firstSet + versions.size())
         {
             entry->boundGraphicsVersions.resize(firstSet + versions.size());
+        }
+        if (auto reserved = metalReserveBindingSetResidency(*entry, versions.size()); !reserved)
+        {
+            return reserved;
         }
         if (auto counted = retainMetalBindingSetRetentions(*native, retentions); !counted)
         {

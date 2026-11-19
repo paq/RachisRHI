@@ -16,6 +16,7 @@ namespace rachis::metal
             std::vector<MetalWaitedDrawable> waitedDrawables;
             std::vector<std::shared_ptr<MetalBindingSetVersion>> boundComputeVersions;
             std::vector<std::shared_ptr<MetalBindingSetVersion>> boundGraphicsVersions;
+            std::vector<std::shared_ptr<MetalArgumentBufferContents>> foldedArgumentContents;
             std::shared_ptr<MetalPipelineRecord> boundComputePipeline;
             std::shared_ptr<MetalPipelineRecord> boundGraphicsPipeline;
         };
@@ -27,6 +28,7 @@ namespace rachis::metal
                 .waitedDrawables = std::move(entry.waitedDrawables),
                 .boundComputeVersions = std::move(entry.boundComputeVersions),
                 .boundGraphicsVersions = std::move(entry.boundGraphicsVersions),
+                .foldedArgumentContents = std::move(entry.foldedArgumentContents),
                 .boundComputePipeline = std::move(entry.boundComputePipeline),
                 .boundGraphicsPipeline = std::move(entry.boundGraphicsPipeline),
             };
@@ -34,6 +36,7 @@ namespace rachis::metal
             entry.waitedDrawables.clear();
             entry.boundComputeVersions.clear();
             entry.boundGraphicsVersions.clear();
+            entry.foldedArgumentContents.clear();
             return retentions;
         }
 
@@ -257,6 +260,9 @@ namespace rachis::metal
         entry.residency = nil;
         entry.residentAllocations.clear();
         entry.usedResidencySets.clear();
+        entry.argumentResidencySetCount = 0;
+        entry.foldedArgumentSets.clear();
+        entry.foldedArgumentContents.clear();
         entry.pendingBarrierAfterStages = static_cast<MTLStages>(0);
         entry.pendingBarrierBeforeStages = static_cast<MTLStages>(0);
         entry.waitedDrawables.clear();
@@ -333,6 +339,8 @@ namespace rachis::metal
         entry.residencyDirty = false;
         entry.residentAllocations.clear();
         entry.usedResidencySets.clear();
+        entry.argumentResidencySetCount = 0;
+        entry.foldedArgumentSets.clear();
         if (entry.residency == nil)
         {
             endMetalRecording(entry);
@@ -459,9 +467,23 @@ namespace rachis::metal
     {
         const auto& argument = version.argumentNative;
         if (argument != nullptr && argument->residency != nil && entry.command != nil &&
-            entry.usedResidencySets.insertIfAbsent((__bridge const void*)argument->residency))
+            !entry.usedResidencySets.contains((__bridge const void*)argument->residency))
         {
-            [entry.command useResidencySet:argument->residency];
+            if (entry.argumentResidencySetCount < kMetalMaxCommandArgumentResidencySets)
+            {
+                static_cast<void>(entry.usedResidencySets.insertIfAbsent((__bridge const void*)argument->residency));
+                [entry.command useResidencySet:argument->residency];
+                ++entry.argumentResidencySetCount;
+            }
+            else if (version.argumentContents != nullptr &&
+                     entry.foldedArgumentSets.insertIfAbsent(version.argumentContents.get()))
+            {
+                metalRetainResidency(entry, argument->buffer);
+                if (entry.foldedArgumentContents.size() < entry.foldedArgumentContents.capacity())
+                {
+                    entry.foldedArgumentContents.push_back(version.argumentContents);
+                }
+            }
         }
         for (const auto& slot : version.slots)
         {
@@ -472,6 +494,35 @@ namespace rachis::metal
             if (slot.texture != nil)
             {
                 metalRetainResidency(entry, slot.texture);
+            }
+        }
+    }
+
+    Status metalReserveBindingSetResidency(MetalCommandEntry& entry, std::size_t versionCount)
+    {
+        try
+        {
+            entry.foldedArgumentContents.reserve(entry.foldedArgumentContents.size() + versionCount);
+        }
+        catch (const std::bad_alloc&)
+        {
+            return std::unexpected(
+                metalSelectionError(ErrorCode::outOfMemory, "Failed to reserve Metal binding-array residency."));
+        }
+        return {};
+    }
+
+    void metalFoldArgumentResidency(MetalCommandEntry& entry) noexcept
+    {
+        for (const auto& contents : entry.foldedArgumentContents)
+        {
+            const std::scoped_lock lock(contents->mutex);
+            for (const auto& [key, count] : contents->residentElements)
+            {
+                if (count != 0)
+                {
+                    metalRetainResidency(entry, (__bridge id<MTLAllocation>)const_cast<void*>(key));
+                }
             }
         }
     }
@@ -1842,6 +1893,7 @@ namespace rachis::metal
         consumeMetalCommandLeases(state, batch, nativeCommands, commandBuffers);
         for (auto* entry : batch.entries)
         {
+            metalFoldArgumentResidency(*entry);
             commitMetalResidency(*entry);
             endMetalRecording(*entry);
         }
