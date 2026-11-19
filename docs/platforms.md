@@ -229,13 +229,13 @@ A binding layout entry with `BindingFlag::variableDescriptorCount` gets its size
 
 | Limit field | Applies to | Direct3D 12 | Vulkan | Metal |
 | --- | --- | --- | --- | --- |
-| `maxVariableBufferDescriptors` | `uniformBuffer`, `readOnlyStorageBuffer`, `storageBuffer` | `868,928` | Min of resource limit and stage/set uniform-buffer quota (e.g., `12` when stage limit is `15`) | `31` |
-| `maxVariableSamplerDescriptors` | `sampler` | — | Device sampler quota | `16` |
-| `maxVariableResourceDescriptors` | Other types (`sampledTexture`, `storageTexture`, etc.) | `868,928` | Device resource quota (e.g., `65,536`) | `128` |
+| `maxVariableBufferDescriptors` | `uniformBuffer`, `readOnlyStorageBuffer`, `storageBuffer` | `868,928` | Min of resource limit and stage/set uniform-buffer quota (e.g., `12` when stage limit is `15`) | `500,000` |
+| `maxVariableSamplerDescriptors` | `sampler` | — | Device sampler quota | `1,024` |
+| `maxVariableResourceDescriptors` | Other types (`sampledTexture`, `storageTexture`, etc.) | `868,928` | Device resource quota (e.g., `65,536`) | `500,000` |
 
 Rules and caveats:
 - **Shared capacity:** A set reaches the full limit only when the variable-count entry is alone in its layout; other entries in the layout consume slots from the same argument table or heap.
-- **Metal argument tables:** Each Metal shader stage has `31` buffer, `128` texture, and `16` sampler slots (`createBindingSet` rejects larger arrays with `ErrorCode::invalidArgument`). A binding at slot `b` holds at most `limit - b` entries. A stage's `31` buffer slots are shared across all buffer bindings visible to that stage across all sets, one slot for push constants (if visible to that stage), and vertex buffers in the vertex stage.
+- **Metal argument tables and argument buffers:** Each Metal shader stage has `31` buffer, `128` texture, and `16` sampler slots, shared by every set visible to that stage, one slot for push constants (if visible to that stage), and vertex buffers in the vertex stage. A fixed-size binding at slot `b` of count `c` uses slots `b` to `b + c - 1`. A variable-count array instead lives in an argument buffer that takes one buffer slot, so its length is limited only by the table above, whatever its binding number. RachisShaderBinaryTool `cook-metallib` (and so `rachis_add_shader`) compiles an unbounded HLSL or Slang array, such as `Texture2D textures[] : register(t0, space1)`, to read that argument buffer; the shader source stays the same on every backend.
 - **Size buffer arrays correctly:** On D3D12, buffers and other resources share the `868,928`-descriptor heap range (`maxBindingPoolResourceDescriptors`), whereas on Vulkan and Metal `maxVariableBufferDescriptors` can be much smaller than `maxVariableResourceDescriptors`. Sizing a buffer array from `maxVariableResourceDescriptors` causes `createBindingSet` to fail with `ErrorCode::invalidArgument` on Metal or on Vulkan devices with tighter uniform-buffer limits. **Always size buffer arrays from `maxVariableBufferDescriptors`.**
 - The C ABI exposes neither variable-count binding arrays nor device limits.
 

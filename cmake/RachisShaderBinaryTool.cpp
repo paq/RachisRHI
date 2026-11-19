@@ -1080,6 +1080,16 @@ namespace
         return rebased->has_value();
     }
 
+    [[nodiscard]] std::expected<bool, std::string> probeUsesUnboundedArrays(const CookTempFiles& tempFiles)
+    {
+        const auto probeSource = readBinaryFile(tempFiles.metalProbeSource);
+        if (!probeSource.has_value())
+        {
+            return std::unexpected("slangc Metal reflection probe wrote no Metal source: " + probeSource.error());
+        }
+        return !rachis::shader_tool::collectMetalUnboundedArrayParameters(viewAsText(*probeSource)).empty();
+    }
+
     [[nodiscard]] std::vector<std::string> buildMetalCompilerArgs(const CookMetallibOptions& options,
                                                                   const std::string& metalSourcePath)
     {
@@ -1101,7 +1111,8 @@ namespace
 
     [[nodiscard]] int compileRebasedMetallib(const CookMetallibOptions& options,
                                              const rachis::shader_tool::MetalSpaceShifts& shifts,
-                                             const CookTempFiles& tempFiles)
+                                             const CookTempFiles& tempFiles,
+                                             std::vector<rachis::shader_tool::MetalArgumentBufferArray>& arrays)
     {
         auto metalSourceArgs = buildMetalCompileArgs(options, shifts, "metal");
         metalSourceArgs.insert(metalSourceArgs.end(),
@@ -1126,7 +1137,29 @@ namespace
             std::cerr << rebased.error() << '\n';
             return 1;
         }
-        const std::string source = rebased->value_or(std::string(viewAsText(*generated)));
+        const std::string rebasedSource = rebased->value_or(std::string(viewAsText(*generated)));
+        const auto spirvReflection = readBinaryFile(tempFiles.spirvProbeJson);
+        const auto metalReflection = readBinaryFile(tempFiles.rawReflectionJson);
+        if (!spirvReflection.has_value() || !metalReflection.has_value())
+        {
+            std::cerr << "The Metal argument-buffer plan could not read the reflection JSON.\n";
+            return 1;
+        }
+        auto planned = rachis::shader_tool::planMetalArgumentBufferArrays(
+            rebasedSource, viewAsText(*spirvReflection), viewAsText(*metalReflection));
+        if (!planned.has_value())
+        {
+            std::cerr << planned.error() << '\n';
+            return 1;
+        }
+        auto rewritten = rachis::shader_tool::rewriteMetalArgumentBufferArrays(rebasedSource, *planned);
+        if (!rewritten.has_value())
+        {
+            std::cerr << rewritten.error() << '\n';
+            return 1;
+        }
+        arrays = std::move(*planned);
+        const std::string& source = *rewritten;
         const std::span<const std::byte> sourceBytes(reinterpret_cast<const std::byte*>(source.data()), source.size());
         if (const auto written = writeBinaryFile(tempFiles.rebasedMetalSource, sourceBytes); !written.has_value())
         {
@@ -1147,14 +1180,16 @@ namespace
     [[nodiscard]] std::expected<std::string, std::string> readAndEnrichRawReflection(
         const std::string& rawReflectionJsonPath,
         std::span<const rachis::shader_tool::MetalLogicalParameterBinding> bindings,
-        std::string_view entryPoint)
+        std::string_view entryPoint,
+        std::span<const rachis::shader_tool::MetalArgumentBufferArray> argumentBuffers)
     {
         const auto rawReflectionBytes = readBinaryFile(rawReflectionJsonPath);
         if (!rawReflectionBytes.has_value())
         {
             return std::unexpected(rawReflectionBytes.error());
         }
-        return rachis::shader_tool::enrichMetalReflectionJson(viewAsText(*rawReflectionBytes), bindings, entryPoint);
+        return rachis::shader_tool::enrichMetalReflectionJson(
+            viewAsText(*rawReflectionBytes), bindings, entryPoint, argumentBuffers);
     }
 
     [[nodiscard]] std::expected<void, std::string> writePnmsManifest(const CookMetallibOptions& options,
@@ -1198,9 +1233,16 @@ namespace
             std::cerr << readsVertexId.error() << '\n';
             return 1;
         }
-        if (*readsVertexId)
+        const auto usesUnboundedArrays = probeUsesUnboundedArrays(tempFiles);
+        if (!usesUnboundedArrays.has_value())
         {
-            if (const int rc = compileRebasedMetallib(options, cookPlan->shifts, tempFiles); rc != 0)
+            std::cerr << usesUnboundedArrays.error() << '\n';
+            return 1;
+        }
+        std::vector<rachis::shader_tool::MetalArgumentBufferArray> argumentBuffers;
+        if (*readsVertexId || *usesUnboundedArrays)
+        {
+            if (const int rc = compileRebasedMetallib(options, cookPlan->shifts, tempFiles, argumentBuffers); rc != 0)
             {
                 return rc;
             }
@@ -1221,8 +1263,16 @@ namespace
             }
         }
 
+        std::vector<rachis::shader_tool::MetalLogicalParameterBinding> bindings;
+        for (const auto& binding : cookPlan->bindings)
+        {
+            if (std::ranges::none_of(argumentBuffers, [&](const auto& array) { return array.name == binding.name; }))
+            {
+                bindings.push_back(binding);
+            }
+        }
         const auto enrichedJson =
-            readAndEnrichRawReflection(tempFiles.rawReflectionJson, cookPlan->bindings, options.entryPoint);
+            readAndEnrichRawReflection(tempFiles.rawReflectionJson, bindings, options.entryPoint, argumentBuffers);
         if (!enrichedJson.has_value())
         {
             std::cerr << enrichedJson.error() << '\n';

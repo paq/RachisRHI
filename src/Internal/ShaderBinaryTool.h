@@ -44,6 +44,29 @@ namespace rachis::shader_tool
         std::vector<MetalLogicalParameterBinding> bindings{};
     };
 
+    inline constexpr std::uint32_t metalArgumentBufferResourceLimit = 500'000;
+    inline constexpr std::uint32_t metalArgumentBufferSamplerLimit = 1024;
+    inline constexpr std::uint32_t metalArgumentTableBufferSlots = 31;
+
+    struct MetalUnboundedArrayParameter final
+    {
+        std::string parameterName;
+        std::string baseName;
+        std::string elementType;
+    };
+
+    struct MetalArgumentBufferArray final
+    {
+        std::string name;
+        std::string parameterName;
+        std::string elementType;
+        std::string_view resourceType;
+        std::uint32_t set = 0;
+        std::uint32_t binding = 0;
+        std::uint32_t metalIndex = 0;
+        std::uint32_t capacity = 0;
+    };
+
     namespace detail
     {
 
@@ -1636,10 +1659,31 @@ namespace rachis::shader_tool
         return detail::collectMetalStageInterface(*parsed, entryPoint);
     }
 
+    namespace detail
+    {
+        inline void appendMetalArgumentBufferJson(std::string& text,
+                                                  const MetalArgumentBufferArray& array,
+                                                  bool separator)
+        {
+            if (separator)
+            {
+                text += ", ";
+            }
+            text += "{\"name\": ";
+            text += escapeJsonString(array.name);
+            text += ", \"type\": \"";
+            text += array.resourceType;
+            text += "\", \"set\": " + std::to_string(array.set) + ", \"binding\": " + std::to_string(array.binding) +
+                    ", \"index\": " + std::to_string(array.metalIndex) +
+                    ", \"capacity\": " + std::to_string(array.capacity) + "}";
+        }
+    } // namespace detail
+
     [[nodiscard]] inline std::expected<std::string, std::string> enrichMetalReflectionJson(
         std::string_view rawMetalReflectionJson,
         std::span<const MetalLogicalParameterBinding> bindings,
-        std::string_view entryPoint = {})
+        std::string_view entryPoint = {},
+        std::span<const MetalArgumentBufferArray> argumentBuffers = {})
     {
         auto parsed = detail::JsonParser(rawMetalReflectionJson).parseDocument();
         if (!parsed.has_value())
@@ -1709,6 +1753,15 @@ namespace rachis::shader_tool
             }
         }
         suffix += ']';
+        if (!argumentBuffers.empty())
+        {
+            suffix += ",\n    \"rachisArgumentBuffers\": [";
+            for (std::size_t index = 0; index < argumentBuffers.size(); ++index)
+            {
+                detail::appendMetalArgumentBufferJson(suffix, argumentBuffers[index], index != 0);
+            }
+            suffix += ']';
+        }
         if (stageInterface->reflected)
         {
             suffix += ",\n    \"rachisStageInterface\": {\"inputs\": ";
@@ -2039,6 +2092,459 @@ namespace rachis::shader_tool
             return std::optional<std::string>{};
         }
         return std::optional<std::string>{std::move(rebased)};
+    }
+
+    namespace detail
+    {
+
+        inline constexpr std::array<std::string_view, 5> metalEntryAttributes{
+            "[[kernel]]",
+            "[[vertex]]",
+            "[[fragment]]",
+            "[[object]]",
+            "[[mesh]]",
+        };
+
+        struct MetalSourceRange final
+        {
+            std::size_t begin = 0;
+            std::size_t end = 0;
+        };
+
+        [[nodiscard]] inline std::optional<std::size_t> matchingParenthesis(std::string_view source,
+                                                                            std::size_t open) noexcept
+        {
+            std::size_t depth = 0;
+            for (std::size_t index = open; index < source.size(); ++index)
+            {
+                if (source[index] == '(')
+                {
+                    ++depth;
+                }
+                else if (source[index] == ')')
+                {
+                    if (--depth == 0)
+                    {
+                        return index;
+                    }
+                }
+            }
+            return std::nullopt;
+        }
+
+        [[nodiscard]] inline std::vector<MetalSourceRange> metalEntryParameterLists(std::string_view source)
+        {
+            std::vector<MetalSourceRange> ranges;
+            for (const auto attribute : metalEntryAttributes)
+            {
+                for (std::size_t found = source.find(attribute); found != std::string_view::npos;
+                     found = source.find(attribute, found + attribute.size()))
+                {
+                    const auto open = source.find('(', found);
+                    if (open == std::string_view::npos)
+                    {
+                        continue;
+                    }
+                    if (const auto close = matchingParenthesis(source, open); close.has_value())
+                    {
+                        ranges.push_back(MetalSourceRange{open, *close});
+                    }
+                }
+            }
+            return ranges;
+        }
+
+        [[nodiscard]] inline bool isMetalIdentifierChar(char ch) noexcept
+        {
+            return isAsciiIdentifierContinue(ch);
+        }
+
+        struct MetalUnboundedDeclaration final
+        {
+            std::size_t typeBegin = 0;
+            std::size_t nameBegin = 0;
+            std::size_t end = 0;
+            std::string type;
+            std::string name;
+        };
+
+        [[nodiscard]] inline std::optional<MetalUnboundedDeclaration> metalUnboundedDeclarationAt(
+            std::string_view source, std::size_t brackets)
+        {
+            std::size_t nameEnd = brackets;
+            std::size_t nameBegin = nameEnd;
+            while (nameBegin > 0 && isMetalIdentifierChar(source[nameBegin - 1]))
+            {
+                --nameBegin;
+            }
+            if (nameBegin == nameEnd || !isAsciiIdentifierStart(source[nameBegin]))
+            {
+                return std::nullopt;
+            }
+            std::size_t typeEnd = nameBegin;
+            while (typeEnd > 0 && source[typeEnd - 1] == ' ')
+            {
+                --typeEnd;
+            }
+            if (typeEnd == nameBegin)
+            {
+                return std::nullopt;
+            }
+            std::size_t typeBegin = typeEnd;
+            int depth = 0;
+            while (typeBegin > 0)
+            {
+                const char ch = source[typeBegin - 1];
+                if (ch == '>')
+                {
+                    ++depth;
+                }
+                else if (ch == '<')
+                {
+                    --depth;
+                }
+                else if (depth == 0 && (ch == ',' || ch == '(' || ch == '{' || ch == ';' || ch == '\n'))
+                {
+                    break;
+                }
+                --typeBegin;
+            }
+            while (typeBegin < typeEnd && (source[typeBegin] == ' ' || source[typeBegin] == '\t'))
+            {
+                ++typeBegin;
+            }
+            if (typeBegin == typeEnd)
+            {
+                return std::nullopt;
+            }
+            return MetalUnboundedDeclaration{
+                .typeBegin = typeBegin,
+                .nameBegin = nameBegin,
+                .end = brackets + 2,
+                .type = std::string(source.substr(typeBegin, typeEnd - typeBegin)),
+                .name = std::string(source.substr(nameBegin, nameEnd - nameBegin)),
+            };
+        }
+
+        [[nodiscard]] inline std::vector<MetalUnboundedDeclaration> metalUnboundedDeclarations(std::string_view source)
+        {
+            std::vector<MetalUnboundedDeclaration> declarations;
+            for (std::size_t found = source.find("[]"); found != std::string_view::npos;
+                 found = source.find("[]", found + 2))
+            {
+                if (auto declaration = metalUnboundedDeclarationAt(source, found); declaration.has_value())
+                {
+                    declarations.push_back(std::move(*declaration));
+                }
+            }
+            return declarations;
+        }
+
+        [[nodiscard]] inline std::string metalArrayBaseName(std::string_view parameterName)
+        {
+            const auto underscore = parameterName.rfind('_');
+            if (underscore == std::string_view::npos || underscore + 1 == parameterName.size() ||
+                !std::ranges::all_of(parameterName.substr(underscore + 1),
+                                     [](char ch) { return ch >= '0' && ch <= '9'; }))
+            {
+                return std::string(parameterName);
+            }
+            return std::string(parameterName.substr(0, underscore));
+        }
+
+        [[nodiscard]] inline std::optional<std::uint32_t> highestMetalBufferIndex(std::string_view source)
+        {
+            constexpr std::string_view attribute = "[[buffer(";
+            std::optional<std::uint32_t> highest;
+            for (std::size_t found = source.find(attribute); found != std::string_view::npos;
+                 found = source.find(attribute, found + attribute.size()))
+            {
+                std::uint32_t value = 0;
+                std::size_t digit = found + attribute.size();
+                bool any = false;
+                while (digit < source.size() && source[digit] >= '0' && source[digit] <= '9')
+                {
+                    value = value * 10U + static_cast<std::uint32_t>(source[digit] - '0');
+                    any = true;
+                    ++digit;
+                }
+                if (any)
+                {
+                    highest = highest.has_value() ? std::max(*highest, value) : value;
+                }
+            }
+            return highest;
+        }
+
+        [[nodiscard]] inline const JsonValue* findRootParameter(const JsonValue& root, std::string_view name)
+        {
+            const auto* parameters = root.find("parameters");
+            if (parameters == nullptr || parameters->asArray() == nullptr)
+            {
+                return nullptr;
+            }
+            for (const auto& parameter : *parameters->asArray())
+            {
+                if (const auto* parameterName = findString(parameter, "name");
+                    parameterName != nullptr && *parameterName == name)
+                {
+                    return &parameter;
+                }
+            }
+            return nullptr;
+        }
+
+        [[nodiscard]] inline std::optional<std::string_view> metalArgumentBufferResourceType(const JsonValue& parameter)
+        {
+            const auto* type = parameter.find("type");
+            if (type == nullptr || findString(*type, "kind") == nullptr || *findString(*type, "kind") != "array")
+            {
+                return std::nullopt;
+            }
+            const auto* element = type->find("elementType");
+            const auto* kind = element != nullptr ? findString(*element, "kind") : nullptr;
+            if (kind == nullptr)
+            {
+                return std::nullopt;
+            }
+            if (*kind == "constantBuffer")
+            {
+                return std::string_view{"uniformBuffer"};
+            }
+            if (*kind == "samplerState")
+            {
+                return std::string_view{"sampler"};
+            }
+            if (*kind != "resource")
+            {
+                return std::nullopt;
+            }
+            const auto* shape = findString(*element, "baseShape");
+            const auto* access = findString(*element, "access");
+            const bool writable = access != nullptr && *access == "readWrite";
+            if (shape != nullptr && shape->starts_with("texture"))
+            {
+                return writable ? std::string_view{"storageTexture"} : std::string_view{"sampledTexture"};
+            }
+            if (shape != nullptr && (*shape == "structuredBuffer" || *shape == "byteAddressBuffer"))
+            {
+                return writable ? std::string_view{"storageBuffer"} : std::string_view{"readOnlyStorageBuffer"};
+            }
+            return std::nullopt;
+        }
+
+        struct MetalLogicalSlot final
+        {
+            std::uint32_t set = 0;
+            std::uint32_t binding = 0;
+        };
+
+        [[nodiscard]] inline std::optional<MetalLogicalSlot> spirvDescriptorSlot(const JsonValue& parameter)
+        {
+            const auto* binding = parameter.find("binding");
+            if (binding == nullptr || findString(*binding, "kind") == nullptr ||
+                *findString(*binding, "kind") != "descriptorTableSlot")
+            {
+                return std::nullopt;
+            }
+            const auto index = findUint32(*binding, "index");
+            const auto space =
+                binding->find("space") != nullptr ? findUint32(*binding, "space") : std::optional<std::uint32_t>{0};
+            if (!index.has_value() || !space.has_value())
+            {
+                return std::nullopt;
+            }
+            return MetalLogicalSlot{.set = *space, .binding = *index};
+        }
+
+    } // namespace detail
+
+    [[nodiscard]] inline std::vector<MetalUnboundedArrayParameter> collectMetalUnboundedArrayParameters(
+        std::string_view source)
+    {
+        std::vector<MetalUnboundedArrayParameter> parameters;
+        const auto entries = detail::metalEntryParameterLists(source);
+        for (const auto& declaration : detail::metalUnboundedDeclarations(source))
+        {
+            const bool inEntry = std::ranges::any_of(entries, [&](const detail::MetalSourceRange& range) {
+                return declaration.nameBegin > range.begin && declaration.end <= range.end;
+            });
+            if (!inEntry || std::ranges::any_of(parameters, [&](const MetalUnboundedArrayParameter& existing) {
+                    return existing.parameterName == declaration.name;
+                }))
+            {
+                continue;
+            }
+            parameters.push_back(MetalUnboundedArrayParameter{
+                .parameterName = declaration.name,
+                .baseName = detail::metalArrayBaseName(declaration.name),
+                .elementType = declaration.type,
+            });
+        }
+        return parameters;
+    }
+
+    [[nodiscard]] inline std::expected<std::vector<MetalArgumentBufferArray>, std::string>
+    planMetalArgumentBufferArrays(std::string_view metalSource,
+                                  std::string_view spirvReflectionJson,
+                                  std::string_view metalReflectionJson)
+    {
+        const auto parameters = collectMetalUnboundedArrayParameters(metalSource);
+        std::vector<MetalArgumentBufferArray> arrays;
+        if (parameters.empty())
+        {
+            return arrays;
+        }
+        auto spirvRoot = detail::JsonParser(spirvReflectionJson).parseDocument();
+        auto metalRoot = detail::JsonParser(metalReflectionJson).parseDocument();
+        if (!spirvRoot.has_value() || !metalRoot.has_value())
+        {
+            return std::unexpected("Metal argument-buffer planning could not parse the reflection JSON.");
+        }
+        const auto highest = detail::highestMetalBufferIndex(metalSource);
+        std::uint32_t nextIndex = highest.has_value() ? *highest + 1U : 0U;
+        for (const auto& parameter : parameters)
+        {
+            const auto* metalParameter = detail::findRootParameter(*metalRoot, parameter.baseName);
+            const auto* spirvParameter = detail::findRootParameter(*spirvRoot, parameter.baseName);
+            if (metalParameter == nullptr || spirvParameter == nullptr)
+            {
+                return std::unexpected("The unbounded Metal resource array '" + parameter.baseName +
+                                       "' is missing from the reflection.");
+            }
+            const auto resourceType = detail::metalArgumentBufferResourceType(*metalParameter);
+            const auto slot = detail::spirvDescriptorSlot(*spirvParameter);
+            if (!resourceType.has_value() || !slot.has_value())
+            {
+                return std::unexpected("The unbounded Metal resource array '" + parameter.baseName +
+                                       "' has an unsupported element type or binding.");
+            }
+            if (nextIndex >= metalArgumentTableBufferSlots)
+            {
+                return std::unexpected("Unbounded resource arrays exceed Metal's 31 buffer argument slots.");
+            }
+            arrays.push_back(MetalArgumentBufferArray{
+                .name = parameter.baseName,
+                .parameterName = parameter.parameterName,
+                .elementType = parameter.elementType,
+                .resourceType = *resourceType,
+                .set = slot->set,
+                .binding = slot->binding,
+                .metalIndex = nextIndex++,
+                .capacity =
+                    *resourceType == "sampler" ? metalArgumentBufferSamplerLimit : metalArgumentBufferResourceLimit,
+            });
+        }
+        return arrays;
+    }
+
+    [[nodiscard]] inline std::expected<std::string, std::string> rewriteMetalArgumentBufferArrays(
+        std::string_view source, std::span<const MetalArgumentBufferArray> arrays)
+    {
+        if (arrays.empty())
+        {
+            return std::string(source);
+        }
+        constexpr std::string_view usingNamespace = "using namespace metal;\n";
+        const auto insertAt = source.find(usingNamespace);
+        if (insertAt == std::string_view::npos)
+        {
+            return std::unexpected("Generated Metal source has no 'using namespace metal;' line.");
+        }
+        const auto capacityOf = [&](std::string_view type) -> std::optional<std::uint32_t> {
+            for (const auto& array : arrays)
+            {
+                if (array.elementType == type)
+                {
+                    return array.capacity;
+                }
+            }
+            return std::nullopt;
+        };
+        const auto entries = detail::metalEntryParameterLists(source);
+        std::string rewritten;
+        rewritten.reserve(source.size() + 1024);
+        std::size_t copied = 0;
+        for (const auto& declaration : detail::metalUnboundedDeclarations(source))
+        {
+            const auto capacity = capacityOf(declaration.type);
+            if (!capacity.has_value())
+            {
+                return std::unexpected("Generated Metal source declares an unbounded array of '" + declaration.type +
+                                       "' that the argument-buffer plan does not cover.");
+            }
+            const auto parameter =
+                std::ranges::find(arrays, declaration.name, &MetalArgumentBufferArray::parameterName);
+            const bool inEntry = std::ranges::any_of(entries, [&](const detail::MetalSourceRange& range) {
+                return declaration.nameBegin > range.begin && declaration.end <= range.end;
+            });
+            rewritten.append(source.substr(copied, declaration.typeBegin - copied));
+            const auto templateArguments = declaration.type + ", " + std::to_string(*capacity);
+            if (inEntry && parameter != arrays.end())
+            {
+                rewritten += "constant RachisArgumentStorage<" + templateArguments + ">& " + declaration.name +
+                             " [[buffer(" + std::to_string(parameter->metalIndex) + ")]]";
+            }
+            else
+            {
+                rewritten += "RachisArgumentArray<" + templateArguments + "> " + declaration.name;
+            }
+            copied = declaration.end;
+        }
+        rewritten.append(source.substr(copied));
+
+        std::string assigned;
+        assigned.reserve(rewritten.size());
+        std::size_t lineBegin = 0;
+        while (lineBegin < rewritten.size())
+        {
+            auto lineEnd = rewritten.find('\n', lineBegin);
+            if (lineEnd == std::string::npos)
+            {
+                lineEnd = rewritten.size();
+            }
+            std::string_view line(rewritten.data() + lineBegin, lineEnd - lineBegin);
+            bool replaced = false;
+            for (const auto& array : arrays)
+            {
+                const auto suffix = " = " + array.parameterName + ";";
+                if (line.ends_with(suffix) && line.size() > suffix.size())
+                {
+                    const auto target = line.substr(0, line.size() - suffix.size());
+                    assigned.append(target);
+                    assigned += ".items = &" + array.parameterName + ";";
+                    replaced = true;
+                    break;
+                }
+            }
+            if (!replaced)
+            {
+                assigned.append(line);
+            }
+            if (lineEnd < rewritten.size())
+            {
+                assigned.push_back('\n');
+            }
+            lineBegin = lineEnd + 1;
+        }
+
+        constexpr std::string_view helpers = "template<typename T, uint N>\n"
+                                             "struct RachisArgumentStorage\n"
+                                             "{\n"
+                                             "    metal::array<T, N> items;\n"
+                                             "};\n"
+                                             "template<typename T, uint N>\n"
+                                             "struct RachisArgumentArray\n"
+                                             "{\n"
+                                             "    constant RachisArgumentStorage<T, N>* items;\n"
+                                             "    T operator[](uint index) const thread\n"
+                                             "    {\n"
+                                             "        return items->items[index];\n"
+                                             "    }\n"
+                                             "};\n";
+        const auto helperAt = assigned.find(usingNamespace);
+        assigned.insert(helperAt + usingNamespace.size(), helpers);
+        return assigned;
     }
 
 } // namespace rachis::shader_tool

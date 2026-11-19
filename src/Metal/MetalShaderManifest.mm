@@ -343,6 +343,72 @@ namespace rachis::metal
             return rachisBindings;
         }
 
+        [[nodiscard]] std::optional<ShaderResourceType> argumentBufferResourceType(NSString* name)
+        {
+            const std::array<std::pair<NSString*, ShaderResourceType>, 6> types{{
+                {@"uniformBuffer", ShaderResourceType::uniformBuffer},
+                {@"readOnlyStorageBuffer", ShaderResourceType::readOnlyStorageBuffer},
+                {@"storageBuffer", ShaderResourceType::storageBuffer},
+                {@"sampledTexture", ShaderResourceType::sampledTexture},
+                {@"storageTexture", ShaderResourceType::storageTexture},
+                {@"sampler", ShaderResourceType::sampler},
+            }};
+            for (const auto& [text, type] : types)
+            {
+                if ([name isEqualToString:text])
+                {
+                    return type;
+                }
+            }
+            return std::nullopt;
+        }
+
+        [[nodiscard]] Result<std::vector<MetalReflectedResource>> parseArgumentBufferAnnotations(NSDictionary* root)
+        {
+            std::vector<MetalReflectedResource> arrays;
+            if (root[@"rachisArgumentBuffers"] == nil)
+            {
+                return arrays;
+            }
+            NSArray* const annotations = array(root[@"rachisArgumentBuffers"]);
+            if (annotations == nil)
+            {
+                return std::unexpected(manifestError("Metal rachisArgumentBuffers metadata must be an array."));
+            }
+            for (id item in annotations)
+            {
+                NSDictionary* const annotation = dictionary(item);
+                NSString* const name = string(annotation[@"name"]);
+                const auto type = argumentBufferResourceType(string(annotation[@"type"]));
+                const auto set = uintValue(annotation[@"set"]);
+                const auto binding = uintValue(annotation[@"binding"]);
+                const auto index = uintValue(annotation[@"index"]);
+                const auto capacity = uintValue(annotation[@"capacity"]);
+                const char* const utf8 = name != nil ? name.UTF8String : nullptr;
+                if (utf8 == nullptr || !type || !set || !binding || !index || !capacity || *set >= maxBindingSets ||
+                    *index >= 31 || *capacity == 0)
+                {
+                    return std::unexpected(manifestError("Metal rachisArgumentBuffers entries are malformed."));
+                }
+                if (std::ranges::any_of(arrays,
+                                        [&](const MetalReflectedResource& other) { return other.name == utf8; }))
+                {
+                    return std::unexpected(manifestError("Metal rachisArgumentBuffers entries repeat a name."));
+                }
+                arrays.push_back(MetalReflectedResource{
+                    .name = utf8,
+                    .type = *type,
+                    .metalIndex = *index,
+                    .count = unboundedBindingCount,
+                    .set = *set,
+                    .binding = *binding,
+                    .argumentBuffer = true,
+                    .argumentCapacity = *capacity,
+                });
+            }
+            return arrays;
+        }
+
         [[nodiscard]] std::optional<rachis::detail::StageComponentType> stageComponentType(NSString* name)
         {
             const char* const utf8 = name != nil ? name.UTF8String : nullptr;
@@ -690,13 +756,30 @@ namespace rachis::metal
                 return std::unexpected(std::move(stageInterface.error()));
             }
             layout.stageInterface = std::move(*stageInterface);
+            auto argumentBuffers = parseArgumentBufferAnnotations(root);
+            if (!argumentBuffers)
+            {
+                return std::unexpected(std::move(argumentBuffers.error()));
+            }
 
             for (id item in array(entry[@"bindings"]))
             {
+                NSString* const activeName = string(dictionary(item)[@"name"]);
+                const char* const activeUtf8 = activeName != nil ? activeName.UTF8String : nullptr;
+                if (activeUtf8 != nullptr &&
+                    std::ranges::any_of(*argumentBuffers,
+                                        [&](const MetalReflectedResource& array) { return array.name == activeUtf8; }))
+                {
+                    continue;
+                }
                 if (auto reflected = reflectActiveBinding(root, dictionary(item), *rachisBindings, layout); !reflected)
                 {
                     return std::unexpected(std::move(reflected.error()));
                 }
+            }
+            for (auto& array : *argumentBuffers)
+            {
+                layout.resources.push_back(std::move(array));
             }
             return layout;
         }
@@ -786,12 +869,17 @@ namespace rachis::metal
                 kind = 1;
             }
             constexpr std::array<std::uint32_t, 3> limits{31, 128, 16};
+            if (resource.argumentBuffer)
+            {
+                kind = 0;
+            }
             const auto limit = limits[kind];
-            if (resource.metalIndex >= limit || resource.count == 0 || resource.count > limit - resource.metalIndex)
+            const auto slots = resource.argumentBuffer ? 1U : resource.count;
+            if (resource.metalIndex >= limit || slots == 0 || slots > limit - resource.metalIndex)
             {
                 return std::unexpected(manifestError("Reflected Metal resource range exceeds the argument table."));
             }
-            for (std::uint32_t index = resource.metalIndex; index < resource.metalIndex + resource.count; ++index)
+            for (std::uint32_t index = resource.metalIndex; index < resource.metalIndex + slots; ++index)
             {
                 if (occupied[kind][index])
                 {
@@ -920,6 +1008,8 @@ namespace rachis::metal
                 .type = resource.type,
                 .count = resource.count,
                 .metalIndex = resource.metalIndex,
+                .argumentBuffer = resource.argumentBuffer,
+                .argumentCapacity = resource.argumentCapacity,
             });
         }
         return resolved;

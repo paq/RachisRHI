@@ -1415,3 +1415,87 @@ TEST_CASE("ShaderBinaryTool leaves the stage interface of Metal task and mesh en
     CHECK(reflected->workgroupSize->x == 1);
 #endif
 }
+
+TEST_CASE("ShaderBinaryTool moves unbounded Metal resource arrays into argument buffers",
+          "[size:small][rhi][shader][tooling]")
+{
+    constexpr std::string_view source = R"msl(#include <metal_stdlib>
+using namespace metal;
+struct KernelContext_0
+{
+    texture2d<float, access::sample>  textures_0[];
+    uint device*  buffers_0[];
+};
+float4 fetch_0(uint index_0, KernelContext_0 thread* kernelContext_0)
+{
+    texture2d<float, access::sample>  _S1[] = kernelContext_0->textures_0;
+    return _S1[index_0].read(uint2(0U, 0U)) + float4(float(kernelContext_0->buffers_0[index_0][int(0)]));
+}
+[[kernel]] void arraysMain(uint3 id_0 [[thread_position_in_grid]], float4 device* output_1 [[buffer(2)]], texture2d<float, access::sample>  textures_1[], uint device*  buffers_1[])
+{
+    thread KernelContext_0 kernelContext_1;
+    (&kernelContext_1)->textures_0 = textures_1;
+    (&kernelContext_1)->buffers_0 = buffers_1;
+    output_1[id_0.x] = fetch_0(id_0.x, &kernelContext_1);
+}
+)msl";
+    const auto parameters = rachis::shader_tool::collectMetalUnboundedArrayParameters(source);
+    REQUIRE(parameters.size() == 2);
+    CHECK(parameters[0].parameterName == "textures_1");
+    CHECK(parameters[0].baseName == "textures");
+    CHECK(parameters[0].elementType == "texture2d<float, access::sample>");
+    CHECK(parameters[1].parameterName == "buffers_1");
+    CHECK(parameters[1].elementType == "uint device*");
+
+    constexpr std::string_view spirvJson = R"({"parameters": [
+        {"name": "textures", "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 0}},
+        {"name": "buffers", "binding": {"kind": "descriptorTableSlot", "space": 2, "index": 3}}
+    ]})";
+    constexpr std::string_view metalJson = R"({"parameters": [
+        {"name": "textures", "type": {"kind": "array", "elementCount": 0,
+            "elementType": {"kind": "resource", "baseShape": "texture2D"}}},
+        {"name": "buffers", "type": {"kind": "array", "elementCount": 0,
+            "elementType": {"kind": "resource", "baseShape": "structuredBuffer"}}}
+    ]})";
+    const auto planned = rachis::shader_tool::planMetalArgumentBufferArrays(source, spirvJson, metalJson);
+    REQUIRE(planned.has_value());
+    REQUIRE(planned->size() == 2);
+    CHECK((*planned)[0].resourceType == "sampledTexture");
+    CHECK((*planned)[0].set == 1);
+    CHECK((*planned)[0].binding == 0);
+    CHECK((*planned)[0].metalIndex == 3);
+    CHECK((*planned)[1].resourceType == "readOnlyStorageBuffer");
+    CHECK((*planned)[1].set == 2);
+    CHECK((*planned)[1].binding == 3);
+    CHECK((*planned)[1].metalIndex == 4);
+
+    const auto rewritten = rachis::shader_tool::rewriteMetalArgumentBufferArrays(source, *planned);
+    REQUIRE(rewritten.has_value());
+    CHECK(rewritten->contains("struct RachisArgumentStorage"));
+    CHECK(rewritten->contains(
+        "constant RachisArgumentStorage<texture2d<float, access::sample>, 500000>& textures_1 [[buffer(3)]]"));
+    CHECK(rewritten->contains("constant RachisArgumentStorage<uint device*, 500000>& buffers_1 [[buffer(4)]]"));
+    CHECK(rewritten->contains("    RachisArgumentArray<texture2d<float, access::sample>, 500000> textures_0;"));
+    CHECK(rewritten->contains(
+        "    RachisArgumentArray<texture2d<float, access::sample>, 500000> _S1 = kernelContext_0->textures_0;"));
+    CHECK(rewritten->contains("    (&kernelContext_1)->textures_0.items = &textures_1;"));
+    CHECK(rewritten->contains("    (&kernelContext_1)->buffers_0.items = &buffers_1;"));
+    CHECK_FALSE(rewritten->contains("textures_1[]"));
+    CHECK_FALSE(rewritten->contains("buffers_0[]"));
+    CHECK_FALSE(rewritten->contains("_S1[]"));
+
+    const auto enriched = rachis::shader_tool::enrichMetalReflectionJson(
+        R"({"parameters": [], "entryPoints": [{"name": "arraysMain", "stage": "compute", "parameters": []}]})",
+        {},
+        "arraysMain",
+        *planned);
+    REQUIRE(enriched.has_value());
+    CHECK(enriched->contains(R"("rachisArgumentBuffers": [{"name": "textures", "type": "sampledTexture", "set": 1, )"
+                             R"("binding": 0, "index": 3, "capacity": 500000}, )"));
+
+    CHECK(rachis::shader_tool::collectMetalUnboundedArrayParameters("using namespace metal;\n").empty());
+    const auto unplanned = rachis::shader_tool::rewriteMetalArgumentBufferArrays(source, std::span(*planned).first(1));
+    CHECK_FALSE(unplanned.has_value());
+    constexpr std::string_view missingJson = R"({"parameters": []})";
+    CHECK_FALSE(rachis::shader_tool::planMetalArgumentBufferArrays(source, missingJson, metalJson).has_value());
+}

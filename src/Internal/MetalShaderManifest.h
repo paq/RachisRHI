@@ -36,6 +36,8 @@ namespace rachis::metal
         std::uint32_t uniformBytes = 0;
         std::optional<std::uint32_t> set{};
         std::optional<std::uint32_t> binding{};
+        bool argumentBuffer = false;
+        std::uint32_t argumentCapacity = 0;
     };
 
     struct MetalReflectedField final
@@ -70,6 +72,8 @@ namespace rachis::metal
         ShaderResourceType type = ShaderResourceType::uniformBuffer;
         std::uint32_t count = 1;
         std::uint32_t metalIndex = 0;
+        bool argumentBuffer = false;
+        std::uint32_t argumentCapacity = 0;
     };
 
     struct MetalResolvedStageBindings final

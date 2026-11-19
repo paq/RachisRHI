@@ -458,6 +458,8 @@ namespace rachis::metal
         std::vector<MetalBindingSlot> slots;
         __strong id<MTL4ArgumentTable> table;
         std::uint32_t variableDescriptorCount = 0;
+        __strong id<MTLBuffer> argumentBuffer;
+        __strong id<MTLResidencySet> argumentResidency;
     };
 
     struct MetalBindingSetRecord final
@@ -1375,6 +1377,21 @@ namespace rachis::metal
             return metalMaxBufferArguments;
         }
         return type == BindingType::sampler ? metalMaxSamplerArguments : metalMaxTextureArguments;
+    }
+
+    inline constexpr std::uint32_t metalMaxArgumentBufferResources = 500'000;
+    inline constexpr std::uint32_t metalMaxArgumentBufferSamplers = 1024;
+
+    [[nodiscard]] constexpr std::uint32_t metalArgumentBufferLimit(BindingType type) noexcept
+    {
+        return type == BindingType::sampler ? metalMaxArgumentBufferSamplers : metalMaxArgumentBufferResources;
+    }
+
+    [[nodiscard]] constexpr bool metalIsArgumentBufferSlot(const MetalBindingSetVersion& version,
+                                                           const MetalBindingSlot& slot) noexcept
+    {
+        return version.layout != nullptr && version.layout->variableBinding.has_value() &&
+               slot.binding == *version.layout->variableBinding;
     }
 
     [[nodiscard]] constexpr BindingType metalStaticBufferType(BindingType type) noexcept

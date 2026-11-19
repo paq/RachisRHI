@@ -239,9 +239,9 @@ namespace rachis::metal
             capabilities.limits.maxVertexAttributes = rachis::maxVertexAttributes;
             capabilities.limits.maxBindingSets = rachis::maxBindingSets;
             capabilities.limits.maxPushConstantBytes = rachis::maxPushConstantBytes;
-            capabilities.limits.maxVariableResourceDescriptors = metalMaxTextureArguments;
-            capabilities.limits.maxVariableBufferDescriptors = metalMaxBufferArguments;
-            capabilities.limits.maxVariableSamplerDescriptors = metalMaxSamplerArguments;
+            capabilities.limits.maxVariableResourceDescriptors = metalMaxArgumentBufferResources;
+            capabilities.limits.maxVariableBufferDescriptors = metalMaxArgumentBufferResources;
+            capabilities.limits.maxVariableSamplerDescriptors = metalMaxArgumentBufferSamplers;
             capabilities.vertexInput.supportedFormats = (std::uint64_t{1} << rachis::vertexFormatCount) - 1U;
             capabilities.vertexInput.maxBufferStride = 2048;
             capabilities.vertexInput.maxAttributeOffset = 2048;

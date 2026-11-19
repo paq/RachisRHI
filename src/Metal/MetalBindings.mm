@@ -422,10 +422,76 @@ namespace rachis::metal
             return {};
         }
 
+        [[nodiscard]] Status metalPublishArgumentBuffer(id<MTLDevice> device, MetalBindingSetVersion& version)
+        {
+            version.argumentBuffer = nil;
+            version.argumentResidency = nil;
+            if (version.layout == nullptr || !version.layout->variableBinding.has_value())
+            {
+                return {};
+            }
+            const auto count = std::max<std::uint32_t>(version.variableDescriptorCount, 1U);
+            id<MTLBuffer> const buffer =
+                [device newBufferWithLength:static_cast<NSUInteger>(count) * sizeof(std::uint64_t)
+                                    options:MTLResourceStorageModeShared];
+            if (buffer == nil)
+            {
+                return std::unexpected(
+                    metalSelectionError(ErrorCode::outOfMemory, "Metal could not allocate a binding-array buffer."));
+            }
+            buffer.label = @"RHI.Metal.BindingArray";
+            auto* const words = static_cast<std::uint64_t*>(buffer.contents);
+            std::fill_n(words, count, std::uint64_t{0});
+            MTLResidencySetDescriptor* const residencyDesc = [MTLResidencySetDescriptor new];
+            residencyDesc.initialCapacity = count + 1U;
+            residencyDesc.label = @"RHI.Metal.BindingArrayResidency";
+            NSError* error = nil;
+            id<MTLResidencySet> const residency = [device newResidencySetWithDescriptor:residencyDesc error:&error];
+            if (residency == nil)
+            {
+                return std::unexpected(
+                    metalNsError(ErrorCode::outOfMemory, error, "newResidencySetWithDescriptor(binding array)"));
+            }
+            [residency addAllocation:buffer];
+            for (const auto& slot : version.slots)
+            {
+                if (!metalIsArgumentBufferSlot(version, slot) || slot.arrayElement >= count ||
+                    std::holds_alternative<std::monostate>(slot.resource))
+                {
+                    continue;
+                }
+                if (metalIsBufferType(slot.type) && slot.buffer != nil)
+                {
+                    words[slot.arrayElement] = slot.gpuAddress + slot.offset;
+                    [residency addAllocation:slot.buffer];
+                }
+                else if ((slot.type == BindingType::sampledTexture || slot.type == BindingType::storageTexture) &&
+                         slot.texture != nil)
+                {
+                    const MTLResourceID identifier = slot.texture.gpuResourceID;
+                    std::memcpy(&words[slot.arrayElement], &identifier, sizeof(std::uint64_t));
+                    [residency addAllocation:slot.texture];
+                }
+                else if (slot.type == BindingType::sampler && slot.sampler != nil)
+                {
+                    const MTLResourceID identifier = slot.sampler.gpuResourceID;
+                    std::memcpy(&words[slot.arrayElement], &identifier, sizeof(std::uint64_t));
+                }
+            }
+            [residency commit];
+            version.argumentBuffer = buffer;
+            version.argumentResidency = residency;
+            return {};
+        }
+
         [[nodiscard]] Status metalPublishArgumentTable(id<MTLDevice> device,
                                                        MetalBindingSetVersion& version,
                                                        std::uint32_t minimumBufferCount = 0)
         {
+            if (auto published = metalPublishArgumentBuffer(device, version); !published)
+            {
+                return published;
+            }
             std::uint32_t maxBuffer = minimumBufferCount;
             std::uint32_t maxTexture = 0;
             std::uint32_t maxSampler = 0;
@@ -434,6 +500,10 @@ namespace rachis::metal
             bool anySampler = false;
             for (const auto& slot : version.slots)
             {
+                if (metalIsArgumentBufferSlot(version, slot))
+                {
+                    continue;
+                }
                 if (slot.metalIndex >= metalArgumentLimit(slot.type))
                 {
                     return std::unexpected(metalSelectionError(
@@ -477,7 +547,7 @@ namespace rachis::metal
 
             for (const auto& slot : version.slots)
             {
-                if (std::holds_alternative<std::monostate>(slot.resource))
+                if (std::holds_alternative<std::monostate>(slot.resource) || metalIsArgumentBufferSlot(version, slot))
                 {
                     continue;
                 }
@@ -514,7 +584,7 @@ namespace rachis::metal
                     "Binding layout entries require a non-empty register range, valid visibility, and valid flags."));
             }
             const auto limit = metalArgumentLimit(entry.type);
-            if (entry.binding >= limit || (!variable && entry.count > limit - entry.binding))
+            if ((!variable && entry.binding >= limit) || (!variable && entry.count > limit - entry.binding))
             {
                 return std::unexpected(metalSelectionError(
                     ErrorCode::invalidArgument, "The binding layout exceeds Metal's argument-table capacity."));
@@ -1039,6 +1109,15 @@ namespace rachis::metal
             for (const auto& entry : layout.entries)
             {
                 const auto count = metalLogicalDescriptorCount(entry, variableDescriptorCount);
+                if (hasAny(entry.flags, BindingFlag::variableDescriptorCount))
+                {
+                    if (count > metalArgumentBufferLimit(entry.type))
+                    {
+                        return std::unexpected(metalSelectionError(
+                            ErrorCode::invalidArgument, "The binding array exceeds Metal's argument-buffer capacity."));
+                    }
+                    continue;
+                }
                 const auto limit = metalArgumentLimit(entry.type);
                 if (entry.binding >= limit || count > limit - entry.binding)
                 {

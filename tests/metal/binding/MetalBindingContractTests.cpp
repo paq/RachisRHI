@@ -1951,9 +1951,9 @@ TEST_CASE("Metal variable descriptor arrays reach each published class limit and
     REQUIRE(capabilities->partiallyBoundBindingArrays);
     REQUIRE(capabilities->variableDescriptorCountBindingArrays);
     const auto& limits = capabilities->limits;
-    CHECK(limits.maxVariableBufferDescriptors == 31);
-    CHECK(limits.maxVariableResourceDescriptors == 128);
-    CHECK(limits.maxVariableSamplerDescriptors == 16);
+    CHECK(limits.maxVariableBufferDescriptors == 500000);
+    CHECK(limits.maxVariableResourceDescriptors == 500000);
+    CHECK(limits.maxVariableSamplerDescriptors == 1024);
 
     struct VariableArrayCase final
     {
@@ -1970,36 +1970,35 @@ TEST_CASE("Metal variable descriptor arrays reach each published class limit and
     };
     for (const auto& variableCase : cases)
     {
-        for (const std::uint32_t binding : {0U, 1U})
+        INFO("type=" << static_cast<int>(variableCase.type) << " limit=" << variableCase.limit);
+        const std::array entries{
+            rachis::BindingLayoutEntry{
+                .binding = 5,
+                .type = variableCase.type,
+                .visibility = rachis::ShaderStage::compute,
+                .count = rachis::unboundedBindingCount,
+                .flags = rachis::BindingFlag::variableDescriptorCount | rachis::BindingFlag::partiallyBound,
+            },
+        };
+        auto layout = device.createBindingLayout({.entries = entries});
+        REQUIRE(layout);
+        const std::array sizes{
+            rachis::BindingPoolSize{.type = variableCase.type, .descriptorCount = variableCase.limit}};
+        auto pool = device.createBindingPool({.maxBindingSets = 1, .sizes = sizes});
+        REQUIRE(pool);
+        auto atLimit =
+            device.createBindingSet({.layout = *layout, .variableDescriptorCount = variableCase.limit, .pool = *pool});
+        CHECK(atLimit.has_value());
+        if (atLimit)
         {
-            INFO("type=" << static_cast<int>(variableCase.type) << " limit=" << variableCase.limit
-                         << " binding=" << binding);
-            REQUIRE(variableCase.limit > binding);
-            const std::array entries{
-                rachis::BindingLayoutEntry{
-                    .binding = binding,
-                    .type = variableCase.type,
-                    .visibility = rachis::ShaderStage::compute,
-                    .count = rachis::unboundedBindingCount,
-                    .flags = rachis::BindingFlag::variableDescriptorCount | rachis::BindingFlag::partiallyBound,
-                },
-            };
-            auto layout = device.createBindingLayout({.entries = entries});
-            REQUIRE(layout);
-            const auto reachable = variableCase.limit - binding;
-            auto atLimit =
-                rachis::test::createBindingSet(device, {.layout = *layout, .variableDescriptorCount = reachable});
-            CHECK(atLimit.has_value());
-            if (atLimit)
-            {
-                CHECK(device.destroyBindingSet(*atLimit).has_value());
-            }
-            auto overLimit =
-                rachis::test::createBindingSet(device, {.layout = *layout, .variableDescriptorCount = reachable + 1});
-            REQUIRE_FALSE(overLimit);
-            CHECK(overLimit.error().code == rachis::ErrorCode::invalidArgument);
-            REQUIRE(device.destroyBindingLayout(*layout).has_value());
+            CHECK(device.destroyBindingSet(*atLimit).has_value());
         }
+        auto overLimit = rachis::test::createBindingSet(
+            device, {.layout = *layout, .variableDescriptorCount = variableCase.limit + 1});
+        REQUIRE_FALSE(overLimit);
+        CHECK(overLimit.error().code == rachis::ErrorCode::invalidArgument);
+        REQUIRE(device.destroyBindingPool(*pool).has_value());
+        REQUIRE(device.destroyBindingLayout(*layout).has_value());
     }
     CHECK(device.diagnosticCounts().errors == 0);
 }

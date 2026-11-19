@@ -1767,7 +1767,6 @@ namespace rachis::metal
         struct MetalStageArgumentUsage final
         {
             std::array<std::uint64_t, 3> slots{};
-            bool hasVariableVertexBuffer = false;
         };
 
         [[nodiscard]] Result<MetalStageArgumentUsage> metalCountStageArguments(
@@ -1799,16 +1798,8 @@ namespace rachis::metal
                     {
                         continue;
                     }
-                    const auto kind = metalRangeClassIndex(entry.type);
-                    if (entry.count == unboundedBindingCount)
-                    {
-                        if (stage == ShaderStage::vertex && kind == 0)
-                        {
-                            usage.hasVariableVertexBuffer = true;
-                        }
-                        continue;
-                    }
-                    stageSlots[kind] += entry.count;
+                    const auto kind = entry.count == unboundedBindingCount ? 0U : metalRangeClassIndex(entry.type);
+                    stageSlots[kind] += entry.count == unboundedBindingCount ? 1U : entry.count;
                     if (stageSlots[kind] > argumentLimits[kind])
                     {
                         return std::unexpected(metalSelectionError(ErrorCode::invalidArgument,
@@ -1830,7 +1821,6 @@ namespace rachis::metal
                 ShaderStage::task,
                 ShaderStage::mesh,
             };
-            bool hasVariableVertexBuffer = false;
             for (const ShaderStage stage : checkedStages)
             {
                 auto usage = metalCountStageArguments(stage, pushConstantRanges, record.sets);
@@ -1838,11 +1828,9 @@ namespace rachis::metal
                 {
                     return std::unexpected(std::move(usage.error()));
                 }
-                hasVariableVertexBuffer = hasVariableVertexBuffer || usage->hasVariableVertexBuffer;
                 if (stage == ShaderStage::vertex)
                 {
-                    record.vertexStageBufferSlots =
-                        hasVariableVertexBuffer ? metalMaxBufferArguments : static_cast<std::uint32_t>(usage->slots[0]);
+                    record.vertexStageBufferSlots = static_cast<std::uint32_t>(usage->slots[0]);
                 }
             }
             return {};
@@ -1860,11 +1848,9 @@ namespace rachis::metal
                 }
                 for (const auto& entry : set->entries)
                 {
-                    const auto kind = metalRangeClassIndex(entry.type);
-                    const auto count = entry.count == unboundedBindingCount
-                                           ? (metalArgumentLimit(entry.type) -
-                                              std::min(nextClassIndex[kind], metalArgumentLimit(entry.type)))
-                                           : entry.count;
+                    const bool unbounded = entry.count == unboundedBindingCount;
+                    const auto kind = unbounded ? 0U : metalRangeClassIndex(entry.type);
+                    const auto count = unbounded ? 1U : entry.count;
                     record.remappedBindings.push_back(MetalLayoutBindingSlotMap{
                         .set = setIndex,
                         .binding = entry.binding,
@@ -2783,9 +2769,13 @@ namespace rachis::metal
             }
             for (const auto& res : vertexBindings.resources)
             {
-                if (res.type == ShaderResourceType::uniformBuffer ||
-                    res.type == ShaderResourceType::readOnlyStorageBuffer ||
-                    res.type == ShaderResourceType::storageBuffer)
+                if (res.argumentBuffer)
+                {
+                    vertexBufferBaseIndex = std::max(vertexBufferBaseIndex, res.metalIndex + 1U);
+                }
+                else if (res.type == ShaderResourceType::uniformBuffer ||
+                         res.type == ShaderResourceType::readOnlyStorageBuffer ||
+                         res.type == ShaderResourceType::storageBuffer)
                 {
                     vertexBufferBaseIndex = std::max(vertexBufferBaseIndex, res.metalIndex + res.count);
                 }

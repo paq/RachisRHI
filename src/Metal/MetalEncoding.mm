@@ -51,7 +51,9 @@ namespace rachis::metal
                 anyVertexBuffer = anyVertexBuffer || bound.buffer != nil;
             }
 
-            if (stageBindings.usesPushConstants || anyVertexBuffer || stageBindings.resources.empty())
+            if (stageBindings.usesPushConstants || anyVertexBuffer || stageBindings.resources.empty() ||
+                std::ranges::any_of(stageBindings.resources,
+                                    [](const MetalResolvedResourceBinding& res) { return res.argumentBuffer; }))
             {
                 return nil;
             }
@@ -151,6 +153,17 @@ namespace rachis::metal
                     return std::unexpected(
                         metalSelectionError(ErrorCode::invalidState, "A required Metal binding set is missing."));
                 }
+                if (res.argumentBuffer)
+                {
+                    if (versions[res.set]->argumentBuffer == nil)
+                    {
+                        return std::unexpected(metalSelectionError(
+                            ErrorCode::invalidState,
+                            "The bound Metal binding set has no binding array for an unbounded shader array."));
+                    }
+                    metalIncludeBindingSlot(capacity, BindingType::storageBuffer, res.metalIndex + 1U);
+                    continue;
+                }
                 for (const auto& slot : versions[res.set]->slots)
                 {
                     if (slot.binding != res.binding || slot.arrayElement >= res.count)
@@ -192,6 +205,11 @@ namespace rachis::metal
         {
             for (const auto& res : stageBindings.resources)
             {
+                if (res.argumentBuffer)
+                {
+                    [table setAddress:versions[res.set]->argumentBuffer.gpuAddress atIndex:res.metalIndex];
+                    continue;
+                }
                 for (const auto& slot : versions[res.set]->slots)
                 {
                     if (slot.binding != res.binding || slot.arrayElement >= res.count ||
