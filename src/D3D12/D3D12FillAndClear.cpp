@@ -155,11 +155,32 @@ namespace rachis::d3d12
             std::array<UINT, 4> values{};
             for (std::uint32_t channel = 0; channel < clearFormat.channelCount && channel < values.size(); ++channel)
             {
-                values[channel] = clearFormat.type == StorageTextureClearType::uint32
-                                      ? value.uint32[channel]
-                                      : std::bit_cast<std::uint32_t>(value.sint32[channel]);
+                switch (clearFormat.type)
+                {
+                case StorageTextureClearType::uint32:
+                    values[channel] = value.uint32[channel];
+                    break;
+                case StorageTextureClearType::sint32:
+                    values[channel] = std::bit_cast<std::uint32_t>(value.sint32[channel]);
+                    break;
+                case StorageTextureClearType::float32:
+                    values[channel] = std::bit_cast<std::uint32_t>(value.float32[channel]);
+                    break;
+                }
             }
             return values;
+        }
+
+        [[nodiscard]] constexpr bool clearsFloatBits(const detail::StorageTextureClearFormat& clearFormat) noexcept
+        {
+            return clearFormat.type == StorageTextureClearType::float32 && clearFormat.channelBits == 32;
+        }
+
+        void noteStorageTextureClear(bool floatPath, std::span<const std::uint32_t, 4> bits) noexcept
+        {
+            auto& recorded = test::lastStorageTextureClear();
+            recorded.floatPath = floatPath;
+            std::ranges::copy(bits, recorded.bits.begin());
         }
 
     } // namespace
@@ -324,12 +345,19 @@ namespace rachis::d3d12
         }
 
         bindClearDescriptorHeaps(**commandList, bindings);
-        if (format->type == StorageTextureClearType::float32)
+        if (format->type == StorageTextureClearType::float32 && !clearsFloatBits(*format))
         {
-            const auto values = nativeFloatClearValues(*format, view.viewDesc.format, value);
+            const Format resolvedFormat =
+                view.viewDesc.format == Format::unknown ? texture->desc.format : view.viewDesc.format;
+            const auto values = nativeFloatClearValues(*format, resolvedFormat, value);
             (*commandList)
                 ->ClearUnorderedAccessViewFloat(
                     (*shaderVisible)->gpuHandle(), view.descriptor, view.texture.resource, values.data(), 0, nullptr);
+            const std::array bits{std::bit_cast<std::uint32_t>(values[0]),
+                                  std::bit_cast<std::uint32_t>(values[1]),
+                                  std::bit_cast<std::uint32_t>(values[2]),
+                                  std::bit_cast<std::uint32_t>(values[3])};
+            noteStorageTextureClear(true, bits);
         }
         else
         {
@@ -337,6 +365,7 @@ namespace rachis::d3d12
             (*commandList)
                 ->ClearUnorderedAccessViewUint(
                     (*shaderVisible)->gpuHandle(), view.descriptor, view.texture.resource, values.data(), 0, nullptr);
+            noteStorageTextureClear(false, values);
         }
         commitTextureLayoutUse(*layoutUse);
         test::noteResourceCommandRecorded();

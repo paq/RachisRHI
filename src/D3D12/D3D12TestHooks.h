@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -198,6 +199,18 @@ namespace rachis::d3d12::test
     inline void noteBufferFillChunkBarrier() noexcept
     {
         bufferFillChunkBarrierCount().fetch_add(1, std::memory_order_relaxed);
+    }
+
+    struct StorageTextureClearSnapshot final
+    {
+        bool floatPath = false;
+        std::array<std::uint32_t, 4> bits{};
+    };
+
+    [[nodiscard]] inline StorageTextureClearSnapshot& lastStorageTextureClear() noexcept
+    {
+        static thread_local StorageTextureClearSnapshot s_value;
+        return s_value;
     }
 
     struct GlobalBarrierSnapshot final

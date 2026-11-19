@@ -5,8 +5,10 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -182,15 +184,105 @@ TEST_CASE("D3D12 clearStorageTexture clamps normalized values like a shader writ
           "[size:medium][rhi][d3d12][clear][warp]")
 {
     namespace contract = rachis::test::fill_and_clear;
+    const std::array clamped{std::bit_cast<std::uint32_t>(1.0F),
+                             std::bit_cast<std::uint32_t>(0.0F),
+                             std::bit_cast<std::uint32_t>(0.0F),
+                             std::bit_cast<std::uint32_t>(1.0F)};
     for (const bool legacyBarriers : {false, true})
     {
-        INFO("Legacy barriers: " << legacyBarriers);
         auto device = createWarpDevice(legacyBarriers);
+        for (const auto viewFormat : {rachis::Format::unknown, rachis::Format::rgba8Unorm})
+        {
+            INFO("Legacy barriers: " << legacyBarriers
+                                     << ", explicit view format: " << (viewFormat != rachis::Format::unknown));
+            const auto texture = contract::createStorageTexture(device,
+                                                                rachis::TextureDesc{
+                                                                    .width = 4,
+                                                                    .height = 4,
+                                                                    .format = rachis::Format::rgba8Unorm,
+                                                                });
+            auto view = device.createTextureView({
+                .texture = texture.texture,
+                .usage = rachis::TextureViewUsage::storage,
+                .dimension = rachis::TextureViewDimension::texture2D,
+                .format = viewFormat,
+            });
+            REQUIRE(view.has_value());
+            auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+            REQUIRE(command.has_value());
+            contract::requireTextureBarrier(device,
+                                            *command,
+                                            texture.texture,
+                                            rachis::PipelineStage::all,
+                                            rachis::Access::none,
+                                            rachis::TextureLayout::undefined,
+                                            rachis::PipelineStage::computeShader,
+                                            rachis::Access::unorderedAccess,
+                                            rachis::TextureLayout::unorderedAccess);
+            rachis::d3d12::test::lastStorageTextureClear() = {};
+            REQUIRE(
+                device.clearStorageTexture(*command, *view, contract::floatClear(2.0F, -1.0F, 0.0F, 8.0F)).has_value());
+            const auto native = rachis::d3d12::test::lastStorageTextureClear();
+            CHECK(native.floatPath);
+            CHECK(native.bits == clamped);
+            contract::requireTextureBarrier(device,
+                                            *command,
+                                            texture.texture,
+                                            rachis::PipelineStage::computeShader,
+                                            rachis::Access::unorderedAccess,
+                                            rachis::TextureLayout::unorderedAccess,
+                                            rachis::PipelineStage::copy,
+                                            rachis::Access::copySource,
+                                            rachis::TextureLayout::copySource);
+            const auto readback = contract::recordSubresourceReadback(device, *command, texture, 0, 0);
+            contract::submitAndWait(device, std::move(*command));
+            CHECK(contract::countMismatchedTexels(device, readback, std::array<std::uint8_t, 4>{255, 0, 0, 255}) == 0);
+            REQUIRE(device.destroyTextureView(*view).has_value());
+            REQUIRE(device.destroyTexture(texture.texture).has_value());
+        }
+        const auto diagnostics = device.diagnosticCounts();
+        CHECK(diagnostics.warnings == 0);
+        CHECK(diagnostics.errors == 0);
+        CHECK(diagnostics.corruptions == 0);
+    }
+}
+
+TEST_CASE("D3D12 clearStorageTexture writes 32-bit float values bit for bit", "[size:medium][rhi][d3d12][clear][warp]")
+{
+    namespace contract = rachis::test::fill_and_clear;
+    const std::array<std::uint32_t, 4> bits{1U, 0x8000'0000U, 0x007F'FFFFU, std::bit_cast<std::uint32_t>(-2.5F)};
+    std::vector<rachis::Device> devices;
+    devices.push_back(createWarpDevice(false));
+    devices.push_back(createWarpDevice(true));
+    auto adapters = rachis::enumerateAdapters(rachis::Backend::d3d12);
+    REQUIRE(adapters.has_value());
+    const auto hardware = std::ranges::find_if(
+        *adapters, [](const rachis::AdapterInfo& adapter) { return adapter.type != rachis::AdapterType::software; });
+    if (hardware != adapters->end())
+    {
+        auto created = rachis::createDevice(rachis::DeviceDesc{
+            .adapterPreference = rachis::AdapterPreference::highPerformance,
+            .adapterId = hardware->id,
+            .validation = rachis::ValidationLevel::standard,
+            .requireValidation = false,
+            .diagnosticCallback = &printDiagnostic,
+        });
+        if (!created)
+        {
+            UNSCOPED_INFO(hardware->name << ": " << created.error().message);
+        }
+        REQUIRE(created.has_value());
+        devices.push_back(std::move(*created));
+    }
+    for (auto& device : devices)
+    {
+        INFO("Adapter: " << rachis::test::requireAdapterInfo(device).name
+                         << ", enhanced barriers: " << rachis::test::requireCapabilities(device).enhancedBarriers);
         const auto texture = contract::createStorageTexture(device,
                                                             rachis::TextureDesc{
                                                                 .width = 4,
                                                                 .height = 4,
-                                                                .format = rachis::Format::rgba8Unorm,
+                                                                .format = rachis::Format::rgba32Float,
                                                             });
         const auto view =
             contract::requireStorageView(device, texture.texture, rachis::TextureViewDimension::texture2D, 0);
@@ -205,7 +297,18 @@ TEST_CASE("D3D12 clearStorageTexture clamps normalized values like a shader writ
                                         rachis::PipelineStage::computeShader,
                                         rachis::Access::unorderedAccess,
                                         rachis::TextureLayout::unorderedAccess);
-        REQUIRE(device.clearStorageTexture(*command, view, contract::floatClear(2.0F, -1.0F, 0.0F, 8.0F)).has_value());
+        rachis::d3d12::test::lastStorageTextureClear() = {};
+        REQUIRE(device
+                    .clearStorageTexture(*command,
+                                         view,
+                                         contract::floatClear(std::bit_cast<float>(bits[0]),
+                                                              std::bit_cast<float>(bits[1]),
+                                                              std::bit_cast<float>(bits[2]),
+                                                              std::bit_cast<float>(bits[3])))
+                    .has_value());
+        const auto native = rachis::d3d12::test::lastStorageTextureClear();
+        CHECK_FALSE(native.floatPath);
+        CHECK(native.bits == bits);
         contract::requireTextureBarrier(device,
                                         *command,
                                         texture.texture,
@@ -217,7 +320,7 @@ TEST_CASE("D3D12 clearStorageTexture clamps normalized values like a shader writ
                                         rachis::TextureLayout::copySource);
         const auto readback = contract::recordSubresourceReadback(device, *command, texture, 0, 0);
         contract::submitAndWait(device, std::move(*command));
-        CHECK(contract::countMismatchedTexels(device, readback, std::array<std::uint8_t, 4>{255, 0, 0, 255}) == 0);
+        CHECK(contract::countMismatchedTexels(device, readback, bits) == 0);
         const auto diagnostics = device.diagnosticCounts();
         CHECK(diagnostics.warnings == 0);
         CHECK(diagnostics.errors == 0);
