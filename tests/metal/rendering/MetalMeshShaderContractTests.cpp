@@ -1,3 +1,4 @@
+#include "Internal/MetalShaderManifest.h"
 #include "Metal/MetalTestHooks.h"
 #include "Rachis/Device.h"
 #include "RhiTestSupport.h"
@@ -10,7 +11,9 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <regex>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -48,6 +51,21 @@ namespace
     [[nodiscard]] std::vector<std::byte> loadPnms(std::string_view name)
     {
         return loadBytes(std::filesystem::path(RACHIS_METALLIB_DIR) / std::filesystem::path(name));
+    }
+
+    [[nodiscard]] std::vector<std::byte> withThreadGroupSize(std::span<const std::byte> cooked,
+                                                             const rachis::ShaderWorkgroupSize& size)
+    {
+        const auto payload = rachis::metal::unpackShaderManifest(cooked);
+        REQUIRE(payload.has_value());
+        const std::string json(reinterpret_cast<const char*>(payload->json.data()), payload->json.size());
+        const std::regex threadGroupSize(R"("threadGroupSize"\s*:\s*\[[^\]]*\])");
+        REQUIRE(std::regex_search(json, threadGroupSize));
+        const auto replaced = std::regex_replace(json,
+                                                 threadGroupSize,
+                                                 "\"threadGroupSize\": [" + std::to_string(size.x) + ", " +
+                                                     std::to_string(size.y) + ", " + std::to_string(size.z) + "]");
+        return rachis::metal::packShaderManifest(std::as_bytes(std::span(replaced)), payload->metallib);
     }
 
     struct MeshTarget final
@@ -688,4 +706,42 @@ TEST_CASE("Metal mesh pipelines dispatch directly and indirectly with and withou
     REQUIRE(device.destroyShaderModule(*meshShader).has_value());
     REQUIRE(device.destroyShaderModule(*meshNoTaskShader).has_value());
     REQUIRE(device.destroyShaderModule(*pixelShader).has_value());
+}
+
+TEST_CASE("Metal task and mesh modules reject workgroups beyond the stage limits",
+          "[size:large][rhi][metal][mesh]")
+{
+    auto created = rachis::createDevice(metalDesc());
+    REQUIRE(created);
+    auto device = std::move(*created);
+    const auto capabilities = rachis::test::requireCapabilities(device);
+    if (!capabilities.meshShaders)
+    {
+        SKIP("The Metal GPU is older than the Apple9 family.");
+    }
+    const auto cooked = loadPnms("MetalMeshShader.fixed.ms.pnms");
+    REQUIRE_FALSE(cooked.empty());
+    const auto limit = capabilities.meshShader.maxMeshWorkgroupInvocations;
+    const auto moduleWith = [&](const rachis::ShaderWorkgroupSize& size) {
+        const auto bytecode = withThreadGroupSize(cooked, size);
+        return device.createShaderModule({
+            .stage = rachis::ShaderStage::mesh,
+            .bytecode = bytecode,
+            .entryPoint = "meshFixed",
+            .shaderInterface = rachis::test::computeShaderInterface(size),
+        });
+    };
+
+    for (const auto& size : {rachis::ShaderWorkgroupSize{4'194'304, 2'097'152, 2'097'152},
+                             rachis::ShaderWorkgroupSize{limit, 2, 1},
+                             rachis::ShaderWorkgroupSize{1, 1, limit + 1}})
+    {
+        CAPTURE(size.x, size.y, size.z);
+        const auto rejected = moduleWith(size);
+        REQUIRE_FALSE(rejected.has_value());
+        CHECK(rejected.error().code == rachis::ErrorCode::unsupported);
+    }
+    auto accepted = moduleWith({limit, 1, 1});
+    REQUIRE(accepted.has_value());
+    REQUIRE(device.destroyShaderModule(*accepted).has_value());
 }
