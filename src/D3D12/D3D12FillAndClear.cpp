@@ -102,6 +102,66 @@ namespace rachis::d3d12
             };
         }
 
+        struct NormalizedClearRange final
+        {
+            float minimum = 0.0F;
+            float maximum = 1.0F;
+        };
+
+        [[nodiscard]] constexpr std::optional<NormalizedClearRange> normalizedClearRange(DXGI_FORMAT format) noexcept
+        {
+            switch (format)
+            {
+            case DXGI_FORMAT_R8_UNORM:
+            case DXGI_FORMAT_R8G8_UNORM:
+            case DXGI_FORMAT_R8G8B8A8_UNORM:
+            case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+            case DXGI_FORMAT_B8G8R8A8_UNORM:
+            case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+            case DXGI_FORMAT_R16_UNORM:
+            case DXGI_FORMAT_R16G16_UNORM:
+            case DXGI_FORMAT_R16G16B16A16_UNORM:
+            case DXGI_FORMAT_R10G10B10A2_UNORM:
+                return NormalizedClearRange{.minimum = 0.0F, .maximum = 1.0F};
+            case DXGI_FORMAT_R8_SNORM:
+            case DXGI_FORMAT_R8G8_SNORM:
+            case DXGI_FORMAT_R8G8B8A8_SNORM:
+            case DXGI_FORMAT_R16_SNORM:
+            case DXGI_FORMAT_R16G16_SNORM:
+            case DXGI_FORMAT_R16G16B16A16_SNORM:
+                return NormalizedClearRange{.minimum = -1.0F, .maximum = 1.0F};
+            default:
+                return std::nullopt;
+            }
+        }
+
+        [[nodiscard]] std::array<float, 4> nativeFloatClearValues(const detail::StorageTextureClearFormat& clearFormat,
+                                                                  Format viewFormat,
+                                                                  const StorageTextureClearValue& value) noexcept
+        {
+            const auto range = normalizedClearRange(format::view(viewFormat));
+            std::array<float, 4> values{};
+            for (std::uint32_t channel = 0; channel < clearFormat.channelCount && channel < values.size(); ++channel)
+            {
+                const float component = value.float32[channel];
+                values[channel] = range ? std::clamp(component, range->minimum, range->maximum) : component;
+            }
+            return values;
+        }
+
+        [[nodiscard]] std::array<UINT, 4> nativeIntegerClearValues(const detail::StorageTextureClearFormat& clearFormat,
+                                                                   const StorageTextureClearValue& value) noexcept
+        {
+            std::array<UINT, 4> values{};
+            for (std::uint32_t channel = 0; channel < clearFormat.channelCount && channel < values.size(); ++channel)
+            {
+                values[channel] = clearFormat.type == StorageTextureClearType::uint32
+                                      ? value.uint32[channel]
+                                      : std::bit_cast<std::uint32_t>(value.sint32[channel]);
+            }
+            return values;
+        }
+
     } // namespace
 
     Status ResourceManager::fillBuffer(QueueManager& queues,
@@ -264,23 +324,14 @@ namespace rachis::d3d12
         bindClearDescriptorHeaps(**commandList, bindings);
         if (format->type == StorageTextureClearType::float32)
         {
+            const auto values = nativeFloatClearValues(*format, view.viewDesc.format, value);
             (*commandList)
-                ->ClearUnorderedAccessViewFloat((*shaderVisible)->gpuHandle(),
-                                                view.descriptor,
-                                                view.texture.resource,
-                                                value.float32.data(),
-                                                0,
-                                                nullptr);
+                ->ClearUnorderedAccessViewFloat(
+                    (*shaderVisible)->gpuHandle(), view.descriptor, view.texture.resource, values.data(), 0, nullptr);
         }
         else
         {
-            std::array<UINT, 4> values{};
-            for (std::size_t channel = 0; channel < values.size(); ++channel)
-            {
-                values[channel] = format->type == StorageTextureClearType::uint32
-                                      ? value.uint32[channel]
-                                      : std::bit_cast<std::uint32_t>(value.sint32[channel]);
-            }
+            const auto values = nativeIntegerClearValues(*format, value);
             (*commandList)
                 ->ClearUnorderedAccessViewUint(
                     (*shaderVisible)->gpuHandle(), view.descriptor, view.texture.resource, values.data(), 0, nullptr);

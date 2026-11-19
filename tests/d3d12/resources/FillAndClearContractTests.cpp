@@ -167,6 +167,55 @@ TEST_CASE("D3D12 clearStorageTexture clears the subresources a storage view cove
     }
 }
 
+TEST_CASE("D3D12 clearStorageTexture clamps normalized values like a shader write",
+          "[size:medium][rhi][d3d12][clear][warp]")
+{
+    namespace contract = rachis::test::fill_and_clear;
+    for (const bool legacyBarriers : {false, true})
+    {
+        INFO("Legacy barriers: " << legacyBarriers);
+        auto device = createWarpDevice(legacyBarriers);
+        const auto texture = contract::createStorageTexture(device,
+                                                            rachis::TextureDesc{
+                                                                .width = 4,
+                                                                .height = 4,
+                                                                .format = rachis::Format::rgba8Unorm,
+                                                            });
+        const auto view =
+            contract::requireStorageView(device, texture.texture, rachis::TextureViewDimension::texture2D, 0);
+        auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+        REQUIRE(command.has_value());
+        contract::requireTextureBarrier(device,
+                                        *command,
+                                        texture.texture,
+                                        rachis::PipelineStage::all,
+                                        rachis::Access::none,
+                                        rachis::TextureLayout::undefined,
+                                        rachis::PipelineStage::computeShader,
+                                        rachis::Access::unorderedAccess,
+                                        rachis::TextureLayout::unorderedAccess);
+        REQUIRE(device.clearStorageTexture(*command, view, contract::floatClear(2.0F, -1.0F, 0.0F, 8.0F)).has_value());
+        contract::requireTextureBarrier(device,
+                                        *command,
+                                        texture.texture,
+                                        rachis::PipelineStage::computeShader,
+                                        rachis::Access::unorderedAccess,
+                                        rachis::TextureLayout::unorderedAccess,
+                                        rachis::PipelineStage::copy,
+                                        rachis::Access::copySource,
+                                        rachis::TextureLayout::copySource);
+        const auto readback = contract::recordSubresourceReadback(device, *command, texture, 0, 0);
+        contract::submitAndWait(device, std::move(*command));
+        CHECK(contract::countMismatchedTexels(device, readback, std::array<std::uint8_t, 4>{255, 0, 0, 255}) == 0);
+        const auto diagnostics = device.diagnosticCounts();
+        CHECK(diagnostics.warnings == 0);
+        CHECK(diagnostics.errors == 0);
+        CHECK(diagnostics.corruptions == 0);
+        REQUIRE(device.destroyTextureView(view).has_value());
+        REQUIRE(device.destroyTexture(texture.texture).has_value());
+    }
+}
+
 TEST_CASE("D3D12 fillBuffer and clearStorageTexture reject invalid queues, ranges, usages, values, and layouts",
           "[size:medium][rhi][d3d12][fill][clear][warp]")
 {
