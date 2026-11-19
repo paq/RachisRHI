@@ -274,11 +274,14 @@ TEST_CASE("TLAS builds and updates read instance records that a compute pass wri
             device, rachis::AccelerationStructureType::topLevel, topSizes->accelerationStructureSize, "Updated TLAS"),
         requireAccelerationStructure(
             device, rachis::AccelerationStructureType::topLevel, topSizes->accelerationStructureSize, "Uploaded TLAS"),
+        requireAccelerationStructure(
+            device, rachis::AccelerationStructureType::topLevel, topSizes->accelerationStructureSize, "Span TLAS"),
     };
     const auto nearBottomLevel = structures[0].structure;
     const auto farBottomLevel = structures[1].structure;
     const auto builtTopLevel = structures[2].structure;
     const auto updatedTopLevel = structures[3].structure;
+    const auto spanTopLevel = structures[5].structure;
     const auto uploadedTopLevel = structures[4].structure;
     const auto scratch = requireBuffer(
         device,
@@ -651,6 +654,44 @@ TEST_CASE("TLAS builds and updates read instance records that a compute pass wri
         checkHit(results[0], 23, 1.5F, 2);
         checkMiss(results[1]);
         checkHit(results[2], 21, 1.0F, 0);
+    }
+
+    {
+        const std::array instances{
+            rachis::AccelerationStructureInstance{
+                .transform = {1.0F, 0.0F, 0.0F, 2.0F, 0.0F, 1.0F, 0.0F, 0.25F, 0.0F, 0.0F, 1.0F, 0.5F},
+                .bottomLevel = nearBottomLevel,
+                .instanceId = 31,
+                .flags = rachis::AccelerationStructureInstanceFlag::triangleCullDisable,
+            },
+            rachis::AccelerationStructureInstance{
+                .bottomLevel = farBottomLevel,
+                .instanceId = 32,
+                .instanceMask = 0,
+            },
+            rachis::AccelerationStructureInstance{
+                .transform = {1.0F, 0.0F, 0.0F, -2.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, -0.5F},
+                .bottomLevel = farBottomLevel,
+                .instanceId = 33,
+                .flags = rachis::AccelerationStructureInstanceFlag::triangleCullDisable,
+            },
+        };
+        auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+        REQUIRE(command.has_value());
+        REQUIRE(device
+                    .buildTopLevelAccelerationStructure(*command,
+                                                        {
+                                                            .destination = spanTopLevel,
+                                                            .instances = instances,
+                                                            .flags = topLevelFlags,
+                                                            .scratch = scratch,
+                                                        })
+                    .has_value());
+        const auto results = traceAndRead(std::move(*command), spanTopLevel);
+        INFO("build from a span whose transforms translate along every row");
+        checkHit(results[0], 33, 1.0F, 2);
+        checkMiss(results[1]);
+        checkHit(results[2], 31, 1.5F, 0);
     }
 
     for (const auto set : querySets)

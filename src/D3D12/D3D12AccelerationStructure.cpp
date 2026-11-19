@@ -1153,7 +1153,8 @@ namespace rachis::d3d12
             const AccelerationStructureInstance& instance, D3D12_GPU_VIRTUAL_ADDRESS bottomLevelAddress) noexcept
         {
             D3D12_RAYTRACING_INSTANCE_DESC native{};
-            std::ranges::copy(instance.transform, &native.Transform[0][0]);
+            static_assert(sizeof(native.Transform) == sizeof(instance.transform));
+            std::memcpy(static_cast<void*>(native.Transform), instance.transform.data(), sizeof(native.Transform));
             native.InstanceID = instance.instanceId;
             native.InstanceMask = instance.instanceMask;
             native.InstanceContributionToHitGroupIndex = instance.hitGroupOffset;
