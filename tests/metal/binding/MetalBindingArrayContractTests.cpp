@@ -409,6 +409,135 @@ TEST_CASE("Metal sampler binding arrays stay within the per-stage argument-buffe
     REQUIRE(device.destroyShaderModule(*shader).has_value());
 }
 
+TEST_CASE("Metal texture binding arrays stay within the per-stage argument-buffer texture limit",
+          "[size:large][rhi][metal][binding]")
+{
+    auto created = rachis::createDevice(metalDesc());
+    REQUIRE(created);
+    auto device = std::move(*created);
+    constexpr std::uint32_t largeCount = 400'000;
+    constexpr std::uint32_t fittingCount = 200'000;
+
+    const auto shaderBytes = loadPnms("MetalTextureArrays.cs.pnms");
+    REQUIRE_FALSE(shaderBytes.empty());
+    const std::array requirements{
+        rachis::ShaderBindingRequirement{0, 0, rachis::ShaderResourceType::storageBuffer, 1},
+        rachis::ShaderBindingRequirement{
+            1, 0, rachis::ShaderResourceType::sampledTexture, rachis::unboundedBindingCount},
+        rachis::ShaderBindingRequirement{
+            2, 0, rachis::ShaderResourceType::sampledTexture, rachis::unboundedBindingCount},
+        rachis::ShaderBindingRequirement{
+            3, 0, rachis::ShaderResourceType::sampledTexture, rachis::unboundedBindingCount},
+    };
+    auto shader = device.createShaderModule({
+        .stage = rachis::ShaderStage::compute,
+        .bytecode = shaderBytes,
+        .entryPoint = "textureArraysMain",
+        .shaderInterface = rachis::test::computeShaderInterface({1, 1, 1}, requirements),
+    });
+    REQUIRE(shader.has_value());
+
+    auto texture = device.createTexture({
+        .width = 1,
+        .height = 1,
+        .format = rachis::Format::r32Float,
+        .usage = rachis::TextureUsage::sampled,
+    });
+    REQUIRE(texture.has_value());
+    auto view = device.createTextureView({.texture = *texture, .usage = rachis::TextureViewUsage::sampled});
+    REQUIRE(view.has_value());
+    const std::vector<std::byte> zeros(sizeof(float));
+    const auto results = createFilledBuffer(device, zeros, rachis::BufferUsage::storage);
+
+    const std::array resultEntries{
+        rachis::BindingLayoutEntry{0, rachis::BindingType::storageBuffer, rachis::ShaderStage::compute, 1},
+    };
+    const std::array textureEntries{rachis::BindingLayoutEntry{
+        .binding = 0,
+        .type = rachis::BindingType::sampledTexture,
+        .visibility = rachis::ShaderStage::compute,
+        .count = rachis::unboundedBindingCount,
+        .flags = rachis::BindingFlag::variableDescriptorCount | rachis::BindingFlag::partiallyBound,
+    }};
+    auto resultLayout = device.createBindingLayout({.entries = resultEntries});
+    auto textureLayout = device.createBindingLayout({.entries = textureEntries});
+    REQUIRE(resultLayout.has_value());
+    REQUIRE(textureLayout.has_value());
+    const std::array resultWrites{rachis::BindingWrite{
+        .binding = 0,
+        .resource = rachis::BufferBinding{.buffer = results, .structureByteStride = sizeof(float)},
+    }};
+    auto resultSet = rachis::test::createBindingSet(device, {.layout = *resultLayout, .writes = resultWrites});
+    REQUIRE(resultSet.has_value());
+
+    std::vector<rachis::BindingPoolHandle> pools;
+    std::vector<rachis::BindingSetHandle> textureSets;
+    const std::array textureWrites{rachis::BindingWrite{.binding = 0, .resource = *view}};
+    const auto textureSet = [&](std::uint32_t count) {
+        const std::array sizes{
+            rachis::BindingPoolSize{.type = rachis::BindingType::sampledTexture, .descriptorCount = count}};
+        auto pool = device.createBindingPool({.maxBindingSets = 1, .sizes = sizes, .label = "Metal texture arrays"});
+        REQUIRE(pool.has_value());
+        pools.push_back(*pool);
+        auto set = device.createBindingSet({
+            .layout = *textureLayout,
+            .writes = textureWrites,
+            .variableDescriptorCount = count,
+            .pool = *pool,
+        });
+        REQUIRE(set.has_value());
+        textureSets.push_back(*set);
+        return *set;
+    };
+
+    const std::array layouts{*resultLayout, *textureLayout, *textureLayout, *textureLayout};
+    auto pipelineLayout = device.createPipelineLayout({.bindingLayouts = layouts});
+    REQUIRE(pipelineLayout.has_value());
+    auto pipeline = device.createComputePipeline({.layout = *pipelineLayout, .computeShader = *shader});
+    REQUIRE(pipeline.has_value());
+
+    const auto dispatchWith = [&](std::array<rachis::BindingSetHandle, 3> arrays) {
+        auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+        REQUIRE(command.has_value());
+        REQUIRE(device.bindComputePipeline(*command, *pipeline).has_value());
+        const std::array sets{*resultSet, arrays[0], arrays[1], arrays[2]};
+        REQUIRE(device.bindComputeBindingSets(*command, 0, sets).has_value());
+        auto dispatched = device.dispatch(*command, 1);
+        auto submitted = device.submit(std::move(*command));
+        REQUIRE(submitted.has_value());
+        REQUIRE(device.wait(*submitted).has_value());
+        return dispatched;
+    };
+
+    const auto first = textureSet(largeCount);
+    const auto second = textureSet(largeCount);
+    const auto overflowingThird = textureSet(largeCount);
+    const auto fittingThird = textureSet(fittingCount);
+    const auto overflowing = dispatchWith({first, second, overflowingThird});
+    REQUIRE_FALSE(overflowing.has_value());
+    CHECK(overflowing.error().code == rachis::ErrorCode::invalidArgument);
+    CHECK(dispatchWith({first, second, fittingThird}).has_value());
+    CHECK(device.diagnosticCounts().errors == 0);
+
+    REQUIRE(device.destroyPipeline(*pipeline).has_value());
+    REQUIRE(device.destroyPipelineLayout(*pipelineLayout).has_value());
+    for (const auto set : textureSets)
+    {
+        REQUIRE(device.destroyBindingSet(set).has_value());
+    }
+    for (const auto pool : pools)
+    {
+        REQUIRE(device.destroyBindingPool(pool).has_value());
+    }
+    REQUIRE(device.destroyBindingSet(*resultSet).has_value());
+    REQUIRE(device.destroyBindingLayout(*textureLayout).has_value());
+    REQUIRE(device.destroyBindingLayout(*resultLayout).has_value());
+    REQUIRE(device.destroyBuffer(results).has_value());
+    REQUIRE(device.destroyTextureView(*view).has_value());
+    REQUIRE(device.destroyTexture(*texture).has_value());
+    REQUIRE(device.destroyShaderModule(*shader).has_value());
+}
+
 TEST_CASE("Metal rejects a bound binding array larger than the shader's compiled argument array",
           "[size:large][rhi][metal][binding]")
 {

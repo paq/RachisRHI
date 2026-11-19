@@ -1320,6 +1320,7 @@ if(RACHIS_ENABLE_METAL AND rachis_build_tests)
     rachis_rhi_slang_metallib(MetalBindingArrays.cs.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalBindingArrays.slang" bindingArraysMain)
     rachis_rhi_slang_metallib(MetalUpdateAfterBind.cs.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalUpdateAfterBind.slang" updateAfterBindMain)
     rachis_rhi_slang_metallib(MetalSamplerArrays.cs.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalSamplerArrays.slang" samplerArraysMain)
+    rachis_rhi_slang_metallib(MetalTextureArrays.cs.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalTextureArrays.slang" textureArraysMain)
     rachis_cook_slang_metallib(
         SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/DrawIndex.hlsl"
         ENTRY drawIndexVertex
@@ -1388,6 +1389,8 @@ if(RACHIS_ENABLE_METAL AND rachis_build_tests)
             "${rachis_rhi_metallib_dir}/MetalUpdateAfterBind.cs.pnms"
             "${rachis_rhi_metallib_dir}/MetalSamplerArrays.cs.metallib"
             "${rachis_rhi_metallib_dir}/MetalSamplerArrays.cs.pnms"
+            "${rachis_rhi_metallib_dir}/MetalTextureArrays.cs.metallib"
+            "${rachis_rhi_metallib_dir}/MetalTextureArrays.cs.pnms"
             "${rachis_rhi_metallib_dir}/DrawIndex.vs.metallib"
             "${rachis_rhi_metallib_dir}/DrawIndex.vs.pnms"
             "${rachis_rhi_metallib_dir}/DrawIndex.plain.vs.metallib"

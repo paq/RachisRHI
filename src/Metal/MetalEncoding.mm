@@ -205,6 +205,7 @@ namespace rachis::metal
             std::span<const std::shared_ptr<MetalBindingSetVersion>> versions)
         {
             std::uint64_t argumentSamplers = 0;
+            std::uint64_t argumentTextures = 0;
             for (const auto& res : stageBindings.resources)
             {
                 if (res.set >= versions.size() || versions[res.set] == nullptr)
@@ -231,6 +232,11 @@ namespace rachis::metal
                     {
                         argumentSamplers += version.variableDescriptorCount;
                     }
+                    else if (res.type == ShaderResourceType::sampledTexture ||
+                             res.type == ShaderResourceType::storageTexture)
+                    {
+                        argumentTextures += version.variableDescriptorCount;
+                    }
                     metalIncludeBindingSlot(capacity, BindingType::storageBuffer, res.metalIndex + 1U);
                     continue;
                 }
@@ -255,6 +261,12 @@ namespace rachis::metal
                     metalSelectionError(ErrorCode::invalidArgument,
                                         "The binding arrays of samplers bound to one shader stage exceed "
                                         "maxVariableSamplerDescriptors."));
+            }
+            if (argumentTextures > metalMaxArgumentBufferTexturesPerStage)
+            {
+                return std::unexpected(metalSelectionError(
+                    ErrorCode::invalidArgument,
+                    "The binding arrays of textures bound to one shader stage exceed Metal's 1,000,000 textures."));
             }
             return {};
         }

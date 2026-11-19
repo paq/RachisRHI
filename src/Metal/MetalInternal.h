@@ -1448,6 +1448,7 @@ namespace rachis::metal
     inline constexpr std::uint32_t metalMaxArgumentBufferResources = 500'000;
     inline constexpr std::uint32_t metalMaxArgumentBufferSamplers = 1024;
     inline constexpr std::uint32_t metalMaxArgumentBufferSamplersBeforeApple9 = 996;
+    inline constexpr std::uint64_t metalMaxArgumentBufferTexturesPerStage = 1'000'000;
 
     [[nodiscard]] inline std::uint32_t metalArgumentBufferSamplerLimit(id<MTLDevice> device) noexcept
     {
