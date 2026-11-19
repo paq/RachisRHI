@@ -159,7 +159,7 @@ namespace rachis::metal
                 if (res.argumentBuffer)
                 {
                     const auto& version = *versions[res.set];
-                    if (version.argumentBuffer == nil)
+                    if (version.argumentNative == nullptr || version.argumentNative->buffer == nil)
                     {
                         return std::unexpected(metalSelectionError(
                             ErrorCode::invalidState,
@@ -228,7 +228,7 @@ namespace rachis::metal
             {
                 if (res.argumentBuffer)
                 {
-                    [table setAddress:versions[res.set]->argumentBuffer.gpuAddress atIndex:res.metalIndex];
+                    [table setAddress:versions[res.set]->argumentNative->buffer.gpuAddress atIndex:res.metalIndex];
                     continue;
                 }
                 for (const auto& slot : versions[res.set]->slots)

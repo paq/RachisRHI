@@ -1795,6 +1795,12 @@ void* rachis::metal::boundNativeMetalDeviceHandle() noexcept
     return device != nullptr ? device->nativeMetalDeviceHandle() : nullptr;
 }
 
+rachis::metal::MetalBindingSetStorage rachis::metal::boundBindingSetStorage(rachis::BindingSetHandle set)
+{
+    const auto* device = boundMetalTestDevice();
+    return device != nullptr ? device->bindingSetStorageForTesting(set) : MetalBindingSetStorage{};
+}
+
 std::uint32_t rachis::metal::boundAppleGpuFamily() noexcept
 {
     void* const handle = boundNativeMetalDeviceHandle();

@@ -457,18 +457,14 @@ namespace rachis::metal
 
     void metalRetainBindingSetResidency(MetalCommandEntry& entry, const MetalBindingSetVersion& version) noexcept
     {
-        const bool argumentBuffer = version.argumentResidency != nil;
-        if (argumentBuffer && entry.command != nil &&
-            entry.usedResidencySets.insertIfAbsent((__bridge const void*)version.argumentResidency))
+        const auto& argument = version.argumentNative;
+        if (argument != nullptr && argument->residency != nil && entry.command != nil &&
+            entry.usedResidencySets.insertIfAbsent((__bridge const void*)argument->residency))
         {
-            [entry.command useResidencySet:version.argumentResidency];
+            [entry.command useResidencySet:argument->residency];
         }
         for (const auto& slot : version.slots)
         {
-            if (argumentBuffer && metalIsArgumentBufferSlot(version, slot))
-            {
-                continue;
-            }
             if (slot.buffer != nil)
             {
                 metalRetainResidency(entry, slot.buffer);

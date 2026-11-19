@@ -155,6 +155,26 @@ namespace rachis::metal
             return true;
         }
 
+        [[nodiscard]] bool contains(const void* ptr) const noexcept
+        {
+            if (ptr == nullptr || slots_.empty())
+            {
+                return false;
+            }
+            const std::size_t mask = slots_.size() - 1U;
+            for (std::size_t index = hashPointer(ptr) & mask;; index = (index + 1U) & mask)
+            {
+                if (slots_[index] == ptr)
+                {
+                    return true;
+                }
+                if (slots_[index] == nullptr)
+                {
+                    return false;
+                }
+            }
+        }
+
         void clear() noexcept
         {
             if (size_ != 0)
@@ -451,10 +471,18 @@ namespace rachis::metal
         std::uint32_t metalIndex = 0;
     };
 
+    struct MetalArgumentBufferNative final
+    {
+        __strong id<MTLBuffer> buffer = nil;
+        __strong id<MTLResidencySet> residency = nil;
+    };
+
     struct MetalArgumentBufferContents final
     {
-        std::unordered_map<std::size_t, MetalBindingSlot> writtenInPlace;
+        std::mutex mutex;
+        std::vector<MetalBindingSlot> elements;
         std::unordered_map<const void*, std::uint32_t> residentElements;
+        std::uint64_t generation = 0;
     };
 
     struct MetalBindingSetVersion final
@@ -465,8 +493,7 @@ namespace rachis::metal
         std::vector<MetalBindingSlot> slots;
         __strong id<MTL4ArgumentTable> table;
         std::uint32_t variableDescriptorCount = 0;
-        __strong id<MTLBuffer> argumentBuffer;
-        __strong id<MTLResidencySet> argumentResidency;
+        std::shared_ptr<MetalArgumentBufferNative> argumentNative;
         std::shared_ptr<MetalArgumentBufferContents> argumentContents;
     };
 
@@ -1411,13 +1438,6 @@ namespace rachis::metal
                                                                    std::uint32_t samplerLimit) noexcept
     {
         return type == BindingType::sampler ? samplerLimit : metalMaxArgumentBufferResources;
-    }
-
-    [[nodiscard]] constexpr bool metalIsArgumentBufferSlot(const MetalBindingSetVersion& version,
-                                                           const MetalBindingSlot& slot) noexcept
-    {
-        return version.layout != nullptr && version.layout->variableBinding.has_value() &&
-               slot.binding == *version.layout->variableBinding;
     }
 
     [[nodiscard]] constexpr BindingType metalStaticBufferType(BindingType type) noexcept

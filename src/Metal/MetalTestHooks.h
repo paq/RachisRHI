@@ -322,6 +322,15 @@ namespace rachis::metal
     };
 
     [[nodiscard]] MetalBarrierStageMask barrierStagesForTesting(PipelineStage stages) noexcept;
+
+    struct MetalBindingSetStorage final
+    {
+        const void* version = nullptr;
+        const void* elements = nullptr;
+        std::weak_ptr<void> argumentBuffer;
+    };
+
+    [[nodiscard]] MetalBindingSetStorage boundBindingSetStorage(BindingSetHandle set);
 #endif
 
 } // namespace rachis::metal

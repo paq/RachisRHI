@@ -16,6 +16,7 @@ namespace rachis::metal
 {
 #ifdef RACHIS_TESTING
     class MetalCommitFeedbackGate;
+    struct MetalBindingSetStorage;
 #endif
 
     struct MetalDeviceNative;
@@ -67,6 +68,7 @@ namespace rachis::metal
         [[nodiscard]] Status notifySurfaceHostCloseForTesting(SurfaceHandle surface);
         [[nodiscard]] void* nativeMetalDeviceHandle() const noexcept;
         [[nodiscard]] std::uint64_t samplerGpuResourceIdForTesting(SamplerHandle sampler) const noexcept;
+        [[nodiscard]] MetalBindingSetStorage bindingSetStorageForTesting(BindingSetHandle set) const;
 #endif
         [[nodiscard]] Status copyBuffersImmediate(BufferHandle source,
                                                   BufferHandle destination,
