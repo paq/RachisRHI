@@ -1542,6 +1542,30 @@ float4 fetch_0(uint index_0, KernelContext_0 thread* kernelContext_0)
     CHECK_FALSE(rewritten->contains("textures_1[]"));
     CHECK_FALSE(rewritten->contains("buffers_0[]"));
     CHECK_FALSE(rewritten->contains("_S1[]"));
+    CHECK(rewritten->contains("    T operator[](uint index) const constant\n"));
+
+    constexpr std::string_view direct = R"msl(#include <metal_stdlib>
+using namespace metal;
+[[fragment]] float4 arrayPixel(uint device*  colors_0[])
+{
+    return float4(float(colors_0[1U][int(0)]));
+}
+)msl";
+    constexpr std::string_view directSpirvJson = R"({"parameters": [
+        {"name": "colors", "binding": {"kind": "descriptorTableSlot", "space": 0, "index": 0}}
+    ]})";
+    constexpr std::string_view directMetalJson = R"({"parameters": [
+        {"name": "colors", "type": {"kind": "array", "elementCount": 0,
+            "elementType": {"kind": "resource", "baseShape": "structuredBuffer"}}}
+    ]})";
+    const auto directPlan =
+        rachis::shader_tool::planMetalArgumentBufferArrays(direct, directSpirvJson, directMetalJson);
+    REQUIRE(directPlan.has_value());
+    REQUIRE(directPlan->size() == 1);
+    const auto directRewritten = rachis::shader_tool::rewriteMetalArgumentBufferArrays(direct, *directPlan);
+    REQUIRE(directRewritten.has_value());
+    CHECK(directRewritten->contains("constant RachisArgumentStorage<uint device*, 500000>& colors_0 [[buffer("));
+    CHECK(directRewritten->contains("    return float4(float(colors_0[1U][int(0)]));"));
 
     const auto enriched = rachis::shader_tool::enrichMetalReflectionJson(
         R"({"parameters": [], "entryPoints": [{"name": "arraysMain", "stage": "compute", "parameters": []}]})",
