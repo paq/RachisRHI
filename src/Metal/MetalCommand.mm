@@ -551,6 +551,13 @@ namespace rachis::metal
                                                                  std::span<const std::byte> sourceBytes,
                                                                  std::uint32_t copyBytes)
     {
+#ifdef RACHIS_TESTING
+        if (consumeInjectedMetalPushConstantSliceFailure())
+        {
+            return std::unexpected(
+                metalSelectionError(ErrorCode::outOfMemory, "Injected Metal push-constant slice failure."));
+        }
+#endif
         const auto bytes = (std::min)(copyBytes, maxPushConstantBytes);
         const auto alignedBytes = metalAlignUp(std::max<std::uint32_t>(bytes, 1U), kMetalPushConstantSliceAlignment);
         if (entry.pushConstantPageIndex < entry.pushConstantPages.size() &&

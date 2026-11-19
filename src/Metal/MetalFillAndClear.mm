@@ -220,13 +220,16 @@ RACHIS_CLEAR_KERNELS(Sint, int, clear.s)
             return 0;
         }
 
-        [[nodiscard]] Status metalEncodeInternalDispatch(id<MTLDevice> device,
-                                                         MetalCommandEntry& entry,
-                                                         id<MTLComputePipelineState> pipeline,
-                                                         std::span<const std::byte> constants,
-                                                         id<MTLTexture> texture,
-                                                         MTLSize threadgroups,
-                                                         MTLSize threadsPerThreadgroup)
+        [[nodiscard]] Result<id<MTL4ArgumentTable>> metalAcquireInternalDispatchTable(id<MTLDevice> device,
+                                                                                    MetalCommandEntry& entry,
+                                                                                    bool texture)
+        {
+            return acquireMetalArgumentTable(device, entry, MetalArgumentTableStage::compute, 1, texture ? 1 : 0, 0);
+        }
+
+        [[nodiscard]] Result<MetalPushConstantSlice> metalCaptureInternalConstants(id<MTLDevice> device,
+                                                                                 MetalCommandEntry& entry,
+                                                                                 std::span<const std::byte> constants)
         {
             auto slice =
                 metalCapturePushConstantSlice(device, entry, constants, static_cast<std::uint32_t>(constants.size()));
@@ -235,24 +238,28 @@ RACHIS_CLEAR_KERNELS(Sint, int, clear.s)
                 return std::unexpected(std::move(slice.error()));
             }
             metalRetainResidency(entry, slice->buffer);
-            auto table = acquireMetalArgumentTable(
-                device, entry, MetalArgumentTableStage::compute, 1, texture != nil ? 1 : 0, 0);
-            if (!table)
-            {
-                return std::unexpected(std::move(table.error()));
-            }
-            [*table setAddress:slice->gpuAddress atIndex:0];
+            return slice;
+        }
+
+        void metalEmitInternalDispatch(MetalCommandEntry& entry,
+                                       id<MTL4ArgumentTable> table,
+                                       id<MTLComputePipelineState> pipeline,
+                                       const MetalPushConstantSlice& constants,
+                                       id<MTLTexture> texture,
+                                       MTLSize threadgroups,
+                                       MTLSize threadsPerThreadgroup) noexcept
+        {
+            [table setAddress:constants.gpuAddress atIndex:0];
             if (texture != nil)
             {
-                [*table setTexture:texture.gpuResourceID atIndex:0];
+                [table setTexture:texture.gpuResourceID atIndex:0];
             }
             [entry.computeEncoder setComputePipelineState:pipeline];
-            [entry.computeEncoder setArgumentTable:*table];
+            [entry.computeEncoder setArgumentTable:table];
             [entry.computeEncoder dispatchThreadgroups:threadgroups threadsPerThreadgroup:threadsPerThreadgroup];
             entry.activeComputePipeline = nullptr;
             entry.activeComputeTable = nil;
             entry.computeTableDirty = true;
-            return {};
         }
 
         struct MetalFillTarget final
@@ -343,28 +350,51 @@ RACHIS_CLEAR_KERNELS(Sint, int, clear.s)
         {
             return prepared;
         }
-        metalRetainResidency(*entry, target.buffer);
         const std::uint64_t totalWords = target.size / sizeof(std::uint32_t);
-        for (std::uint64_t first = 0; first < totalWords; first += kMetalFillWordsPerDispatch)
+        const std::uint64_t chunkCount = (totalWords + kMetalFillWordsPerDispatch - 1U) / kMetalFillWordsPerDispatch;
+        auto table = metalAcquireInternalDispatchTable(target.device, *entry, false);
+        if (!table)
         {
-            const auto words = static_cast<std::uint32_t>(std::min(kMetalFillWordsPerDispatch, totalWords - first));
+            return std::unexpected(std::move(table.error()));
+        }
+        std::vector<MetalPushConstantSlice> slices;
+        try
+        {
+            slices.reserve(static_cast<std::size_t>(chunkCount));
+        }
+        catch (const std::bad_alloc&)
+        {
+            return std::unexpected(
+                metalSelectionError(ErrorCode::outOfMemory, "Failed to reserve Metal fillBuffer dispatch constants."));
+        }
+        for (std::uint64_t chunk = 0; chunk < chunkCount; ++chunk)
+        {
+            const std::uint64_t first = chunk * kMetalFillWordsPerDispatch;
             const MetalFillHeader header{
                 .destination = target.buffer.gpuAddress + offset + first * sizeof(std::uint32_t),
-                .words = words,
+                .words = static_cast<std::uint32_t>(std::min(kMetalFillWordsPerDispatch, totalWords - first)),
                 .value = value,
             };
-            const auto groups = (words + kMetalFillThreadgroupSize - 1U) / kMetalFillThreadgroupSize;
-            if (auto encoded = metalEncodeInternalDispatch(target.device,
-                                                           *entry,
-                                                           target.pipeline,
-                                                           std::as_bytes(std::span(&header, 1)),
-                                                           nil,
-                                                           MTLSizeMake(groups, 1, 1),
-                                                           MTLSizeMake(kMetalFillThreadgroupSize, 1, 1));
-                !encoded)
+            auto slice = metalCaptureInternalConstants(target.device, *entry, std::as_bytes(std::span(&header, 1)));
+            if (!slice)
             {
-                return encoded;
+                return std::unexpected(std::move(slice.error()));
             }
+            slices.push_back(*slice);
+        }
+        metalRetainResidency(*entry, target.buffer);
+        for (std::uint64_t chunk = 0; chunk < chunkCount; ++chunk)
+        {
+            const std::uint64_t first = chunk * kMetalFillWordsPerDispatch;
+            const auto words = static_cast<std::uint32_t>(std::min(kMetalFillWordsPerDispatch, totalWords - first));
+            const auto groups = (words + kMetalFillThreadgroupSize - 1U) / kMetalFillThreadgroupSize;
+            metalEmitInternalDispatch(*entry,
+                                      *table,
+                                      target.pipeline,
+                                      slices[static_cast<std::size_t>(chunk)],
+                                      nil,
+                                      MTLSizeMake(groups, 1, 1),
+                                      MTLSizeMake(kMetalFillThreadgroupSize, 1, 1));
         }
         return {};
     }
@@ -457,12 +487,22 @@ RACHIS_CLEAR_KERNELS(Sint, int, clear.s)
         {
             return prepared;
         }
-        metalStageLayoutTransitions(native->layoutState(), transitions);
-        metalRetainResidency(*entry, target.view);
         MetalClearValueBlock block{};
         std::memcpy(block.f.data(), value.float32.data(), sizeof(block.f));
         std::memcpy(block.u.data(), value.uint32.data(), sizeof(block.u));
         std::memcpy(block.s.data(), value.sint32.data(), sizeof(block.s));
+        auto table = metalAcquireInternalDispatchTable(target.device, *entry, true);
+        if (!table)
+        {
+            return std::unexpected(std::move(table.error()));
+        }
+        auto constants = metalCaptureInternalConstants(target.device, *entry, std::as_bytes(std::span(&block, 1)));
+        if (!constants)
+        {
+            return std::unexpected(std::move(constants.error()));
+        }
+        metalStageLayoutTransitions(native->layoutState(), transitions);
+        metalRetainResidency(*entry, target.view);
         const auto depth = volume ? target.view.depth : std::max<NSUInteger>(target.view.arrayLength, 1);
         const bool oneDimensional =
             target.view.textureType == MTLTextureType1D || target.view.textureType == MTLTextureType1DArray;
@@ -471,8 +511,8 @@ RACHIS_CLEAR_KERNELS(Sint, int, clear.s)
             MTLSizeMake((target.view.width + threads.width - 1U) / threads.width,
                         (std::max<NSUInteger>(target.view.height, 1) + threads.height - 1U) / threads.height,
                         depth);
-        return metalEncodeInternalDispatch(
-            target.device, *entry, target.pipeline, std::as_bytes(std::span(&block, 1)), target.view, groups, threads);
+        metalEmitInternalDispatch(*entry, *table, target.pipeline, *constants, target.view, groups, threads);
+        return {};
     }
 
 } // namespace rachis::metal
