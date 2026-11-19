@@ -62,6 +62,7 @@ namespace rachis::d3d12
         std::shared_ptr<GpuDescriptorLease> samplerDescriptorOwner;
         std::span<const std::shared_ptr<ResidencyRecord>> staticResidencies;
         SmallVector<std::shared_ptr<ResidencyRecord>, 8> extraResidencies;
+        InPlaceResidencyReference inPlaceResidencies;
         SmallVector<std::shared_ptr<SwapchainImageLeaseState>, 4> swapchainImageLeases;
         SmallVector<std::shared_ptr<void>, 4> sparseMappingOwners;
         SmallVector<TimelinePoint, 4> sparseMappingDependencies;

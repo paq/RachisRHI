@@ -219,10 +219,20 @@ namespace rachis::d3d12
                     .internal = true,
                 },
             };
+            std::array<InPlaceResidencyReference, maxBindingSets> inPlaceResidencies{};
+            std::size_t inPlaceResidencyCount = 0;
+            for (const auto& set : prepared->activeSets())
+            {
+                if (set.inPlaceResidencies.log != nullptr)
+                {
+                    inPlaceResidencies[inPlaceResidencyCount++] = set.inPlaceResidencies;
+                }
+            }
             return queues.retainCommandDependencies(commandBuffer,
                                                     dependencies,
                                                     prepared->swapchainImageLeases.span(),
-                                                    prepared->sparseMappingDependencies.span());
+                                                    prepared->sparseMappingDependencies.span(),
+                                                    std::span{inPlaceResidencies}.first(inPlaceResidencyCount));
         }
 
     } // namespace pipeline_detail

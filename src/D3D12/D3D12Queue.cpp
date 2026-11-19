@@ -94,6 +94,7 @@ namespace rachis::d3d12
             std::vector<std::shared_ptr<void>> retainedResources;
             std::vector<std::shared_ptr<SwapchainImageCommandReference>> swapchainImageReferences;
             std::vector<ResidencyLease> residencyLeases;
+            std::vector<InPlaceResidencyReference> inPlaceResidencies;
             std::vector<TimelinePoint> sparseMappingDependencies;
             std::vector<AccelerationStructureExecutionLease> accelerationStructureLeases;
             std::vector<AccelerationStructurePublication> accelerationStructurePublications;
@@ -112,6 +113,7 @@ namespace rachis::d3d12
             entry.retainedResources.clear();
             entry.swapchainImageReferences.clear();
             entry.residencyLeases.clear();
+            entry.inPlaceResidencies.clear();
             entry.sparseMappingDependencies.clear();
             entry.accelerationStructureLeases.clear();
             entry.accelerationStructurePublications.clear();
@@ -132,6 +134,7 @@ namespace rachis::d3d12
             std::vector<std::shared_ptr<void>> retainedResources;
             std::vector<std::shared_ptr<SwapchainImageCommandReference>> swapchainImageReferences;
             std::vector<ResidencyLease> residencyLeases;
+            std::vector<InPlaceResidencyReference> inPlaceResidencies;
             std::vector<TimelinePoint> sparseMappingDependencies;
             std::vector<AccelerationStructureExecutionLease> accelerationStructureLeases;
         };
@@ -142,6 +145,7 @@ namespace rachis::d3d12
                 .retainedResources = std::move(entry.retainedResources),
                 .swapchainImageReferences = std::move(entry.swapchainImageReferences),
                 .residencyLeases = std::move(entry.residencyLeases),
+                .inPlaceResidencies = std::move(entry.inPlaceResidencies),
                 .sparseMappingDependencies = std::move(entry.sparseMappingDependencies),
                 .accelerationStructureLeases = std::move(entry.accelerationStructureLeases),
             };
@@ -1233,6 +1237,37 @@ namespace rachis::d3d12
             return {};
         }
 
+        [[nodiscard]] static Status acquireInPlaceResidencies(PoolEntry& entry)
+        {
+            if (entry.inPlaceResidencies.empty())
+            {
+                return {};
+            }
+            try
+            {
+                std::vector<std::shared_ptr<ResidencyRecord>> residencies;
+                for (const auto& reference : entry.inPlaceResidencies)
+                {
+                    reference.log->visitSince(reference.sequence,
+                                              [&](const std::shared_ptr<ResidencyRecord>& residency) {
+                                                  if (residency != nullptr)
+                                                  {
+                                                      residencies.push_back(residency);
+                                                  }
+                                              });
+                }
+                return appendResidencyLeases(entry.residencyLeases, residencies);
+            }
+            catch (const std::bad_alloc&)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::outOfMemory,
+                    0,
+                    "Failed to retain the residency of update-after-bind binding elements.",
+                });
+            }
+        }
+
         [[nodiscard]] bool isSubmittedPointOfThisDevice(TimelinePoint point) const noexcept
         {
             return point.isValid() && detail::TimelinePointAccess::deviceToken(point) == deviceToken &&
@@ -1378,6 +1413,7 @@ namespace rachis::d3d12
                         pending.entry->retainedResources.clear();
                         pending.entry->swapchainImageReferences.clear();
                         pending.entry->residencyLeases.clear();
+                        pending.entry->inPlaceResidencies.clear();
                         pending.entry->sparseMappingDependencies.clear();
                         pending.entry->accelerationStructureLeases.clear();
                         pending.entry->accelerationStructurePublications.clear();
@@ -1441,6 +1477,7 @@ namespace rachis::d3d12
                     entry->retainedResources.clear();
                     entry->swapchainImageReferences.clear();
                     entry->residencyLeases.clear();
+                    entry->inPlaceResidencies.clear();
                     entry->sparseMappingDependencies.clear();
                     entry->accelerationStructureLeases.clear();
                     entry->accelerationStructurePublications.clear();
@@ -1916,6 +1953,7 @@ namespace rachis::d3d12
                     batch.entries[index]->retainedResources.clear();
                     batch.entries[index]->swapchainImageReferences.clear();
                     batch.entries[index]->residencyLeases.clear();
+                    batch.entries[index]->inPlaceResidencies.clear();
                     batch.entries[index]->sparseMappingDependencies.clear();
                     batch.entries[index]->accelerationStructureLeases.clear();
                     batch.entries[index]->legacyTextureStates.clear();
@@ -2183,6 +2221,15 @@ namespace rachis::d3d12
                 0,
                 "The queue timeline is exhausted and cannot be reused safely.",
             });
+        }
+
+        for (auto* native : nativeCommands)
+        {
+            auto acquired = Impl::acquireInPlaceResidencies(*native->entry());
+            if (!acquired)
+            {
+                return std::unexpected(std::move(acquired.error()));
+            }
         }
 
         for (const auto* native : nativeCommands)
@@ -2753,7 +2800,8 @@ namespace rachis::d3d12
     Status QueueManager::retainCommandDependencies(detail::BackendCommandBuffer& commandBuffer,
                                                    std::span<const ResourceRetention> resources,
                                                    std::span<const std::shared_ptr<SwapchainImageLeaseState>> leases,
-                                                   std::span<const TimelinePoint> sparseMappingDependencies) const
+                                                   std::span<const TimelinePoint> sparseMappingDependencies,
+                                                   std::span<const InPlaceResidencyReference> inPlaceResidencies) const
     {
         auto live =
             requireLiveD3D12Command(&commandBuffer,
@@ -2768,11 +2816,13 @@ namespace rachis::d3d12
         auto& entry = *native->entry();
         const auto retainedResourceCount = entry.retainedResources.size();
         const auto residencyLeaseCount = entry.residencyLeases.size();
+        const auto inPlaceResidencyCount = entry.inPlaceResidencies.size();
         const auto swapchainReferenceCount = entry.swapchainImageReferences.size();
         const auto sparseMappingDependencyCount = entry.sparseMappingDependencies.size();
         const auto rollback = [&]() noexcept {
             entry.retainedResources.resize(retainedResourceCount);
             entry.residencyLeases.resize(residencyLeaseCount);
+            entry.inPlaceResidencies.resize(inPlaceResidencyCount);
             entry.swapchainImageReferences.resize(swapchainReferenceCount);
             entry.sparseMappingDependencies.resize(sparseMappingDependencyCount);
         };
@@ -2805,6 +2855,16 @@ namespace rachis::d3d12
             {
                 rollback();
                 return retainedSparseDependencies;
+            }
+            for (const auto& reference : inPlaceResidencies)
+            {
+                const bool repeated = !entry.inPlaceResidencies.empty() &&
+                                      entry.inPlaceResidencies.back().log == reference.log &&
+                                      entry.inPlaceResidencies.back().sequence <= reference.sequence;
+                if (!repeated)
+                {
+                    entry.inPlaceResidencies.push_back(reference);
+                }
             }
         }
         catch (const std::bad_alloc&)

@@ -1832,6 +1832,10 @@ namespace rachis::vulkan
         versionLease->counts = descriptorCounts(layout->entries, variableDescriptorCount);
 
         auto version = std::make_shared<BindingSetVersion>();
+        if (layout->updateAfterBind)
+        {
+            version->inPlace = std::make_shared<InPlaceRetention>();
+        }
         version->layout = std::move(layout);
         version->pool = std::move(pool);
         version->poolSet = std::move(poolSet);
@@ -2154,9 +2158,24 @@ namespace rachis::vulkan
         version->pool = currentVersion.pool;
         version->poolSet = currentVersion.poolSet;
         version->versionLease = currentVersion.versionLease;
+        version->inPlace = currentVersion.inPlace;
         version->slots = std::move(slots);
         version->dynamicBuffers = collectDynamicBuffers(version->slots);
         version->variableDescriptorCount = currentVersion.variableDescriptorCount;
+
+        std::vector<InPlaceRetention::Write> retained;
+        retained.reserve(writes.size());
+        for (const auto& write : writes)
+        {
+            const auto slotIndex = findSlotIndex(current->layout->entries, version->variableDescriptorCount, write);
+            if (slotIndex.has_value())
+            {
+                retained.push_back(InPlaceRetention::Write{
+                    .index = static_cast<std::uint32_t>(*slotIndex),
+                    .element = version->slots[*slotIndex].keepAlive,
+                });
+            }
+        }
 
         auto updated = std::make_shared<BindingSetRecord>();
         updated->layout = current->layout;
@@ -2197,6 +2216,14 @@ namespace rachis::vulkan
                 }
             }
             const auto& next = *updated->version;
+            if (next.inPlace != nullptr)
+            {
+                if (auto reserved = next.inPlace->reserve(retained); !reserved)
+                {
+                    return reserved;
+                }
+                next.inPlace->record(retained);
+            }
             writeDescriptorElements(*table_,
                                     device_,
                                     current->layout->entries,

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Common/HandleTable.h"
+#include "Common/InPlaceBindingRetention.h"
 #include "Internal/VulkanCommands.h"
 #include "Internal/VulkanResources.h"
 #include "Rachis/Binding.h"
@@ -229,6 +230,8 @@ namespace rachis::vulkan
         };
 
     private:
+        using InPlaceRetention = detail::InPlaceBindingRetention<std::shared_ptr<void>>;
+
         struct BindingSetVersion final
         {
             BindingSetVersion() = default;
@@ -243,6 +246,7 @@ namespace rachis::vulkan
             std::vector<VulkanDynamicBufferBinding> dynamicBuffers;
             std::uint32_t variableDescriptorCount = 0;
             std::shared_ptr<BindingPoolVersionLease> versionLease;
+            std::shared_ptr<InPlaceRetention> inPlace;
         };
 
         struct BindingSetRecord final

@@ -43,6 +43,7 @@ namespace rachis::d3d12
             std::uint32_t samplerDescriptorCount = 0;
             std::uint32_t dynamicBufferCount = 0;
             std::optional<std::uint32_t> variableBinding;
+            bool updateAfterBind = false;
             std::string label;
         };
 
@@ -101,6 +102,14 @@ namespace rachis::d3d12
             std::vector<std::shared_ptr<void>> samplerOwners;
         };
 
+        using InPlaceDescriptorSources = detail::InPlaceBindingRetention<ResourceDescriptorSource>;
+
+        struct InPlaceDescriptorRetention final
+        {
+            InPlaceDescriptorSources sources;
+            std::shared_ptr<InPlaceResidencyLog> residencies = std::make_shared<InPlaceResidencyLog>();
+        };
+
         struct BindingSetRecord final
         {
             std::shared_ptr<BindingLayoutRecord> layout;
@@ -108,6 +117,8 @@ namespace rachis::d3d12
             std::shared_ptr<BindingPoolVersionLease> poolVersion;
             BindingDescriptorCounts descriptorCounts{};
             std::shared_ptr<GpuDescriptorLease> resources;
+            std::shared_ptr<InPlaceDescriptorRetention> inPlace;
+            std::uint64_t inPlaceResidencySequence = 0;
             std::shared_ptr<SharedSamplerTable> samplers;
 
             std::vector<std::shared_ptr<CpuDescriptorLease>> resourceStagingDescriptors;
@@ -544,6 +555,9 @@ namespace rachis::d3d12
             {
                 return std::unexpected(std::move(validUpdateAfterBind.error()));
             }
+            record->updateAfterBind = std::ranges::any_of(desc.entries, [](const BindingLayoutEntry& entry) {
+                return hasAny(entry.flags, BindingFlag::updateAfterBind);
+            });
 
             std::ranges::sort(record->entries, {}, [](const auto& entry) { return entry.entry.binding; });
             auto variableBinding = findVariableBinding(record->entries);
@@ -1353,20 +1367,30 @@ namespace rachis::d3d12
             });
         }
 
-        void retainDescriptorResidencies(const ResourceDescriptorSource& source,
-                                         std::vector<std::shared_ptr<ResidencyRecord>>& residencies)
+        [[nodiscard]] const std::shared_ptr<ResidencyRecord>* descriptorResidency(
+            const ResourceDescriptorSource& source) noexcept
         {
             if (const auto* buffer = std::get_if<BufferDescriptorSource>(&source))
             {
-                residencies.push_back(buffer->source.residency);
+                return &buffer->source.residency;
             }
-            else if (const auto* texture = std::get_if<TextureDescriptorSource>(&source))
+            if (const auto* texture = std::get_if<TextureDescriptorSource>(&source))
             {
-                residencies.push_back(texture->source.texture.residency);
+                return &texture->source.texture.residency;
             }
-            else if (const auto* feedback = std::get_if<SamplerFeedbackDescriptorSource>(&source))
+            if (const auto* feedback = std::get_if<SamplerFeedbackDescriptorSource>(&source))
             {
-                residencies.push_back(feedback->source.targetedResidency);
+                return &feedback->source.targetedResidency;
+            }
+            return nullptr;
+        }
+
+        void retainDescriptorResidencies(const ResourceDescriptorSource& source,
+                                         std::vector<std::shared_ptr<ResidencyRecord>>& residencies)
+        {
+            if (const auto* residency = descriptorResidency(source))
+            {
+                residencies.push_back(*residency);
             }
         }
 
@@ -2210,6 +2234,54 @@ namespace rachis::d3d12
                    current.resources->count() == staged.resources->handles.size();
         }
 
+        [[nodiscard]] Status retainInPlaceWrites(BindingSetRecord& record, std::span<const std::uint32_t> indices)
+        {
+            if (record.inPlace == nullptr)
+            {
+                return {};
+            }
+            auto& inPlace = *record.inPlace;
+            std::vector<InPlaceDescriptorSources::Write> sources;
+            std::vector<InPlaceResidencyLog::Write> residencies;
+            try
+            {
+                sources.reserve(indices.size());
+                for (const auto index : indices)
+                {
+                    const auto& source = record.resourceSources[index];
+                    sources.push_back(InPlaceDescriptorSources::Write{.index = index, .element = source});
+                    const auto* residency = descriptorResidency(source);
+                    const bool manualResidency = residency != nullptr && *residency != nullptr;
+                    if (manualResidency || inPlace.residencies->contains(index))
+                    {
+                        residencies.push_back(InPlaceResidencyLog::Write{
+                            .index = index,
+                            .element = manualResidency ? *residency : std::shared_ptr<ResidencyRecord>{},
+                        });
+                    }
+                }
+            }
+            catch (const std::bad_alloc&)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::outOfMemory,
+                    0,
+                    "Failed to prepare update-after-bind binding retention.",
+                });
+            }
+            if (auto reserved = inPlace.sources.reserve(sources); !reserved)
+            {
+                return reserved;
+            }
+            if (auto reserved = inPlace.residencies->reserve(residencies); !reserved)
+            {
+                return reserved;
+            }
+            inPlace.sources.record(sources);
+            record.inPlaceResidencySequence = inPlace.residencies->record(residencies);
+            return {};
+        }
+
     } // namespace
 
     struct DynamicDescriptorArena::Impl final
@@ -2304,7 +2376,8 @@ namespace rachis::d3d12
                                                       const std::shared_ptr<BindingSetRecord>& current,
                                                       std::shared_ptr<BindingSetRecord>&& candidate,
                                                       StagedBindingSetDescriptors& staged,
-                                                      std::shared_ptr<BindingPoolVersionLease>&& nextPoolVersion)
+                                                      std::shared_ptr<BindingPoolVersionLease>&& nextPoolVersion,
+                                                      std::shared_ptr<InPlaceDescriptorRetention>&& nextInPlace)
         {
             std::shared_ptr<BindingSetRecord> retired;
             const std::scoped_lock lock(mutex);
@@ -2349,6 +2422,11 @@ namespace rachis::d3d12
             {
                 candidate->poolVersion = std::move(nextPoolVersion);
             }
+            if (nextInPlace != nullptr && (idle || candidate->resources != current->resources))
+            {
+                candidate->inPlace = std::move(nextInPlace);
+                candidate->inPlaceResidencySequence = 0;
+            }
             retired = std::exchange(*stored, std::move(candidate));
             return {};
         }
@@ -2376,6 +2454,11 @@ namespace rachis::d3d12
                     0,
                     "A concurrent binding set update published a newer version.",
                 });
+            }
+            if (auto retainedWrites = retainInPlaceWrites(*candidate, staged.resources->preparedIndices);
+                !retainedWrites)
+            {
+                return retainedWrites;
             }
             copyPreparedDescriptors(
                 *device, *current->resources, *staged.resources, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -2727,6 +2810,10 @@ namespace rachis::d3d12
 
         auto record = std::make_shared<BindingSetRecord>();
         record->layout = *layout;
+        if ((*layout)->updateAfterBind)
+        {
+            record->inPlace = std::make_shared<InPlaceDescriptorRetention>();
+        }
         auto validVariableCount = validateVariableDescriptorCount(**layout, desc.variableDescriptorCount);
         if (!validVariableCount)
         {
@@ -2844,8 +2931,14 @@ namespace rachis::d3d12
             nextPoolVersion = std::make_shared<BindingPoolVersionLease>(
                 current->poolSet->state, current->poolSet, candidate->descriptorCounts);
         }
+        std::shared_ptr<InPlaceDescriptorRetention> nextInPlace;
+        if (current->inPlace != nullptr)
+        {
+            nextInPlace = std::make_shared<InPlaceDescriptorRetention>();
+        }
 
-        return impl_->publishBindingSetVersion(set, current, std::move(candidate), *staged, std::move(nextPoolVersion));
+        return impl_->publishBindingSetVersion(
+            set, current, std::move(candidate), *staged, std::move(nextPoolVersion), std::move(nextInPlace));
     }
 
     Status BindingManager::destroyBindingSet(BindingSetHandle set)
@@ -2965,6 +3058,12 @@ namespace rachis::d3d12
                 .samplerDescriptorOwner = std::move(samplerDescriptors),
                 .staticResidencies = found->residencies,
                 .extraResidencies = std::move(captures.extraResidencies),
+                .inPlaceResidencies =
+                    InPlaceResidencyReference{
+                        .log = found->inPlace != nullptr ? found->inPlace->residencies
+                                                         : std::shared_ptr<InPlaceResidencyLog>{},
+                        .sequence = found->inPlaceResidencySequence,
+                    },
                 .swapchainImageLeases = std::move(captures.swapchainImageLeases),
                 .sparseMappingOwners = std::move(captures.sparseMappingOwners),
                 .sparseMappingDependencies = std::move(captures.sparseMappingDependencies),

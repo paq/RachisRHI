@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Common/InPlaceBindingRetention.h"
 #include "Rachis/Error.h"
 #include "Rachis/Resource.h"
 
@@ -57,5 +58,13 @@ namespace rachis::d3d12
 
     [[nodiscard]] Status appendResidencyLeases(std::vector<ResidencyLease>& destination,
                                                std::span<const std::shared_ptr<ResidencyRecord>> records);
+
+    using InPlaceResidencyLog = detail::InPlaceBindingRetention<std::shared_ptr<ResidencyRecord>>;
+
+    struct InPlaceResidencyReference final
+    {
+        std::shared_ptr<const InPlaceResidencyLog> log;
+        std::uint64_t sequence = 0;
+    };
 
 } // namespace rachis::d3d12

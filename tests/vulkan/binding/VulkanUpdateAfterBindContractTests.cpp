@@ -20,6 +20,7 @@
 #include <fstream>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -30,6 +31,7 @@ namespace
     constexpr std::uint32_t inputCount = 100'000;
     constexpr std::uint64_t sliceSize = 256;
     constexpr std::array<std::uint32_t, 4> sliceValues{100, 200, 300, 400};
+    constexpr std::array<std::uint32_t, 1> replacementValues{500};
     constexpr std::uint64_t resultRangeSize = 256;
     constexpr std::uint64_t resultBufferSize = 2 * resultRangeSize;
 
@@ -160,11 +162,11 @@ namespace
             static_cast<void>(device_.waitIdle());
             static_cast<void>(device_.destroyPipeline(pipeline_));
             static_cast<void>(device_.destroyPipelineLayout(pipelineLayout_));
-            static_cast<void>(device_.destroyBindingSet(set_));
+            destroySet();
             static_cast<void>(device_.destroyBindingPool(pool_));
             static_cast<void>(device_.destroyBindingLayout(layout_));
             static_cast<void>(device_.destroyShaderModule(shader_));
-            static_cast<void>(device_.destroyBuffer(values_));
+            destroyValues();
             static_cast<void>(device_.destroyBuffer(results_));
             static_cast<void>(device_.destroyBuffer(readback_));
         }
@@ -189,12 +191,76 @@ namespace
             return results_;
         }
 
+        void destroySet()
+        {
+            if (set_.isValid())
+            {
+                REQUIRE(device_.destroyBindingSet(std::exchange(set_, {})).has_value());
+            }
+        }
+
+        void destroyValues()
+        {
+            if (values_.isValid())
+            {
+                REQUIRE(device_.destroyBuffer(std::exchange(values_, {})).has_value());
+            }
+        }
+
+        [[nodiscard]] rachis::BufferHandle createValueBuffer(std::span<const std::uint32_t> values,
+                                                             std::string_view label)
+        {
+            const auto size = values.size() * sliceSize;
+            auto buffer = device_.createBuffer({
+                .size = size,
+                .usage = rachis::BufferUsage::storage | rachis::BufferUsage::copyDestination,
+                .label = label,
+            });
+            auto staging = device_.createBuffer({
+                .size = size,
+                .usage = rachis::BufferUsage::copySource,
+                .memoryType = rachis::MemoryType::upload,
+                .label = "Vulkan large array value staging",
+            });
+            REQUIRE(buffer.has_value());
+            REQUIRE(staging.has_value());
+            for (std::size_t index = 0; index < values.size(); ++index)
+            {
+                REQUIRE(device_.writeBuffer(*staging, index * sliceSize, std::as_bytes(values.subspan(index, 1)))
+                            .has_value());
+            }
+            auto command = rachis::test::acquireCommandBuffer(device_, rachis::QueueType::compute);
+            REQUIRE(command.has_value());
+            REQUIRE(device_.copyBuffer(*command, {*staging, 0, *buffer, 0, size}).has_value());
+            REQUIRE(device_
+                        .bufferBarrier(*command,
+                                       {
+                                           .buffer = *buffer,
+                                           .stagesBefore = rachis::PipelineStage::copy,
+                                           .stagesAfter = rachis::PipelineStage::computeShader,
+                                           .accessBefore = rachis::Access::copyDestination,
+                                           .accessAfter = rachis::Access::shaderResource,
+                                       })
+                        .has_value());
+            auto submitted = device_.submit(std::move(*command));
+            REQUIRE(submitted.has_value());
+            REQUIRE(device_.wait(*submitted).has_value());
+            REQUIRE(device_.destroyBuffer(*staging).has_value());
+            return *buffer;
+        }
+
         [[nodiscard]] rachis::CommandBuffer record(std::span<const Selection> selections)
         {
             auto command = rachis::test::acquireCommandBuffer(device_, rachis::QueueType::compute);
             REQUIRE(command.has_value());
+            recordInto(*command, selections);
+            return std::move(*command);
+        }
+
+        void recordInto(rachis::CommandBuffer& command, std::span<const Selection> selections)
+        {
             REQUIRE(device_
-                        .bufferBarrier(*command,
+                        .bufferBarrier(command,
                                        {
                                            .buffer = results_,
                                            .stagesBefore = rachis::PipelineStage::all,
@@ -203,14 +269,14 @@ namespace
                                            .accessAfter = rachis::Access::unorderedAccess,
                                        })
                         .has_value());
-            REQUIRE(device_.bindComputePipeline(*command, pipeline_).has_value());
-            REQUIRE(device_.bindComputeBindingSet(*command, 0, set_).has_value());
+            REQUIRE(device_.bindComputePipeline(command, pipeline_).has_value());
+            REQUIRE(device_.bindComputeBindingSet(command, 0, set_).has_value());
             for (std::size_t index = 0; index < selections.size(); ++index)
             {
                 if (index != 0)
                 {
                     REQUIRE(device_
-                                .bufferBarrier(*command,
+                                .bufferBarrier(command,
                                                {
                                                    .buffer = results_,
                                                    .stagesBefore = rachis::PipelineStage::computeShader,
@@ -220,11 +286,10 @@ namespace
                                                })
                                 .has_value());
                 }
-                REQUIRE(device_.setComputePushConstants(*command, 0, std::as_bytes(std::span(&selections[index], 1)))
+                REQUIRE(device_.setComputePushConstants(command, 0, std::as_bytes(std::span(&selections[index], 1)))
                             .has_value());
-                REQUIRE(device_.dispatch(*command, 1).has_value());
+                REQUIRE(device_.dispatch(command, 1).has_value());
             }
-            return std::move(*command);
         }
 
         void recordReadback(rachis::CommandBuffer& command)
@@ -255,17 +320,6 @@ namespace
     private:
         void createBuffers()
         {
-            auto values = device_.createBuffer({
-                .size = sliceValues.size() * sliceSize,
-                .usage = rachis::BufferUsage::storage | rachis::BufferUsage::copyDestination,
-                .label = "Vulkan large array values",
-            });
-            auto staging = device_.createBuffer({
-                .size = sliceValues.size() * sliceSize,
-                .usage = rachis::BufferUsage::copySource,
-                .memoryType = rachis::MemoryType::upload,
-                .label = "Vulkan large array value staging",
-            });
             auto results = device_.createBuffer({
                 .size = resultBufferSize,
                 .usage = rachis::BufferUsage::storage | rachis::BufferUsage::copySource,
@@ -277,38 +331,11 @@ namespace
                 .memoryType = rachis::MemoryType::readback,
                 .label = "Vulkan large array readback",
             });
-            REQUIRE(values.has_value());
-            REQUIRE(staging.has_value());
             REQUIRE(results.has_value());
             REQUIRE(readback.has_value());
-            values_ = *values;
             results_ = *results;
             readback_ = *readback;
-
-            for (std::size_t index = 0; index < sliceValues.size(); ++index)
-            {
-                REQUIRE(
-                    device_.writeBuffer(*staging, index * sliceSize, std::as_bytes(std::span(&sliceValues[index], 1)))
-                        .has_value());
-            }
-            auto command = rachis::test::acquireCommandBuffer(device_, rachis::QueueType::compute);
-            REQUIRE(command.has_value());
-            REQUIRE(
-                device_.copyBuffer(*command, {*staging, 0, values_, 0, sliceValues.size() * sliceSize}).has_value());
-            REQUIRE(device_
-                        .bufferBarrier(*command,
-                                       {
-                                           .buffer = values_,
-                                           .stagesBefore = rachis::PipelineStage::copy,
-                                           .stagesAfter = rachis::PipelineStage::computeShader,
-                                           .accessBefore = rachis::Access::copyDestination,
-                                           .accessAfter = rachis::Access::shaderResource,
-                                       })
-                        .has_value());
-            auto submitted = device_.submit(std::move(*command));
-            REQUIRE(submitted.has_value());
-            REQUIRE(device_.wait(*submitted).has_value());
-            REQUIRE(device_.destroyBuffer(*staging).has_value());
+            values_ = createValueBuffer(sliceValues, "Vulkan large array values");
         }
 
         rachis::Device& device_;
@@ -339,6 +366,19 @@ namespace
         CHECK(diagnostics.warnings == 0);
         CHECK(diagnostics.errors == 0);
         CHECK(diagnostics.corruptions == 0);
+    }
+
+    [[nodiscard]] std::uint64_t allocationCount(const rachis::Device& device)
+    {
+        const auto budgets = device.queryMemoryBudgets();
+        REQUIRE(budgets.has_value());
+        std::uint64_t count = 0;
+        for (const auto& budget : *budgets)
+        {
+            REQUIRE(rachis::hasAny(budget.features, rachis::MemoryBudgetFeature::allocationStatistics));
+            count += budget.allocationCount;
+        }
+        return count;
     }
 
 } // namespace
@@ -463,6 +503,93 @@ TEST_CASE("Vulkan update-after-bind entries of a large array change in place whi
     CHECK(fixture.result(resultRangeSize) == sliceValues[3]);
     CHECK(fixture.result(resultRangeSize + sizeof(std::uint32_t)) == sliceValues[2]);
 
+    checkCleanDiagnostics(device);
+}
+
+TEST_CASE("Vulkan update-after-bind elements written in place stay alive for work that bound the set before the "
+          "update",
+          "[size:medium][requires:HardwareVulkan][rhi][vulkan][binding][compute]")
+{
+    auto created = rachis::createDevice(rachis::test::vulkanDeviceDesc());
+    if (rachis::test::skipWithoutCreatedDevice(created))
+    {
+        return;
+    }
+    auto device = std::move(*created);
+#ifdef _WIN32
+    REQUIRE(rachis::test::requireCapabilities(device).updateAfterBindBindingArrays);
+#else
+    if (!rachis::test::requireCapabilities(device).updateAfterBindBindingArrays)
+    {
+        SKIP("The Vulkan device lacks the update-after-bind descriptor-indexing features.");
+    }
+#endif
+    LargeArrayFixture fixture(device, rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind);
+    const auto replacement = fixture.createValueBuffer(replacementValues, "Vulkan update-after-bind replacement");
+
+    const std::array selections{Selection{.element = 1, .slot = 1}};
+    auto command = fixture.record(selections);
+    fixture.recordReadback(command);
+
+    const auto beforeInPlace = device.bindingUpdateStatistics();
+    REQUIRE(update(device, fixture.set(), 1, 1, slice(replacement, 0)).has_value());
+    CHECK(resourceDelta(beforeInPlace, device.bindingUpdateStatistics()).published == 1);
+
+    auto submitted = device.submit(std::move(command));
+    REQUIRE(submitted.has_value());
+    const auto live = allocationCount(device);
+    fixture.destroySet();
+    fixture.destroyValues();
+    REQUIRE(device.destroyBuffer(replacement).has_value());
+    CHECK(allocationCount(device) == live);
+
+    REQUIRE(device.wait(*submitted).has_value());
+    CHECK(allocationCount(device) == live - 2);
+    CHECK(fixture.result(sizeof(std::uint32_t)) == replacementValues[0]);
+
+    checkCleanDiagnostics(device);
+}
+
+TEST_CASE("Vulkan unretained command pools do not keep update-after-bind elements written in place alive",
+          "[size:medium][requires:HardwareVulkan][rhi][vulkan][binding][compute]")
+{
+    auto created = rachis::createDevice(rachis::test::vulkanDeviceDesc());
+    if (rachis::test::skipWithoutCreatedDevice(created))
+    {
+        return;
+    }
+    auto device = std::move(*created);
+#ifdef _WIN32
+    REQUIRE(rachis::test::requireCapabilities(device).updateAfterBindBindingArrays);
+#else
+    if (!rachis::test::requireCapabilities(device).updateAfterBindBindingArrays)
+    {
+        SKIP("The Vulkan device lacks the update-after-bind descriptor-indexing features.");
+    }
+#endif
+    LargeArrayFixture fixture(device, rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind);
+    const auto replacement = fixture.createValueBuffer(replacementValues, "Vulkan update-after-bind replacement");
+    auto pool = device.createCommandPool({
+        .queueType = rachis::QueueType::compute,
+        .maxCommandBuffers = 1,
+        .label = "Vulkan unretained update-after-bind pool",
+        .flags = rachis::CommandPoolFlag::unretainedResources,
+    });
+    REQUIRE(pool.has_value());
+
+    {
+        auto command = device.acquireCommandBuffer(*pool);
+        REQUIRE(command.has_value());
+        const std::array selections{Selection{.element = 1, .slot = 1}};
+        fixture.recordInto(*command, selections);
+        REQUIRE(update(device, fixture.set(), 1, 1, slice(replacement, 0)).has_value());
+        const auto live = allocationCount(device);
+        fixture.destroySet();
+        REQUIRE(device.destroyBuffer(replacement).has_value());
+        CHECK(allocationCount(device) == live - 1);
+    }
+
+    REQUIRE(device.destroyCommandPool(*pool).has_value());
     checkCleanDiagnostics(device);
 }
 #endif

@@ -18,7 +18,7 @@ The RachisRHI test suite is organized by test scope (`core`, `portable`, backend
 
 | Folder | Under test | Hardware / environment needed |
 | --- | --- | --- |
-| `core/` | Backend-independent code: `Device` front end, handle tables, and `RachisShaderBinaryTool` | None |
+| `core/` | Backend-independent code: `Device` front end, handle tables, update-after-bind binding retention, and `RachisShaderBinaryTool` | None |
 | `portable/` | Contracts executed identically across all enabled backends | Device for each enabled backend |
 | `d3d12/` | Direct3D 12 backend via public C++ API | WARP (or physical GPU where tagged) |
 | `vulkan/` | Vulkan backend via public C++ API | Hardware Vulkan 1.3 driver |

@@ -2495,6 +2495,7 @@ if(rachis_build_tests)
         tests/core/FrontendDefaultsAndInternalsContractTests.cpp
         tests/core/FrontendValidationContractTests.cpp
         tests/core/HandleTableTests.cpp
+        tests/core/InPlaceBindingRetentionTests.cpp
         tests/core/PipelineLayoutDerivationTests.cpp
         tests/core/RayTracingShaderTableLayoutTests.cpp
         tests/core/ShaderBinaryToolContractTests.cpp
@@ -2906,6 +2907,7 @@ if(rachis_build_tests)
             tests/core/FrontendDefaultsAndInternalsContractTests.cpp
             tests/core/FrontendValidationContractTests.cpp
             tests/core/HandleTableTests.cpp
+            tests/core/InPlaceBindingRetentionTests.cpp
             tests/core/PipelineLayoutDerivationTests.cpp
             tests/core/RayTracingShaderTableLayoutTests.cpp
             tests/core/ShaderBinaryToolContractTests.cpp
@@ -3041,6 +3043,7 @@ if(rachis_build_tests)
             tests/core/FrontendDefaultsAndInternalsContractTests.cpp
             tests/core/FrontendValidationContractTests.cpp
             tests/core/HandleTableTests.cpp
+            tests/core/InPlaceBindingRetentionTests.cpp
             tests/core/PipelineLayoutDerivationTests.cpp
             tests/core/RayTracingShaderTableLayoutTests.cpp
             tests/core/ShaderBinaryToolContractTests.cpp
