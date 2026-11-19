@@ -1,4 +1,4 @@
-foreach(required IN ITEMS BUILD_DIR CONFIG TARGET SHADERS INCLUDE BACKENDS)
+foreach(required IN ITEMS BUILD_DIR CONFIG TARGET SHADERS INCLUDE REFLECT_INCLUDE BACKENDS)
     if(NOT DEFINED ${required} OR "${${required}}" STREQUAL "")
         message(FATAL_ERROR "${required} is required.")
     endif()
@@ -49,6 +49,30 @@ string(REGEX REPLACE "FILL_VALUE [0-9]+u" "FILL_VALUE ${next_value}u" include_te
 file(WRITE "${INCLUDE}" "${include_text}")
 file(SHA256 "${INCLUDE}" include_hash)
 
+file(READ "${REFLECT_INCLUDE}" reflect_text)
+if(NOT reflect_text MATCHES "REFLECT_REGISTER u([0-9]+)")
+    message(FATAL_ERROR "${REFLECT_INCLUDE} defines no REFLECT_REGISTER.")
+endif()
+set(reflected_before "${CMAKE_MATCH_1}")
+math(EXPR reflected_after "${reflected_before} + 1")
+string(REGEX REPLACE "REFLECT_REGISTER u[0-9]+" "REFLECT_REGISTER u${reflected_after}" reflect_text "${reflect_text}")
+file(WRITE "${REFLECT_INCLUDE}" "${reflect_text}")
+
+function(rachis_count_reflected_bindings output binding)
+    file(READ "${SHADERS}/ReflectShader.interface.h" interface_text)
+    string(REGEX MATCHALL "[{][.]set = 0, [.]binding = ${binding}, [.]type = rachis::ShaderResourceType::storageBuffer,"
+        matches "${interface_text}")
+    list(LENGTH matches count)
+    set(${output} ${count} PARENT_SCOPE)
+endfunction()
+list(LENGTH backends backend_count)
+rachis_count_reflected_bindings(old_binding_count ${reflected_before})
+if(NOT old_binding_count EQUAL backend_count)
+    message(FATAL_ERROR
+        "ReflectShader.interface.h reflects binding ${reflected_before} for ${old_binding_count} of ${backend_count} "
+        "backends before the change.")
+endif()
+
 execute_process(
     COMMAND "${CMAKE_COMMAND}" --build "${BUILD_DIR}" --config "${CONFIG}" --target "${TARGET}"
     RESULT_VARIABLE status)
@@ -56,6 +80,8 @@ if(NOT status EQUAL 0)
     message(FATAL_ERROR "Rebuilding ${TARGET} after changing ${INCLUDE} failed (${status}).")
 endif()
 rachis_hash_binaries(after)
+rachis_count_reflected_bindings(stale_binding_count ${reflected_before})
+rachis_count_reflected_bindings(new_binding_count ${reflected_after})
 
 set(failures)
 list(LENGTH binaries binary_count)
@@ -77,6 +103,12 @@ foreach(key IN LISTS keys)
         list(APPEND failures "${key} does not record the macOS SDK version")
     endif()
 endforeach()
+
+if(NOT stale_binding_count EQUAL 0 OR NOT new_binding_count EQUAL backend_count)
+    list(APPEND failures
+        "ReflectShader.interface.h does not reflect binding ${reflected_after} on every backend after "
+        "REFLECT_REGISTER in the included file changed (stale: ${stale_binding_count}, new: ${new_binding_count})")
+endif()
 
 if(failures)
     list(JOIN failures "\n  " failures)

@@ -31,6 +31,13 @@ rachis_add_shader(RachisShaderIncludes
     SOURCE "${PROJECT_SOURCE_DIR}/shaders/DrawIndex.hlsl"
     ENTRY drawIndexMain
     STAGE vertex)
+# The register of this shader's buffer comes from a nested header, so changing it must reflect the shader again.
+rachis_add_shader(RachisShaderIncludes
+    NAME ReflectShader
+    SOURCE "${PROJECT_SOURCE_DIR}/shaders/Reflect.hlsl"
+    ENTRY reflectMain
+    STAGE compute
+    REFLECT)
 
 add_test(NAME RachisShaderIncludes
     COMMAND "${CMAKE_COMMAND}"
@@ -39,5 +46,6 @@ add_test(NAME RachisShaderIncludes
         "-DTARGET=RachisShaderIncludes"
         "-DSHADERS=${CMAKE_CURRENT_BINARY_DIR}/rachis_shaders/RachisShaderIncludes"
         "-DINCLUDE=${PROJECT_SOURCE_DIR}/shaders/fill values/FillValue.hlsli"
+        "-DREFLECT_INCLUDE=${PROJECT_SOURCE_DIR}/shaders/fill values/ReflectBinding.hlsli"
         "-DBACKENDS=${rachis_shader_includes_backends}"
         -P "${PROJECT_SOURCE_DIR}/CheckIncludes.cmake")

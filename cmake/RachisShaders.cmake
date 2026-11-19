@@ -90,7 +90,8 @@ function(_rachis_shaders_embed target name backend binary symbol out_header)
     set("${out_header}" "${header}" PARENT_SCOPE)
 endfunction()
 
-# Runs slangc -reflection-json on one backend's compilation of the source; no code is generated.
+# Runs slangc -reflection-json on one backend's compilation of the source; no code is generated. The
+# depfile lists every file slangc read, so editing an included file reflects the shader again.
 function(_rachis_shaders_reflect target name backend slang_target source entry stage profile stem defines includes
     out_json)
     set(json "${stem}.${backend}.reflection.json")
@@ -118,6 +119,11 @@ function(_rachis_shaders_reflect target name backend slang_target source entry s
         OUTPUT "${json}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${directory}"
         COMMAND
+            "${CMAKE_COMMAND}"
+            "-DTARGET=${json}"
+            "-DDEPFILE=${json}.d"
+            -P "${RACHIS_SHADER_REFLECTION_SCRIPT}"
+            --
             "${RACHIS_SLANGC_EXECUTABLE}"
             "${source}"
             ${target_args}
@@ -132,7 +138,8 @@ function(_rachis_shaders_reflect target name backend slang_target source entry s
             -entry "${entry}"
             -stage "${stage}"
             -reflection-json "${json}"
-        DEPENDS "${source}"
+        DEPENDS "${source}" "${RACHIS_SHADER_REFLECTION_SCRIPT}"
+        DEPFILE "${json}.d"
         COMMENT "Reflecting the ${backend} interface of ${name} for ${target}"
         VERBATIM
     )

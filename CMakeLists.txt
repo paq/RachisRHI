@@ -3412,6 +3412,7 @@ install(FILES
     cmake/RachisShaderBinaryTools.cmake
     cmake/WriteShaderArtifactKey.cmake
     cmake/WriteShaderDepfile.cmake
+    cmake/WriteShaderReflection.cmake
     DESTINATION "${rachis_package_cmake_dir}")
 endif()
 
