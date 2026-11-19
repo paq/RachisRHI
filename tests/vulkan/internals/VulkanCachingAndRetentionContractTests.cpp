@@ -225,6 +225,7 @@ namespace
         std::atomic<std::uint32_t> createdPipelines{0};
         std::atomic<std::uint32_t> destroyedPipelines{0};
         std::atomic<std::uint32_t> createdDescPools{0};
+        VkResult updateAfterBindDescPoolResult = VK_SUCCESS;
         std::atomic<std::uint32_t> destroyedDescPools{0};
         std::atomic<std::uint32_t> boundPipelines{0};
         std::atomic<std::uint32_t> boundDescriptorSetCalls{0};
@@ -855,10 +856,15 @@ namespace
     }
 
     VKAPI_ATTR VkResult VKAPI_CALL perfCreateDescPool(VkDevice,
-                                                      const VkDescriptorPoolCreateInfo*,
+                                                      const VkDescriptorPoolCreateInfo* info,
                                                       const VkAllocationCallbacks*,
                                                       VkDescriptorPool* out)
     {
+        if ((info->flags & VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT) != 0 &&
+            gPerfMock->updateAfterBindDescPoolResult != VK_SUCCESS)
+        {
+            return gPerfMock->updateAfterBindDescPoolResult;
+        }
         gPerfMock->createdDescPools.fetch_add(1, std::memory_order_relaxed);
         const std::scoped_lock lock(gPerfMock->mutex);
         *out = fakeVk<VkDescriptorPool>(gPerfMock->nextHandle++);
@@ -2361,6 +2367,71 @@ TEST_CASE("VulkanBindingManager reuses an idle set's version capacity and needs 
     pipelines.shutdown();
     bindings.shutdown();
     shaders.shutdown();
+    resources.shutdown();
+}
+
+TEST_CASE("VulkanBindingManager reports a fragmented update-after-bind pool budget as resource exhaustion",
+          "[size:small][rhi][vulkan][binding]")
+{
+    ScopedPerfMock mock;
+    rachis::vulkan::VulkanInstanceTable instanceTable{};
+    VolkDeviceTable table{};
+    populatePerfTables(instanceTable, table);
+
+    const auto instance = fakeVk<VkInstance>(0x340);
+    const auto physical = fakeVk<VkPhysicalDevice>(0x341);
+    const auto device = fakeVk<VkDevice>(0x342);
+    const rachis::vulkan::VulkanQueueFamilies families{.graphics = 0, .compute = 0, .transfer = 0};
+    VkPhysicalDeviceMemoryProperties memProps{};
+    perfGetPhysicalMemProps(physical, &memProps);
+    rachis::vulkan::VulkanResourceAllocator resources;
+    REQUIRE(resources
+                .initialize(instance,
+                            &instanceTable,
+                            physical,
+                            device,
+                            &table,
+                            memProps,
+                            families,
+                            fakeVk<VkQueue>(0x343),
+                            64,
+                            false)
+                .has_value());
+
+    auto caps = baselinePerfCapabilities();
+    caps.partiallyBoundBindingArrays = true;
+    caps.updateAfterBindBindingArrays = true;
+    rachis::vulkan::VulkanBindingManager bindings;
+    bindings.initialize(device, &table, caps, &instanceTable);
+    const std::array entries{
+        rachis::BindingLayoutEntry{
+            .binding = 0,
+            .type = rachis::BindingType::storageBuffer,
+            .visibility = rachis::ShaderStage::compute,
+            .count = 4,
+            .flags = rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind,
+        },
+    };
+    const auto layout = bindings.createBindingLayout({.entries = entries});
+    REQUIRE(layout.has_value());
+    const std::array sizes{rachis::BindingPoolSize{rachis::BindingType::storageBuffer, 4}};
+    const auto pool = bindings.createBindingPool({.maxBindingSets = 1, .sizes = sizes});
+    REQUIRE(pool.has_value());
+
+    mock.state.updateAfterBindDescPoolResult = VK_ERROR_FRAGMENTATION;
+    const auto rejected = bindings.createBindingSet(resources, {.layout = *layout, .pool = *pool});
+    REQUIRE_FALSE(rejected.has_value());
+    CHECK(rejected.error().code == rachis::ErrorCode::resourceExhausted);
+    CHECK(rejected.error().nativeCode == static_cast<std::int64_t>(VK_ERROR_FRAGMENTATION));
+    CHECK(rejected.error().message.find("VK_ERROR_FRAGMENTATION") != std::string::npos);
+
+    mock.state.updateAfterBindDescPoolResult = VK_SUCCESS;
+    const auto created = bindings.createBindingSet(resources, {.layout = *layout, .pool = *pool});
+    REQUIRE(created.has_value());
+    REQUIRE(bindings.destroyBindingSet(*created).has_value());
+    REQUIRE(bindings.destroyBindingPool(*pool).has_value());
+    REQUIRE(bindings.destroyBindingLayout(*layout).has_value());
+    bindings.shutdown();
     resources.shutdown();
 }
 

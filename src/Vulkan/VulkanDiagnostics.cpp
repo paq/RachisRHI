@@ -146,6 +146,8 @@ namespace rachis::vulkan
             return "VK_ERROR_FRAGMENTED_POOL";
         case VK_ERROR_OUT_OF_POOL_MEMORY:
             return "VK_ERROR_OUT_OF_POOL_MEMORY";
+        case VK_ERROR_FRAGMENTATION:
+            return "VK_ERROR_FRAGMENTATION";
         case VK_ERROR_UNKNOWN:
             return "VK_ERROR_UNKNOWN";
         case VK_ERROR_VALIDATION_FAILED_EXT:
@@ -164,6 +166,7 @@ namespace rachis::vulkan
             return ErrorCode::outOfMemory;
         case VK_ERROR_OUT_OF_POOL_MEMORY:
         case VK_ERROR_FRAGMENTED_POOL:
+        case VK_ERROR_FRAGMENTATION:
             return ErrorCode::resourceExhausted;
         case VK_ERROR_DEVICE_LOST:
             return ErrorCode::deviceLost;
