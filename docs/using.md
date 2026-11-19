@@ -393,6 +393,15 @@ With `IndirectDrawDesc::drawIndexPrefix` or `IndirectMeshDispatchDesc::drawIndex
 - `drawIndexPrefix` also works with a pipeline that does not read the draw index and with a layout that does not reserve it: the draw index is skipped.
 - Direct draws and mesh dispatches (`draw`, `drawIndexed`, `dispatchMesh`) read 0, also right after an indirect call.
 
+### Per-record state
+
+Indirect calls read only draw or dispatch arguments and the draw index. They do not change the pipeline, vertex or index buffers, push constants, or bindings from one record to the next, and RachisRHI does not expose Direct3D 12 command signatures with state arguments, Vulkan device-generated commands, or Metal indirect command buffers for that. A GPU-driven renderer gets the same effect this way:
+
+- Put per-draw data (transforms, material indices, meshlet ranges) in storage buffers and read it with `rachisDrawIndex()`.
+- Reach textures and buffers through variable-count binding arrays indexed with that data ([Variable-count binding arrays](#variable-count-binding-arrays)), so every record uses the same binding sets.
+- Merge geometry into shared vertex and index buffers and select each draw's range with `firstVertex`, `firstIndex`, and `baseVertex` in its record.
+- Record one indirect call per pipeline, for example one per material type, each with its own records and count.
+
 ## Graphics pipeline limits on Metal
 
 - **Primitive restart for indexed strips:** Metal always enables index-buffer primitive restart at `0xFFFF` (`uint16`) / `0xFFFFFFFF` (`uint32`) for triangle and line strips. Any graphics pipeline using a strip topology with `drawIndexed` or `drawIndexedIndirect` must explicitly set `GraphicsPipelineDesc::stripIndexFormat` or Metal pipeline creation fails with `ErrorCode::unsupported` (non-indexed strip draws are unaffected). Both Direct3D 12 and Metal reject an index buffer whose index format disagrees with `stripIndexFormat` (`ErrorCode::invalidArgument`).
