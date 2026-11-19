@@ -440,7 +440,8 @@ namespace rachis::vulkan
         {
             return scratch.desc.usage == BufferUsage::accelerationStructureScratch && scratch.deviceAddress != 0 &&
                    offset % alignment == 0 && (scratch.deviceAddress + offset) % alignment == 0 &&
-                   validRange(scratch.desc.size, offset, buildScratchSize);
+                   (buildScratchSize != 0 ? validRange(scratch.desc.size, offset, buildScratchSize)
+                                          : offset < scratch.desc.size);
         }
 
         [[nodiscard]] Result<NativeBottomLevelGeometry> nativeTriangleGeometryRetainingBuffers(
@@ -800,20 +801,6 @@ namespace rachis::vulkan
         constexpr std::string_view inPlaceUpdateConsumerConflict =
             "An acceleration structure cannot be read while another command recording updates it in place.";
 
-        [[nodiscard]] bool validUpdateScratchRange(const VulkanResourceAllocator::ResolvedBindingBuffer& scratch,
-                                                   std::uint64_t offset,
-                                                   std::uint32_t alignment,
-                                                   std::uint64_t updateScratchSize) noexcept
-        {
-            if (updateScratchSize != 0)
-            {
-                return validBuildScratchRange(scratch, offset, alignment, updateScratchSize);
-            }
-            return scratch.desc.usage == BufferUsage::accelerationStructureScratch && scratch.deviceAddress != 0 &&
-                   offset % alignment == 0 && (scratch.deviceAddress + offset) % alignment == 0 &&
-                   offset < scratch.desc.size;
-        }
-
         struct AccelerationStructureConsumerHold final
         {
             detail::AccelerationStructureExecutionLease lease;
@@ -977,12 +964,12 @@ namespace rachis::vulkan
 
         table_->vkGetAccelerationStructureBuildSizesKHR(
             device_, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &info, primitiveCounts, &sizes);
-        if (sizes.accelerationStructureSize == 0 || sizes.buildScratchSize == 0)
+        if (sizes.accelerationStructureSize == 0)
         {
             return std::unexpected(Error{
                 ErrorCode::nativeFailure,
                 0,
-                "Vulkan returned empty acceleration-structure build sizes for otherwise valid input.",
+                "Vulkan returned an empty acceleration-structure size for otherwise valid input.",
             });
         }
         return AccelerationStructureBuildSizes{
@@ -1747,7 +1734,7 @@ namespace rachis::vulkan
         }
         if (source->type != AccelerationStructureType::topLevel ||
             destination->type != AccelerationStructureType::topLevel ||
-            !validUpdateScratchRange(*scratch, request.scratchOffset, scratchAlignment_, sizes->updateScratchSize))
+            !validBuildScratchRange(*scratch, request.scratchOffset, scratchAlignment_, sizes->updateScratchSize))
         {
             return std::unexpected(Error{
                 ErrorCode::invalidArgument,

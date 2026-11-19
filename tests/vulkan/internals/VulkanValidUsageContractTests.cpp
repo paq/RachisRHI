@@ -5328,4 +5328,69 @@ TEST_CASE("Vulkan storage clears leave a first use to submission, where earlier 
     CHECK(fixture.submit(std::move(inside)));
     CHECK(fixture.mock.clearColorImages == 3);
 }
+
+namespace
+{
+
+    VKAPI_ATTR VkResult VKAPI_CALL mockCreateAccelerationStructure(VkDevice,
+                                                                   const VkAccelerationStructureCreateInfoKHR*,
+                                                                   const VkAllocationCallbacks*,
+                                                                   VkAccelerationStructureKHR* structure)
+    {
+        *structure = fakeHandle<VkAccelerationStructureKHR>(gMock->nextHandle++);
+        return VK_SUCCESS;
+    }
+
+    VKAPI_ATTR void VKAPI_CALL mockGetZeroScratchBuildSizes(VkDevice,
+                                                            VkAccelerationStructureBuildTypeKHR,
+                                                            const VkAccelerationStructureBuildGeometryInfoKHR*,
+                                                            const std::uint32_t*,
+                                                            VkAccelerationStructureBuildSizesInfoKHR* sizes)
+    {
+        sizes->accelerationStructureSize = 4096;
+        sizes->buildScratchSize = 0;
+        sizes->updateScratchSize = 0;
+    }
+
+    VKAPI_ATTR void VKAPI_CALL
+    mockCmdBuildAccelerationStructures(VkCommandBuffer,
+                                       std::uint32_t,
+                                       const VkAccelerationStructureBuildGeometryInfoKHR*,
+                                       const VkAccelerationStructureBuildRangeInfoKHR* const*)
+    {
+    }
+
+} // namespace
+
+TEST_CASE("Vulkan acceleration-structure size queries accept a driver that needs no build scratch",
+          "[size:small][rhi][vulkan][vuid][raytracing-mock]")
+{
+    MockVulkanDispatch mock;
+    gMock = &mock;
+    auto table = makeMockDeviceTable();
+    table.vkCreateAccelerationStructureKHR = &mockCreateAccelerationStructure;
+    table.vkGetAccelerationStructureBuildSizesKHR = &mockGetZeroScratchBuildSizes;
+    table.vkCmdBuildAccelerationStructuresKHR = &mockCmdBuildAccelerationStructures;
+    const auto physical = fakeHandle<VkPhysicalDevice>(0x16);
+    const auto device = fakeHandle<VkDevice>(0x28);
+    rachis::vulkan::VulkanResourceAllocator resources;
+    resources.initializeDispatchForTesting(device, &table, nullptr, physical, {});
+    rachis::DeviceCapabilities capabilities{};
+    capabilities.rayQuery = true;
+    rachis::vulkan::VulkanAccelerationManager acceleration;
+    acceleration.initialize(device, &table, &resources, &capabilities, 256);
+
+    const auto sizes = acceleration.queryTopLevelBuildSizes({
+        .instanceCount = 1,
+        .flags = rachis::AccelerationStructureBuildFlag::allowUpdate,
+    });
+    REQUIRE(sizes.has_value());
+    CHECK(sizes->accelerationStructureSize == 4096);
+    CHECK(sizes->buildScratchSize == 0);
+    CHECK(sizes->updateScratchSize == 0);
+
+    acceleration.shutdown();
+    resources.shutdown();
+    gMock = nullptr;
+}
 #endif
