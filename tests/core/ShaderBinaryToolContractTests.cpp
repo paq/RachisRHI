@@ -2068,8 +2068,8 @@ TEST_CASE("ShaderBinaryTool requires a reflected thread-group size for Metal tas
     for (const std::string_view stage : {std::string_view{"mesh"}, std::string_view{"amplification"}})
     {
         CAPTURE(stage);
-        const auto json = R"({"parameters": [], "entryPoints": [{"name": "groupMain", "stage": ")" + std::string(stage) +
-                          R"(", "parameters": []}]})";
+        const auto json = R"({"parameters": [], "entryPoints": [{"name": "groupMain", "stage": ")" +
+                          std::string(stage) + R"(", "parameters": []}]})";
         const auto enriched = rachis::shader_tool::enrichMetalReflectionJson(json, {}, "groupMain");
         REQUIRE_FALSE(enriched.has_value());
         CHECK(enriched.error().contains("thread-group size"));
@@ -2150,8 +2150,8 @@ TEST_CASE("ShaderBinaryTool gives an unbounded array the buffer slot its reflect
     for (std::uint32_t slot = 0; slot < 30; ++slot)
     {
         source += "uint device* b" + std::to_string(slot) + "_1 [[buffer(" + std::to_string(slot) + ")]], ";
-        metalJson += R"({"name": "b)" + std::to_string(slot) +
-                     R"(", "binding": {"kind": "constantBuffer", "index": )" + std::to_string(slot) +
+        metalJson += R"({"name": "b)" + std::to_string(slot) + R"(", "binding": {"kind": "constantBuffer", "index": )" +
+                     std::to_string(slot) +
                      R"(}, "type": {"kind": "resource", "baseShape": "structuredBuffer", "access": "readWrite"}}, )";
     }
     source += "uint device*  values_1[])\n{\n    b0_1[0] = values_1[0][0];\n}\n";

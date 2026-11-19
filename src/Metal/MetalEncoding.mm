@@ -1421,8 +1421,8 @@ namespace rachis::metal
         {
             return valid;
         }
-        if (auto retainedSets =
-                metalRetainBoundBindingSets(*native, *entry, versions, retentions, entry->boundComputeVersions, firstSet);
+        if (auto retainedSets = metalRetainBoundBindingSets(
+                *native, *entry, versions, retentions, entry->boundComputeVersions, firstSet);
             !retainedSets)
         {
             return retainedSets;

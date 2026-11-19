@@ -804,8 +804,7 @@ TEST_CASE("Metal mesh pipelines dispatch directly and indirectly with and withou
     REQUIRE(device.destroyShaderModule(*pixelShader).has_value());
 }
 
-TEST_CASE("Metal task and mesh modules reject workgroups beyond the stage limits",
-          "[size:large][rhi][metal][mesh]")
+TEST_CASE("Metal task and mesh modules reject workgroups beyond the stage limits", "[size:large][rhi][metal][mesh]")
 {
     auto created = rachis::createDevice(metalDesc());
     REQUIRE(created);
@@ -1093,8 +1092,7 @@ using GridMesh = metal::mesh<GridVertex, void, 3, 1, topology::triangle>;
         ],
         "rachisBindings": [{"name": "counter", "set": 0, "binding": 0}]
     })";
-    const auto directory =
-        std::filesystem::temp_directory_path() / ("rachis-mesh-grid-" + std::to_string(::getpid()));
+    const auto directory = std::filesystem::temp_directory_path() / ("rachis-mesh-grid-" + std::to_string(::getpid()));
     std::filesystem::create_directories(directory);
     const auto sourcePath = directory / "grid.metal";
     const auto libraryPath = directory / "grid.metallib";
@@ -1103,15 +1101,16 @@ using GridMesh = metal::mesh<GridVertex, void, 3, 1, topology::triangle>;
         stream << source;
         REQUIRE(stream);
     }
-    const auto command = "xcrun -sdk macosx metal -std=metal3.1 -o \"" + libraryPath.string() + "\" \"" +
-                         sourcePath.string() + "\"";
+    const auto command =
+        "xcrun -sdk macosx metal -std=metal3.1 -o \"" + libraryPath.string() + "\" \"" + sourcePath.string() + "\"";
     REQUIRE(std::system(command.c_str()) == 0);
     const auto metallib = loadBytes(libraryPath);
     std::filesystem::remove_all(directory);
     REQUIRE_FALSE(metallib.empty());
     const auto bytecode = rachis::metal::packShaderManifest(std::as_bytes(std::span(json)), metallib);
 
-    const std::array counterBinding{rachis::ShaderBindingRequirement{0, 0, rachis::ShaderResourceType::storageBuffer, 1}};
+    const std::array counterBinding{
+        rachis::ShaderBindingRequirement{0, 0, rachis::ShaderResourceType::storageBuffer, 1}};
     auto task = device.createShaderModule({
         .stage = rachis::ShaderStage::task,
         .bytecode = bytecode,

@@ -1434,12 +1434,14 @@ namespace rachis::metal
             if (workgroupSize.has_value() && capabilities.meshShaders &&
                 (desc.stage == ShaderStage::task || desc.stage == ShaderStage::mesh))
             {
-                const auto limit = desc.stage == ShaderStage::task ? capabilities.meshShader.maxTaskWorkgroupInvocations
-                                                                   : capabilities.meshShader.maxMeshWorkgroupInvocations;
+                const auto limit = desc.stage == ShaderStage::task
+                                       ? capabilities.meshShader.maxTaskWorkgroupInvocations
+                                       : capabilities.meshShader.maxMeshWorkgroupInvocations;
                 if (!metalWorkgroupFits(*workgroupSize, limit))
                 {
-                    return std::unexpected(metalSelectionError(
-                        ErrorCode::unsupported, "The shader-interface workgroup size exceeds the device's stage limits."));
+                    return std::unexpected(
+                        metalSelectionError(ErrorCode::unsupported,
+                                            "The shader-interface workgroup size exceeds the device's stage limits."));
                 }
             }
             return {};

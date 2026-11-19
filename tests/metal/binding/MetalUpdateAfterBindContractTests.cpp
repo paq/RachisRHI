@@ -922,7 +922,8 @@ TEST_CASE("Metal binding-set binds that fail keep none of the set's resources al
         },
         elementWrite(0, element),
     };
-    auto set = rachis::test::createBindingSet(device, {.layout = *layout, .writes = writes, .variableDescriptorCount = 1});
+    auto set =
+        rachis::test::createBindingSet(device, {.layout = *layout, .writes = writes, .variableDescriptorCount = 1});
     REQUIRE(set.has_value());
 
     auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
@@ -976,8 +977,8 @@ TEST_CASE("Metal update-after-bind writes grow the replaced elements of a record
         },
         elementWrite(0, values[0]),
     };
-    auto set = rachis::test::createBindingSet(
-        device, {.layout = *layout, .writes = writes, .variableDescriptorCount = 1});
+    auto set =
+        rachis::test::createBindingSet(device, {.layout = *layout, .writes = writes, .variableDescriptorCount = 1});
     REQUIRE(set.has_value());
 
     auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);

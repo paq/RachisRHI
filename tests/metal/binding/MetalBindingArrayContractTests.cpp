@@ -772,8 +772,7 @@ TEST_CASE("Metal command buffers bind more distinct binding arrays than a comman
     REQUIRE(device.destroyShaderModule(*shader).has_value());
 }
 
-TEST_CASE("Metal submissions keep folded binding arrays locked until they commit",
-          "[size:large][rhi][metal][binding]")
+TEST_CASE("Metal submissions keep folded binding arrays locked until they commit", "[size:large][rhi][metal][binding]")
 {
     auto created = rachis::createDevice(metalDesc());
     REQUIRE(created);
@@ -1009,10 +1008,11 @@ TEST_CASE("Metal validates bound binding arrays of draws that an empty scissor s
                                      .maxDepth = 1.0F,
                                  })
                     .has_value());
-        const rachis::ScissorRect scissor = emptyScissor ? rachis::ScissorRect{.x = static_cast<std::int32_t>(targetSize),
-                                                                               .width = targetSize,
-                                                                               .height = targetSize}
-                                                         : rachis::ScissorRect{.width = targetSize, .height = targetSize};
+        const rachis::ScissorRect scissor = emptyScissor
+                                                ? rachis::ScissorRect{.x = static_cast<std::int32_t>(targetSize),
+                                                                      .width = targetSize,
+                                                                      .height = targetSize}
+                                                : rachis::ScissorRect{.width = targetSize, .height = targetSize};
         REQUIRE(device.setScissor(*command, scissor).has_value());
         auto drawn = indirect ? device.drawIndirect(*command, {.argumentBuffer = argumentBuffer, .maxDrawCount = 1})
                               : device.draw(*command, 3);

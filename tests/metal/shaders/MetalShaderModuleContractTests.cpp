@@ -585,9 +585,8 @@ TEST_CASE("Metal reflection checks argument-buffer annotations against the refle
     CHECK(accepted->resources.front().argumentBuffer);
 
     const std::array rejected{
-        reflection(R"({"kind": "constantBuffer", "elementType": {"kind": "struct", "fields": []}})",
-                   "1",
-                   "storageBuffer"),
+        reflection(
+            R"({"kind": "constantBuffer", "elementType": {"kind": "struct", "fields": []}})", "1", "storageBuffer"),
         reflection(
             R"({"kind": "array", "elementCount": 4, "elementType": {"kind": "resource", "baseShape": "structuredBuffer"}})",
             "1",
@@ -646,7 +645,8 @@ TEST_CASE("Metal reflection reads argument-buffer arrays declared as entry-point
     const auto parsed = rachis::metal::parseSlangReflectionJson(json, "main", rachis::ShaderStage::compute);
     REQUIRE(parsed.has_value());
     REQUIRE(parsed->resources.size() == 2);
-    const auto array = std::ranges::find(parsed->resources, std::string("tex"), &rachis::metal::MetalReflectedResource::name);
+    const auto array =
+        std::ranges::find(parsed->resources, std::string("tex"), &rachis::metal::MetalReflectedResource::name);
     REQUIRE(array != parsed->resources.end());
     CHECK(array->argumentBuffer);
     CHECK(array->metalIndex == 1);
@@ -654,7 +654,8 @@ TEST_CASE("Metal reflection reads argument-buffer arrays declared as entry-point
 
     const std::array requirements{
         rachis::ShaderBindingRequirement{0, 0, rachis::ShaderResourceType::storageBuffer, 1},
-        rachis::ShaderBindingRequirement{1, 0, rachis::ShaderResourceType::sampledTexture, rachis::unboundedBindingCount},
+        rachis::ShaderBindingRequirement{
+            1, 0, rachis::ShaderResourceType::sampledTexture, rachis::unboundedBindingCount},
     };
     CHECK(rachis::metal::validateShaderInterface(
         *parsed, {.bindings = requirements, .workgroupSize = rachis::ShaderWorkgroupSize{1, 1, 1}}));
