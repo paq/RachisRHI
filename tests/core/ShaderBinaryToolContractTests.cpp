@@ -776,6 +776,66 @@ TEST_CASE("RachisShaderBinaryTool reflect-interface rejects a draw-index read th
     CHECK(readTextFile(header).contains("inline constexpr bool drawIndex = false;"));
 }
 
+TEST_CASE("RachisShaderBinaryTool reflect-interface rejects a draw-index read a Metal shader proves in a pixel shader",
+          "[size:small][rhi][shader][tooling][draw-index]")
+{
+    ScopedTempDirectory const temp;
+    const auto metalJson = [](std::string_view used) {
+        return R"({"parameters": [{"name": "RachisDrawIndex", "binding": {"kind": "constantBuffer", "space": 5, "index": 0},
+                   "type": {"kind": "constantBuffer", "elementType": {"kind": "struct", "fields": [
+                       {"name": "value", "type": {"kind": "scalar", "scalarType": "uint32"},
+                        "binding": {"kind": "uniform", "offset": 0, "size": 4}}]}}}],
+                   "entryPoints": [{"name": "main", "stage": "fragment", "bindings": [
+                       {"name": "RachisDrawIndex", "binding": {"kind": "constantBuffer", "space": 5, "index": 0, "used": )" +
+               std::string(used) + R"(}}]}],
+                   "rachisBindings": [{"name": "RachisDrawIndex", "drawIndex": true}]})";
+    };
+    const auto header = temp.path / "MetalPixelProbe.interface.h";
+    const auto run = [&](std::string_view used) {
+        const auto json = metalJson(used);
+        const auto reflection = temp.path / "metal.json";
+        writeBinaryFile(reflection, asBytes(json));
+        constexpr std::array<std::byte, 4> metallib{std::byte{'M'}, std::byte{'T'}, std::byte{'L'}, std::byte{'B'}};
+        std::vector<std::byte> pnms{std::byte{'P'}, std::byte{'N'}, std::byte{'M'}, std::byte{'S'}};
+        const auto appendU32 = [&](std::uint32_t value) {
+            for (std::uint32_t shift = 0; shift < 32; shift += 8)
+            {
+                pnms.push_back(static_cast<std::byte>((value >> shift) & 0xFFU));
+            }
+        };
+        appendU32(1);
+        appendU32(static_cast<std::uint32_t>(json.size()));
+        appendU32(static_cast<std::uint32_t>(metallib.size()));
+        const auto jsonBytes = asBytes(json);
+        pnms.insert(pnms.end(), jsonBytes.begin(), jsonBytes.end());
+        pnms.insert(pnms.end(), metallib.begin(), metallib.end());
+        const auto bytecode = temp.path / "pixel.pnms";
+        writeBinaryFile(bytecode, pnms);
+        return runShaderBinaryTool(temp.path,
+                                   {"reflect-interface",
+                                    "--name",
+                                    "MetalPixelProbe",
+                                    "--stage",
+                                    "pixel",
+                                    "--entry",
+                                    "main",
+                                    "--output",
+                                    header.string(),
+                                    "--reflection",
+                                    "metal=" + reflection.string(),
+                                    "--bytecode",
+                                    "metal=" + bytecode.string()});
+    };
+    const auto reads = run("1");
+    CHECK(reads.status != 0);
+    CHECK(reads.stderrText.contains("the pixel entry point 'main' reads the draw index"));
+
+    const auto plain = run("0");
+    INFO("stderr=" << plain.stderrText);
+    REQUIRE(plain.status == 0);
+    CHECK(readTextFile(header).contains("inline constexpr bool drawIndex = false;"));
+}
+
 TEST_CASE("RachisShaderBinaryTool CLI validates flags and writes binary artifacts",
           "[size:small][rhi][shader][tooling]")
 {
