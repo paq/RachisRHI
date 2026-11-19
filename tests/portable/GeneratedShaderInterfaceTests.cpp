@@ -776,7 +776,7 @@ TEST_CASE("rachis_add_shader compiles GLSL for Vulkan only", RACHIS_GENERATED_IN
 #endif
 
 TEST_CASE("rachis_add_shader interfaces declare the draw index a shader reads on every backend",
-          "[size:medium][rhi][portable][shader-interface][draw-index]")
+          RACHIS_GENERATED_INTERFACE_TAGS "[draw-index]")
 {
     namespace drawIndexPixel = rachis_shaders::reflection::GeneratedDrawIndexPixel;
     struct DrawIndexShader final
