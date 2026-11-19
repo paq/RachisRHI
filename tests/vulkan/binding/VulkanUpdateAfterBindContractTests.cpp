@@ -11,6 +11,10 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#if defined(_MSC_VER) && defined(_DEBUG)
+#include <crtdbg.h>
+#endif
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -410,6 +414,71 @@ namespace
             rachis::test::requireCapabilities(device).updateAfterBindBindingArrays, "updateAfterBindBindingArrays");
     }
 
+    class ThreadAllocatedBytes final
+    {
+    public:
+        [[nodiscard]] static constexpr bool available() noexcept
+        {
+#if defined(_MSC_VER) && defined(_DEBUG)
+            return true;
+#else
+            return false;
+#endif
+        }
+
+        template<typename Function>
+        [[nodiscard]] static std::size_t measure(Function&& function)
+        {
+#if defined(_MSC_VER) && defined(_DEBUG)
+            const auto previous = _CrtSetAllocHook(&countAllocation);
+            bytes() = 0;
+            counting() = true;
+            function();
+            counting() = false;
+            _CrtSetAllocHook(previous);
+            return bytes();
+#else
+            function();
+            return 0;
+#endif
+        }
+
+    private:
+        [[nodiscard]] static bool& counting() noexcept
+        {
+            static thread_local bool s_counting = false;
+            return s_counting;
+        }
+
+        [[nodiscard]] static std::size_t& bytes() noexcept
+        {
+            static thread_local std::size_t s_bytes = 0;
+            return s_bytes;
+        }
+
+#if defined(_MSC_VER) && defined(_DEBUG)
+        static int __cdecl countAllocation(int allocationType,
+                                           void* userData,
+                                           std::size_t size,
+                                           int blockType,
+                                           long requestNumber,
+                                           const unsigned char* fileName,
+                                           int lineNumber)
+        {
+            static_cast<void>(userData);
+            static_cast<void>(requestNumber);
+            static_cast<void>(fileName);
+            static_cast<void>(lineNumber);
+            if (blockType != _CRT_BLOCK && (allocationType == _HOOK_ALLOC || allocationType == _HOOK_REALLOC) &&
+                counting())
+            {
+                bytes() += size;
+            }
+            return 1;
+        }
+#endif
+    };
+
     [[nodiscard]] std::uint64_t allocationCount(const rachis::Device& device)
     {
         const auto budgets = device.queryMemoryBudgets();
@@ -627,6 +696,70 @@ TEST_CASE("Vulkan unretained command pools do not keep update-after-bind element
     }
 
     REQUIRE(device.destroyCommandPool(*pool).has_value());
+    checkCleanDiagnostics(device);
+}
+
+TEST_CASE("Vulkan update-after-bind writes cost the same in a four-element array and a large array",
+          "[size:medium][requires:HardwareVulkan][rhi][vulkan][binding][compute]")
+{
+    if (!ThreadAllocatedBytes::available())
+    {
+        SKIP("Counting host allocation sizes needs the MSVC debug heap.");
+    }
+    auto created = rachis::createDevice(rachis::test::vulkanDeviceDesc());
+    if (rachis::test::skipWithoutCreatedDevice(created))
+    {
+        return;
+    }
+    auto device = std::move(*created);
+    constexpr auto arrayFlags = rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind;
+    if (skipWithoutUpdateAfterBind(device) || skipWithoutLargeArray(device, arrayFlags))
+    {
+        return;
+    }
+    LargeArrayFixture fixture(device, arrayFlags);
+
+    constexpr std::uint32_t smallCount = 4;
+    const std::array smallEntries{
+        rachis::BindingLayoutEntry{0, rachis::BindingType::storageBuffer, rachis::ShaderStage::compute, 1},
+        rachis::BindingLayoutEntry{
+            1, rachis::BindingType::readOnlyStorageBuffer, rachis::ShaderStage::compute, smallCount, arrayFlags},
+    };
+    auto smallLayout = device.createBindingLayout({.entries = smallEntries});
+    REQUIRE(smallLayout.has_value());
+    const std::array smallSizes{
+        rachis::BindingPoolSize{rachis::BindingType::storageBuffer, 1},
+        rachis::BindingPoolSize{rachis::BindingType::readOnlyStorageBuffer, smallCount},
+    };
+    auto smallPool = device.createBindingPool({.maxBindingSets = 1, .sizes = smallSizes});
+    REQUIRE(smallPool.has_value());
+    const std::array smallWrites{
+        rachis::BindingWrite{0, 0, rachis::BufferBinding{fixture.results(), 0, resultRangeSize, sizeof(std::uint32_t)}},
+        rachis::BindingWrite{1, 0, slice(fixture.values(), 0)},
+    };
+    auto smallSet = device.createBindingSet({.layout = *smallLayout, .writes = smallWrites, .pool = *smallPool});
+    REQUIRE(smallSet.has_value());
+
+    const std::array selections{Selection{.element = 0, .slot = 0}};
+    auto pending = fixture.record(selections);
+    const auto updateCost = [&](rachis::BindingSetHandle set, std::uint32_t element) {
+        rachis::Status updated;
+        const auto bytes = ThreadAllocatedBytes::measure(
+            [&] { updated = update(device, set, 1, element, slice(fixture.values(), 3)); });
+        REQUIRE(updated.has_value());
+        return bytes;
+    };
+    static_cast<void>(updateCost(*smallSet, 1));
+    static_cast<void>(updateCost(fixture.set(), 1));
+    const auto smallBytes = updateCost(*smallSet, 2);
+    const auto largeBytes = updateCost(fixture.set(), 2);
+    CAPTURE(smallBytes, largeBytes);
+    CHECK(largeBytes <= smallBytes + 4096);
+
+    static_cast<void>(pending);
+    REQUIRE(device.destroyBindingSet(*smallSet).has_value());
+    REQUIRE(device.destroyBindingPool(*smallPool).has_value());
+    REQUIRE(device.destroyBindingLayout(*smallLayout).has_value());
     checkCleanDiagnostics(device);
 }
 

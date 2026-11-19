@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Common/HandleTable.h"
-#include "Common/InPlaceBindingRetention.h"
 #include "Internal/VulkanCommands.h"
 #include "Internal/VulkanResources.h"
 #include "Rachis/Binding.h"
@@ -229,9 +228,14 @@ namespace rachis::vulkan
             std::uint64_t bufferSize = 0;
         };
 
-    private:
-        using InPlaceRetention = detail::InPlaceBindingRetention<std::shared_ptr<void>>;
+        struct StagedSlot final
+        {
+            std::size_t index = 0;
+            std::size_t write = 0;
+            BindingSlot slot;
+        };
 
+    private:
         struct BindingSetVersion final
         {
             BindingSetVersion() = default;
@@ -239,14 +243,16 @@ namespace rachis::vulkan
             BindingSetVersion& operator=(const BindingSetVersion&) = delete;
             BindingSetVersion(BindingSetVersion&&) = delete;
             BindingSetVersion& operator=(BindingSetVersion&&) = delete;
+            ~BindingSetVersion();
             std::shared_ptr<BindingLayoutRecord> layout;
             std::shared_ptr<BindingPoolState> pool;
             std::shared_ptr<BindingPoolSetLease> poolSet;
-            std::vector<BindingSlot> slots;
+            std::shared_ptr<std::vector<BindingSlot>> slots;
             std::vector<VulkanDynamicBufferBinding> dynamicBuffers;
             std::uint32_t variableDescriptorCount = 0;
             std::shared_ptr<BindingPoolVersionLease> versionLease;
-            std::shared_ptr<InPlaceRetention> inPlace;
+            std::vector<BindingSlot> superseded;
+            std::shared_ptr<BindingSetVersion> next;
         };
 
         struct BindingSetRecord final
@@ -316,8 +322,12 @@ namespace rachis::vulkan
                                                        std::span<const BindingWrite> writes);
         [[nodiscard]] Status publishInPlaceUpdate(BindingSetHandle set,
                                                   const std::shared_ptr<BindingSetRecord>& current,
-                                                  std::vector<BindingSlot> slots,
+                                                  std::vector<StagedSlot> staged,
                                                   std::span<const BindingWrite> writes);
+        [[nodiscard]] std::vector<BindingSlot> snapshotSlots(const BindingSetRecord& record) const;
+        [[nodiscard]] Result<std::vector<StagedSlot>> stageSlots(VulkanResourceAllocator& resources,
+                                                                 const BindingSetRecord& record,
+                                                                 std::span<const BindingWrite> writes) const;
         [[nodiscard]] Result<std::vector<std::shared_ptr<BindingLayoutRecord>>> findPipelineSetLayouts(
             std::span<const BindingLayoutHandle> bindingLayouts) const;
         [[nodiscard]] Result<std::shared_ptr<PipelineLayoutKeepAlive>> createNativePipelineLayout(

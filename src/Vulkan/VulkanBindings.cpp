@@ -1666,26 +1666,23 @@ namespace rachis::vulkan
             return {};
         }
 
-        void writeDescriptorElements(const VolkDeviceTable& table,
-                                     VkDevice device,
-                                     const std::vector<BindingLayoutEntry>& entries,
-                                     const std::vector<VulkanBindingManager::BindingSlot>& slots,
-                                     std::uint32_t variableDescriptorCount,
-                                     std::span<const BindingWrite> writes,
-                                     VkDescriptorSet set)
+        void writeStagedDescriptors(const VolkDeviceTable& table,
+                                    VkDevice device,
+                                    const std::vector<BindingLayoutEntry>& entries,
+                                    std::span<const VulkanBindingManager::StagedSlot> staged,
+                                    std::span<const BindingWrite> writes,
+                                    VkDescriptorSet set)
         {
-            DescriptorWriteBatch batch(writes.size());
-            for (std::size_t index = 0; index < writes.size(); ++index)
+            DescriptorWriteBatch batch(staged.size());
+            for (std::size_t index = 0; index < staged.size(); ++index)
             {
-                const auto& write = writes[index];
+                const auto& write = writes[staged[index].write];
                 const auto* entry = findEntry(entries, write.binding);
-                const auto slotIndex = findSlotIndex(entries, variableDescriptorCount, write);
-                if (entry == nullptr || !slotIndex.has_value() ||
-                    std::holds_alternative<std::monostate>(slots[*slotIndex].resource))
+                if (entry == nullptr || std::holds_alternative<std::monostate>(staged[index].slot.resource))
                 {
                     continue;
                 }
-                batch.append(*entry, write.arrayElement, slots[*slotIndex], index, set);
+                batch.append(*entry, write.arrayElement, staged[index].slot, index, set);
             }
             batch.submit(table, device);
         }
@@ -1820,6 +1817,16 @@ namespace rachis::vulkan
         };
     }
 
+    VulkanBindingManager::BindingSetVersion::~BindingSetVersion()
+    {
+        auto following = std::move(next);
+        while (following != nullptr && following.use_count() == 1)
+        {
+            auto after = std::move(following->next);
+            following = std::move(after);
+        }
+    }
+
     std::shared_ptr<VulkanBindingManager::BindingSetVersion> VulkanBindingManager::makeUnallocatedVersion(
         std::shared_ptr<BindingLayoutRecord> layout,
         std::shared_ptr<BindingPoolState> pool,
@@ -1832,16 +1839,12 @@ namespace rachis::vulkan
         versionLease->counts = descriptorCounts(layout->entries, variableDescriptorCount);
 
         auto version = std::make_shared<BindingSetVersion>();
-        if (layout->updateAfterBind)
-        {
-            version->inPlace = std::make_shared<InPlaceRetention>();
-        }
         version->layout = std::move(layout);
         version->pool = std::move(pool);
         version->poolSet = std::move(poolSet);
         version->versionLease = std::move(versionLease);
-        version->slots = std::move(slots);
-        version->dynamicBuffers = collectDynamicBuffers(version->slots);
+        version->slots = std::make_shared<std::vector<BindingSlot>>(std::move(slots));
+        version->dynamicBuffers = collectDynamicBuffers(*version->slots);
         version->variableDescriptorCount = variableDescriptorCount;
         return version;
     }
@@ -1998,7 +2001,7 @@ namespace rachis::vulkan
         auto written = writeDescriptorSet(*table_,
                                           device_,
                                           layout->entries,
-                                          version->slots,
+                                          *version->slots,
                                           version->variableDescriptorCount,
                                           version->versionLease->descriptorSet);
         if (!written)
@@ -2137,12 +2140,75 @@ namespace rachis::vulkan
         return {};
     }
 
+    std::vector<VulkanBindingManager::BindingSlot> VulkanBindingManager::snapshotSlots(
+        const BindingSetRecord& record) const
+    {
+        const std::shared_lock lock(mutex_);
+        return *record.version->slots;
+    }
+
+    Result<std::vector<VulkanBindingManager::StagedSlot>> VulkanBindingManager::stageSlots(
+        VulkanResourceAllocator& resources, const BindingSetRecord& record, std::span<const BindingWrite> writes) const
+    {
+        const auto& entries = record.layout->entries;
+        const auto variableDescriptorCount = record.version->variableDescriptorCount;
+        std::vector<StagedSlot> staged;
+        staged.reserve(writes.size());
+        for (std::size_t index = 0; index < writes.size(); ++index)
+        {
+            const auto slotIndex = findSlotIndex(entries, variableDescriptorCount, writes[index]);
+            if (!slotIndex.has_value())
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidArgument,
+                    0,
+                    "A binding write references an unknown binding or out-of-range array element.",
+                });
+            }
+            staged.push_back(StagedSlot{.index = *slotIndex, .write = index});
+        }
+        std::ranges::sort(staged, {}, &StagedSlot::index);
+        if (std::ranges::adjacent_find(staged, {}, &StagedSlot::index) != staged.end())
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidArgument,
+                0,
+                "A binding update cannot write the same descriptor element more than once.",
+            });
+        }
+        {
+            const std::shared_lock lock(mutex_);
+            const auto& table = *record.version->slots;
+            for (auto& slot : staged)
+            {
+                slot.slot = table[slot.index];
+            }
+        }
+        const BindingResourceSources sources{
+            .resources = resources,
+            .acceleration = accelerationManager_,
+            .bufferLimits = bufferLimits_,
+        };
+        for (auto& slot : staged)
+        {
+            const auto& write = writes[slot.write];
+            auto bound = std::holds_alternative<std::monostate>(write.resource)
+                             ? clearPartiallyBoundSlot(entries, write.binding, slot.slot)
+                             : bindResource(sources, write, slot.slot);
+            if (!bound)
+            {
+                return std::unexpected(std::move(bound.error()));
+            }
+        }
+        return staged;
+    }
+
     Status VulkanBindingManager::publishInPlaceUpdate(BindingSetHandle set,
                                                       const std::shared_ptr<BindingSetRecord>& current,
-                                                      std::vector<BindingSlot> slots,
+                                                      std::vector<StagedSlot> staged,
                                                       std::span<const BindingWrite> writes)
     {
-        const auto& currentVersion = *current->version;
+        auto& currentVersion = *current->version;
         if (currentVersion.versionLease == nullptr || currentVersion.versionLease->descriptorSet == VK_NULL_HANDLE)
         {
             return std::unexpected(Error{
@@ -2156,29 +2222,17 @@ namespace rachis::vulkan
         version->pool = currentVersion.pool;
         version->poolSet = currentVersion.poolSet;
         version->versionLease = currentVersion.versionLease;
-        version->inPlace = currentVersion.inPlace;
-        version->slots = std::move(slots);
-        version->dynamicBuffers = collectDynamicBuffers(version->slots);
+        version->slots = currentVersion.slots;
+        version->dynamicBuffers = currentVersion.dynamicBuffers;
         version->variableDescriptorCount = currentVersion.variableDescriptorCount;
 
-        std::vector<InPlaceRetention::Write> retained;
-        retained.reserve(writes.size());
-        for (const auto& write : writes)
-        {
-            const auto slotIndex = findSlotIndex(current->layout->entries, version->variableDescriptorCount, write);
-            if (slotIndex.has_value())
-            {
-                retained.push_back(InPlaceRetention::Write{
-                    .index = static_cast<std::uint32_t>(*slotIndex),
-                    .element = version->slots[*slotIndex].keepAlive,
-                });
-            }
-        }
+        std::vector<BindingSlot> superseded;
+        superseded.reserve(staged.size());
 
         auto updated = std::make_shared<BindingSetRecord>();
         updated->layout = current->layout;
         updated->poolSet = current->poolSet;
-        updated->version = std::move(version);
+        updated->version = version;
         updated->label = current->label;
 
         const auto written = countWrittenDescriptorsByTable(current->layout->entries, writes);
@@ -2213,25 +2267,16 @@ namespace rachis::vulkan
                     });
                 }
             }
-            const auto& next = *updated->version;
-            if (next.inPlace != nullptr)
+            writeStagedDescriptors(
+                *table_, device_, current->layout->entries, staged, writes, version->versionLease->descriptorSet);
+            auto& table = *version->slots;
+            for (auto& slot : staged)
             {
-                if (auto reserved = next.inPlace->reserve(retained); !reserved)
-                {
-                    return reserved;
-                }
+                superseded.push_back(std::move(table[slot.index]));
+                table[slot.index] = std::move(slot.slot);
             }
-            writeDescriptorElements(*table_,
-                                    device_,
-                                    current->layout->entries,
-                                    next.slots,
-                                    next.variableDescriptorCount,
-                                    writes,
-                                    next.versionLease->descriptorSet);
-            if (next.inPlace != nullptr)
-            {
-                next.inPlace->record(retained);
-            }
+            currentVersion.superseded = std::move(superseded);
+            currentVersion.next = std::move(version);
             recordPublishedDescriptors(statistics_, written, written);
             retired = std::exchange(*stored, std::move(updated));
         }
@@ -2256,20 +2301,6 @@ namespace rachis::vulkan
             return std::unexpected(std::move(found.error()));
         }
         const auto& current = *found;
-
-        const BindingResourceSources sources{
-            .resources = resources,
-            .acceleration = accelerationManager_,
-            .bufferLimits = bufferLimits_,
-        };
-        auto slots = current->version->slots;
-        auto applied =
-            applyWrites(sources, current->layout->entries, current->version->variableDescriptorCount, writes, slots);
-        if (!applied)
-        {
-            return applied;
-        }
-
         if (table_ == nullptr || table_->vkAllocateDescriptorSets == nullptr || current->layout == nullptr ||
             current->layout->keepAlive == nullptr || current->version == nullptr || current->version->pool == nullptr)
         {
@@ -2281,7 +2312,25 @@ namespace rachis::vulkan
         }
         if (current->layout->updateAfterBind && writesOnlyUpdateAfterBindEntries(current->layout->entries, writes))
         {
-            return publishInPlaceUpdate(set, current, std::move(slots), writes);
+            auto staged = stageSlots(resources, *current, writes);
+            if (!staged)
+            {
+                return std::unexpected(std::move(staged.error()));
+            }
+            return publishInPlaceUpdate(set, current, std::move(*staged), writes);
+        }
+
+        const BindingResourceSources sources{
+            .resources = resources,
+            .acceleration = accelerationManager_,
+            .bufferLimits = bufferLimits_,
+        };
+        auto slots = snapshotSlots(*current);
+        auto applied =
+            applyWrites(sources, current->layout->entries, current->version->variableDescriptorCount, writes, slots);
+        if (!applied)
+        {
+            return applied;
         }
 
         auto version = makeUnallocatedVersion(current->layout,
@@ -2297,7 +2346,7 @@ namespace rachis::vulkan
         auto written = writeDescriptorSet(*table_,
                                           device_,
                                           current->layout->entries,
-                                          version->slots,
+                                          *version->slots,
                                           version->variableDescriptorCount,
                                           version->versionLease->descriptorSet);
         if (!written)
@@ -2575,7 +2624,7 @@ namespace rachis::vulkan
                 return entry.type == BindingType::accelerationStructure;
             }))
         {
-            for (const auto& slot : record.version->slots)
+            for (const auto& slot : *record.version->slots)
             {
                 if (slot.type == BindingType::accelerationStructure && slot.accelerationStructureUse.version != nullptr)
                 {
