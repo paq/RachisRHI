@@ -2002,6 +2002,67 @@ using namespace metal;
     CHECK(onlyOne.error().find("'more'") != std::string::npos);
 }
 
+TEST_CASE("ShaderBinaryTool plans argument buffers for unbounded arrays declared as entry-point parameters",
+          "[size:small][rhi][shader][tooling]")
+{
+    constexpr std::string_view source = R"msl(#include <metal_stdlib>
+using namespace metal;
+#line 5 "/probe/entry.slang"
+struct KernelContext_0
+{
+    uint device* outputs_0;
+    texture2d<float, access::sample>  entryPointParams_tex_0[];
+};
+[[kernel]] void main_0(uint device* outputs_1 [[buffer(0)]], texture2d<float, access::sample>  entryPointParams_tex_1[])
+{
+    thread KernelContext_0 kernelContext_0;
+    (&kernelContext_0)->outputs_0 = outputs_1;
+    (&kernelContext_0)->entryPointParams_tex_0 = entryPointParams_tex_1;
+    *outputs_1 = uint((&kernelContext_0)->entryPointParams_tex_0[int(0)].read(uint2(0U, 0U)).x);
+}
+)msl";
+    constexpr std::string_view spirvJson = R"({"parameters": [
+        {"name": "outputs", "binding": {"kind": "descriptorTableSlot", "index": 0}}],
+        "entryPoints": [{"name": "main", "parameters": [
+            {"name": "tex", "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 0}}]}]})";
+    constexpr std::string_view metalJson = R"({"parameters": [
+        {"name": "outputs", "bindings": [{"kind": "constantBuffer", "index": 0}, {"kind": "unorderedAccess", "index": 0}],
+         "type": {"kind": "resource", "baseShape": "structuredBuffer", "access": "readWrite"}}],
+        "entryPoints": [{"name": "main", "stage": "compute", "parameters": [
+            {"name": "tex", "binding": {"kind": "shaderResource", "space": 1, "index": 0},
+             "type": {"kind": "array", "elementCount": 0, "elementType": {"kind": "resource", "baseShape": "texture2D"}}}],
+            "threadGroupSize": [1, 1, 1],
+            "bindings": [{"name": "outputs", "bindings": [{"kind": "constantBuffer", "index": 0, "used": 1},
+                                                          {"kind": "unorderedAccess", "index": 0, "used": 0}]}]}]})";
+    const auto planned = rachis::shader_tool::planMetalArgumentBufferArrays(source, spirvJson, metalJson, "main");
+    REQUIRE(planned.has_value());
+    REQUIRE(planned->size() == 1);
+    CHECK((*planned)[0].name == "tex");
+    CHECK((*planned)[0].parameterName == "entryPointParams_tex_1");
+    CHECK((*planned)[0].resourceType == "sampledTexture");
+    CHECK((*planned)[0].set == 1);
+    CHECK((*planned)[0].binding == 0);
+    CHECK((*planned)[0].metalIndex == 1);
+
+    const auto rewritten = rachis::shader_tool::rewriteMetalArgumentBufferArrays(source, *planned);
+    REQUIRE(rewritten.has_value());
+    CHECK(rewritten->contains("constant RachisArgumentStorage<texture2d<float, access::sample>, 500000>& "
+                              "entryPointParams_tex_1_storage [[buffer(1)]]"));
+    CHECK_FALSE(rewritten->contains("entryPointParams_tex_0[]"));
+    checkMetalSourceCompiles(*rewritten);
+
+    const auto enriched = rachis::shader_tool::enrichMetalReflectionJson(metalJson, {}, "main", *planned);
+    REQUIRE(enriched.has_value());
+    CHECK(enriched->contains(R"("rachisArgumentBuffers": [{"name": "tex", "type": "sampledTexture", "set": 1, )"));
+#if RACHIS_ENABLE_METAL
+    const auto reflected = rachis::metal::parseSlangReflectionJson(*enriched, "main", rachis::ShaderStage::compute);
+    REQUIRE(reflected.has_value());
+    CHECK(std::ranges::any_of(reflected->resources, [](const rachis::metal::MetalReflectedResource& resource) {
+        return resource.name == "tex" && resource.argumentBuffer && resource.metalIndex == 1;
+    }));
+#endif
+}
+
 TEST_CASE("ShaderBinaryTool ignores array brackets in Metal preprocessor lines, comments, and literals",
           "[size:small][rhi][shader][tooling]")
 {

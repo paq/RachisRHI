@@ -2564,25 +2564,60 @@ namespace rachis::shader_tool
         {
             return std::unexpected(entryBindings.error());
         }
-        auto occupied = detail::occupiedMetalBufferSlots(metalSource, *metalRoot, entryPoint, *entryBindings);
         std::vector<const detail::JsonValue*> metalParameters;
         std::vector<const detail::JsonValue*> spirvParameters;
-        detail::collectParameterNodes(*metalRoot, entryPoint, metalParameters);
-        detail::collectParameterNodes(*spirvRoot, entryPoint, spirvParameters);
+        const auto metalGlobals = detail::collectParameterNodes(*metalRoot, entryPoint, metalParameters);
+        const auto spirvGlobals = detail::collectParameterNodes(*spirvRoot, entryPoint, spirvParameters);
+        const std::vector<const detail::JsonValue*> metalEntryParameters(
+            metalParameters.begin() + static_cast<std::ptrdiff_t>(metalGlobals), metalParameters.end());
+        const std::vector<const detail::JsonValue*> spirvEntryParameters(
+            spirvParameters.begin() + static_cast<std::ptrdiff_t>(spirvGlobals), spirvParameters.end());
+        struct ResolvedArray final
+        {
+            std::string name;
+            const detail::JsonValue* metal = nullptr;
+            const detail::JsonValue* spirv = nullptr;
+        };
+        std::vector<ResolvedArray> resolved;
+        resolved.reserve(parameters.size());
         for (const auto& parameter : parameters)
         {
-            const auto* metalParameter = detail::findParameterNamed(metalParameters, parameter.baseName);
-            const auto* spirvParameter = detail::findParameterNamed(spirvParameters, parameter.baseName);
-            if (metalParameter == nullptr || spirvParameter == nullptr)
+            constexpr std::string_view entryPrefix = "entryPointParams_";
+            ResolvedArray found{.name = parameter.baseName};
+            if (parameter.baseName.starts_with(entryPrefix))
+            {
+                const auto entryName = std::string_view(parameter.baseName).substr(entryPrefix.size());
+                found.metal = detail::findParameterNamed(metalEntryParameters, entryName);
+                found.spirv = detail::findParameterNamed(spirvEntryParameters, entryName);
+                if (found.metal != nullptr && found.spirv != nullptr)
+                {
+                    found.name = std::string(entryName);
+                }
+            }
+            if (found.metal == nullptr || found.spirv == nullptr)
+            {
+                found.metal = detail::findParameterNamed(metalParameters, parameter.baseName);
+                found.spirv = detail::findParameterNamed(spirvParameters, parameter.baseName);
+            }
+            if (found.metal == nullptr || found.spirv == nullptr)
             {
                 return std::unexpected("The unbounded Metal resource array '" + parameter.baseName +
                                        "' is missing from the reflection.");
             }
+            resolved.push_back(std::move(found));
+        }
+        auto occupied = detail::occupiedMetalBufferSlots(metalSource, *metalRoot, entryPoint, *entryBindings);
+        for (std::size_t index = 0; index < parameters.size(); ++index)
+        {
+            const auto& parameter = parameters[index];
+            const auto& name = resolved[index].name;
+            const auto* metalParameter = resolved[index].metal;
+            const auto* spirvParameter = resolved[index].spirv;
             const auto resourceType = detail::metalArgumentBufferResourceType(*metalParameter);
             const auto slot = detail::spirvDescriptorSlot(*spirvParameter);
             if (!resourceType.has_value() || !slot.has_value())
             {
-                return std::unexpected("The unbounded Metal resource array '" + parameter.baseName +
+                return std::unexpected("The unbounded Metal resource array '" + name +
                                        "' has an unsupported element type or binding.");
             }
             const auto free = std::ranges::find(occupied, false);
@@ -2590,11 +2625,11 @@ namespace rachis::shader_tool
             {
                 return std::unexpected("Unbounded resource arrays exceed Metal's 31 buffer argument slots: the entry "
                                        "point has no free buffer slot for '" +
-                                       parameter.baseName + "'.");
+                                       name + "'.");
             }
             *free = true;
             arrays.push_back(MetalArgumentBufferArray{
-                .name = parameter.baseName,
+                .name = name,
                 .parameterName = parameter.parameterName,
                 .elementType = parameter.elementType,
                 .resourceType = *resourceType,
