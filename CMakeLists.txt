@@ -2046,7 +2046,8 @@ if(rachis_build_tests)
             OUTPUT "${rachis_c_abi_shader_dir}/CAbiIndirectDispatch.spv"
             COMMENT "Cooking Vulkan SPIR-V CAbiIndirectDispatch"
         )
-        foreach(size IN ITEMS ${rachis_c_abi_subgroup_sizes})
+        # Vulkan devices may report a minimum subgroup size of 1 or 2, which Direct3D 12 and Metal do not.
+        foreach(size IN ITEMS 1 2 ${rachis_c_abi_subgroup_sizes})
             rachis_cook_dxc_spirv(
                 SOURCE "${rachis_c_abi_subgroup_source}"
                 ENTRY main
