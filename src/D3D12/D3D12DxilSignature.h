@@ -246,6 +246,33 @@ namespace rachis::d3d12::dxil
 
     } // namespace signature_detail
 
+    namespace signature_detail
+    {
+
+        [[nodiscard]] inline Result<std::optional<std::span<const std::byte>>> runtimeInfo(
+            std::span<const std::byte> container)
+        {
+            auto found = findPart(container, fourCC('P', 'S', 'V', '0'));
+            if (!found)
+            {
+                return std::unexpected(std::move(found.error()));
+            }
+            if (!found->has_value())
+            {
+                return std::optional<std::span<const std::byte>>{};
+            }
+            Cursor cursor(**found);
+            const auto infoSize = cursor.u32();
+            const auto info = infoSize.has_value() ? cursor.take(*infoSize) : std::nullopt;
+            if (!info.has_value())
+            {
+                return std::unexpected(malformed("has a truncated PSV0 runtime info"));
+            }
+            return std::optional{*info};
+        }
+
+    } // namespace signature_detail
+
     struct WaveLaneCountRange final
     {
         std::uint32_t minimum = 0;
@@ -259,35 +286,135 @@ namespace rachis::d3d12::dxil
         constexpr std::size_t runtimeInfo0Size = 24;
         constexpr std::size_t minimumWaveLaneCountOffset = 16;
         constexpr std::size_t maximumWaveLaneCountOffset = 20;
-        auto found = findPart(container, fourCC('P', 'S', 'V', '0'));
-        if (!found)
+        auto info = runtimeInfo(container);
+        if (!info)
         {
-            return std::unexpected(std::move(found.error()));
+            return std::unexpected(std::move(info.error()));
         }
-        if (!found->has_value())
-        {
-            return std::optional<WaveLaneCountRange>{};
-        }
-        Cursor cursor(**found);
-        const auto infoSize = cursor.u32();
-        const auto info = infoSize.has_value() ? cursor.take(*infoSize) : std::nullopt;
-        if (!info.has_value())
-        {
-            return std::unexpected(malformed("has a truncated PSV0 runtime info"));
-        }
-        if (info->size() < runtimeInfo0Size)
+        if (!info->has_value() || (*info)->size() < runtimeInfo0Size)
         {
             return std::optional<WaveLaneCountRange>{};
         }
         const WaveLaneCountRange range{
-            .minimum = readU32(*info, minimumWaveLaneCountOffset),
-            .maximum = readU32(*info, maximumWaveLaneCountOffset),
+            .minimum = readU32(**info, minimumWaveLaneCountOffset),
+            .maximum = readU32(**info, maximumWaveLaneCountOffset),
         };
         if (range.minimum == 0)
         {
             return std::optional<WaveLaneCountRange>{};
         }
         return std::optional{range};
+    }
+
+    struct ThreadGroupSize final
+    {
+        std::uint32_t x = 0;
+        std::uint32_t y = 0;
+        std::uint32_t z = 0;
+
+        [[nodiscard]] friend constexpr bool operator==(const ThreadGroupSize&,
+                                                       const ThreadGroupSize&) noexcept = default;
+    };
+
+    [[nodiscard]] inline Result<std::optional<ThreadGroupSize>> readThreadGroupSize(
+        std::span<const std::byte> container)
+    {
+        using namespace signature_detail;
+        constexpr std::size_t runtimeInfo2Size = 48;
+        constexpr std::size_t numThreadsOffset = 36;
+        auto info = runtimeInfo(container);
+        if (!info)
+        {
+            return std::unexpected(std::move(info.error()));
+        }
+        if (!info->has_value() || (*info)->size() < runtimeInfo2Size)
+        {
+            return std::optional<ThreadGroupSize>{};
+        }
+        const ThreadGroupSize size{
+            .x = readU32(**info, numThreadsOffset),
+            .y = readU32(**info, numThreadsOffset + 4),
+            .z = readU32(**info, numThreadsOffset + 8),
+        };
+        if (size.x == 0 || size.y == 0 || size.z == 0)
+        {
+            return std::optional<ThreadGroupSize>{};
+        }
+        return std::optional{size};
+    }
+
+    [[nodiscard]] inline Status validateComputeWaveSize(std::span<const std::byte> container,
+                                                        std::uint32_t requiredSize,
+                                                        const std::optional<ThreadGroupSize>& interfaceWorkgroup,
+                                                        WaveLaneCountRange device)
+    {
+        auto declared = readExpectedWaveLaneCounts(container);
+        if (!declared)
+        {
+            return std::unexpected(std::move(declared.error()));
+        }
+        if (requiredSize == 0)
+        {
+            if (declared->has_value() &&
+                ((*declared)->maximum < device.minimum || (*declared)->minimum > device.maximum))
+            {
+                return std::unexpected(Error{
+                    ErrorCode::unsupported,
+                    0,
+                    "The compute shader's [WaveSize] range does not overlap this device's subgroup size range.",
+                });
+            }
+            return {};
+        }
+        if (!declared->has_value() || (*declared)->minimum != requiredSize || (*declared)->maximum != requiredSize)
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidArgument,
+                0,
+                "On Direct3D 12, a compute pipeline that requires a subgroup size needs a shader that declares "
+                "[WaveSize] with that size.",
+            });
+        }
+        if (requiredSize < device.minimum || requiredSize > device.maximum)
+        {
+            return std::unexpected(Error{
+                ErrorCode::unsupported,
+                0,
+                "The compute shader's [WaveSize] is outside this device's subgroup size range.",
+            });
+        }
+        auto threads = readThreadGroupSize(container);
+        if (!threads)
+        {
+            return std::unexpected(std::move(threads.error()));
+        }
+        if (!threads->has_value())
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidArgument,
+                0,
+                "On Direct3D 12, a compute pipeline that requires a subgroup size needs DXIL whose PSV0 runtime "
+                "info records the [numthreads] size.",
+            });
+        }
+        if (interfaceWorkgroup.has_value() && *interfaceWorkgroup != **threads)
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidArgument,
+                0,
+                "The shader interface's workgroup size does not match the [numthreads] size in the DXIL.",
+            });
+        }
+        if ((*threads)->x % requiredSize != 0)
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidArgument,
+                0,
+                "A compute pipeline that requires a subgroup size needs a [numthreads] width that is a multiple of "
+                "that size.",
+            });
+        }
+        return {};
     }
 
     [[nodiscard]] inline Result<std::optional<std::vector<SignatureVariable>>> readStageSignature(

@@ -73,6 +73,8 @@ Vulkan emulates `multiDispatchIndirect` and `dispatchIndirectCount` (see [Indire
 | Vulkan | `subgroupSizeControl`, `computeFullSubgroups`, and compute in `requiredSubgroupSizeStages` | `minSubgroupSize` to `maxSubgroupSize` |
 | Metal | Always | 32, the SIMD-group width of Apple GPUs |
 
+On Direct3D 12, a pipeline with a required size also reads the `[numthreads]` size from the DXIL: the width must be a multiple of the required size, and the size must match the shader interface's `workgroupSize` when it has one. Otherwise, or when the DXIL does not record the size, creation fails with `ErrorCode::invalidArgument`. Without a required size, a `[WaveSize]` size or `[WaveSize(min, max)]` range fails with `ErrorCode::unsupported` only when it shares no size with `WaveLaneCountMin` to `WaveLaneCountMax`.
+
 On Vulkan, a pipeline with a required size also fails with `ErrorCode::unsupported` when its workgroup holds more invocations than `maxComputeWorkgroupSubgroups` subgroups of that size. On Metal it fails with `ErrorCode::unsupported` if Metal compiles the pipeline with a SIMD-group width (`threadExecutionWidth`) other than 32.
 
 ### 64-bit atomics

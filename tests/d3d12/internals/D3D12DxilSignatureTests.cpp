@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -14,8 +15,12 @@ namespace
 
     using rachis::d3d12::dxil::readExpectedWaveLaneCounts;
     using rachis::d3d12::dxil::readStageSignature;
+    using rachis::d3d12::dxil::readThreadGroupSize;
     using rachis::d3d12::dxil::SignaturePart;
+    using rachis::d3d12::dxil::ThreadGroupSize;
+    using rachis::d3d12::dxil::validateComputeWaveSize;
     using rachis::d3d12::dxil::validateDrawIndexDeclaration;
+    using rachis::d3d12::dxil::WaveLaneCountRange;
     using rachis::detail::StageComponentType;
     using rachis::detail::StageInterfaceVariable;
 
@@ -343,4 +348,105 @@ TEST_CASE("Direct3D 12 draw-index declarations need a readable PSV0 resource tab
     CHECK(unverifiable.error().code == rachis::ErrorCode::invalidArgument);
 
     CHECK_FALSE(validateDrawIndexDeclaration(std::vector<std::byte>(8), 0, 5, false).has_value());
+}
+
+namespace
+{
+
+    constexpr std::size_t runtimeInfoSizeOffset = 44;
+
+    [[nodiscard]] std::vector<std::byte> computeContainer(std::uint32_t minimumWave,
+                                                          std::uint32_t maximumWave,
+                                                          ThreadGroupSize threads)
+    {
+        auto bytes = container({}, {});
+        writeU32(bytes, runtimeInfoOffset + 16, minimumWave);
+        writeU32(bytes, runtimeInfoOffset + 20, maximumWave);
+        writeU32(bytes, runtimeInfoOffset + 36, threads.x);
+        writeU32(bytes, runtimeInfoOffset + 40, threads.y);
+        writeU32(bytes, runtimeInfoOffset + 44, threads.z);
+        return bytes;
+    }
+
+    [[nodiscard]] rachis::ErrorCode waveSizeError(const std::vector<std::byte>& bytes,
+                                                  std::uint32_t required,
+                                                  std::optional<ThreadGroupSize> interfaceWorkgroup,
+                                                  WaveLaneCountRange device)
+    {
+        const auto result = validateComputeWaveSize(bytes, required, interfaceWorkgroup, device);
+        REQUIRE_FALSE(result.has_value());
+        return result.error().code;
+    }
+
+} // namespace
+
+TEST_CASE("The DXIL reader reads a compute shader's thread-group size from the PSV0 runtime info",
+          "[size:small][rhi][d3d12][subgroup]")
+{
+    auto bytes = computeContainer(0, 0, {});
+    const auto unrecorded = readThreadGroupSize(bytes);
+    REQUIRE(unrecorded.has_value());
+    CHECK_FALSE(unrecorded->has_value());
+
+    bytes = computeContainer(0, 0, {.x = 16, .y = 2, .z = 3});
+    const auto recorded = readThreadGroupSize(bytes);
+    REQUIRE(recorded.has_value());
+    REQUIRE(recorded->has_value());
+    CHECK(**recorded == ThreadGroupSize{.x = 16, .y = 2, .z = 3});
+
+    auto version1 = bytes;
+    writeU32(version1, runtimeInfoSizeOffset, 36);
+    const auto older = readThreadGroupSize(version1);
+    REQUIRE(older.has_value());
+    CHECK_FALSE(older->has_value());
+
+    auto truncated = bytes;
+    writeU32(truncated, runtimeInfoSizeOffset, 4096);
+    CHECK_FALSE(readThreadGroupSize(truncated).has_value());
+}
+
+TEST_CASE("Direct3D 12 accepts a [WaveSize] range that overlaps the device range when no size is required",
+          "[size:small][rhi][d3d12][subgroup]")
+{
+    constexpr WaveLaneCountRange wave32{.minimum = 32, .maximum = 32};
+    constexpr WaveLaneCountRange wave32To64{.minimum = 32, .maximum = 64};
+    constexpr ThreadGroupSize threads{.x = 64, .y = 1, .z = 1};
+    CHECK(validateComputeWaveSize(computeContainer(16, 64, threads), 0, std::nullopt, wave32).has_value());
+    CHECK(validateComputeWaveSize(computeContainer(32, 32, threads), 0, std::nullopt, wave32).has_value());
+    CHECK(validateComputeWaveSize(computeContainer(64, 128, threads), 0, std::nullopt, wave32To64).has_value());
+    CHECK(validateComputeWaveSize(computeContainer(0, 0, threads), 0, std::nullopt, wave32).has_value());
+    CHECK(waveSizeError(computeContainer(64, 128, threads), 0, std::nullopt, wave32) == rachis::ErrorCode::unsupported);
+    CHECK(waveSizeError(computeContainer(8, 16, threads), 0, std::nullopt, wave32To64) ==
+          rachis::ErrorCode::unsupported);
+    CHECK(waveSizeError(computeContainer(16, 16, threads), 0, std::nullopt, wave32) == rachis::ErrorCode::unsupported);
+
+    auto truncated = computeContainer(16, 64, threads);
+    writeU32(truncated, runtimeInfoSizeOffset, 4096);
+    CHECK(waveSizeError(truncated, 0, std::nullopt, wave32) == rachis::ErrorCode::invalidArgument);
+}
+
+TEST_CASE("Direct3D 12 checks a required subgroup size against the DXIL [numthreads] size",
+          "[size:small][rhi][d3d12][subgroup]")
+{
+    constexpr WaveLaneCountRange device{.minimum = 32, .maximum = 64};
+    constexpr ThreadGroupSize wide{.x = 64, .y = 1, .z = 1};
+    CHECK(validateComputeWaveSize(computeContainer(32, 32, wide), 32, wide, device).has_value());
+    CHECK(validateComputeWaveSize(computeContainer(32, 32, wide), 32, std::nullopt, device).has_value());
+
+    const auto narrow = computeContainer(32, 32, {.x = 16, .y = 1, .z = 1});
+    CHECK(waveSizeError(narrow, 32, ThreadGroupSize{.x = 32, .y = 1, .z = 1}, device) ==
+          rachis::ErrorCode::invalidArgument);
+    CHECK(waveSizeError(narrow, 32, std::nullopt, device) == rachis::ErrorCode::invalidArgument);
+    CHECK(waveSizeError(computeContainer(32, 32, {.x = 48, .y = 1, .z = 1}), 32, std::nullopt, device) ==
+          rachis::ErrorCode::invalidArgument);
+    CHECK(waveSizeError(computeContainer(32, 32, wide), 32, ThreadGroupSize{.x = 32, .y = 2, .z = 1}, device) ==
+          rachis::ErrorCode::invalidArgument);
+
+    auto version1 = computeContainer(32, 32, wide);
+    writeU32(version1, runtimeInfoSizeOffset, 36);
+    CHECK(waveSizeError(version1, 32, wide, device) == rachis::ErrorCode::invalidArgument);
+
+    CHECK(waveSizeError(computeContainer(32, 64, wide), 32, wide, device) == rachis::ErrorCode::invalidArgument);
+    CHECK(waveSizeError(computeContainer(0, 0, wide), 32, wide, device) == rachis::ErrorCode::invalidArgument);
+    CHECK(waveSizeError(computeContainer(64, 64, wide), 32, wide, device) == rachis::ErrorCode::invalidArgument);
 }

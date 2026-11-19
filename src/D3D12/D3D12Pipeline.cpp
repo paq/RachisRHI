@@ -2768,35 +2768,15 @@ namespace rachis::d3d12
                                                      std::uint32_t requiredSubgroupSize,
                                                      const SubgroupCapabilities& subgroup)
         {
-            auto declared = dxil::readExpectedWaveLaneCounts(*shader.bytecode);
-            if (!declared)
+            std::optional<dxil::ThreadGroupSize> interfaceWorkgroup;
+            if (const auto& workgroup = shader.shaderInterface.workgroupSize; workgroup.has_value())
             {
-                if (requiredSubgroupSize == 0)
-                {
-                    return {};
-                }
-                return std::unexpected(std::move(declared.error()));
+                interfaceWorkgroup = dxil::ThreadGroupSize{.x = workgroup->x, .y = workgroup->y, .z = workgroup->z};
             }
-            if (requiredSubgroupSize != 0 && (!declared->has_value() || (*declared)->minimum != requiredSubgroupSize ||
-                                              (*declared)->maximum != requiredSubgroupSize))
-            {
-                return std::unexpected(Error{
-                    ErrorCode::invalidArgument,
-                    0,
-                    "On Direct3D 12, a compute pipeline that requires a subgroup size needs a shader that declares "
-                    "[WaveSize] with that size.",
-                });
-            }
-            if (declared->has_value() &&
-                ((*declared)->minimum < subgroup.minSize || (*declared)->maximum > subgroup.maxSize))
-            {
-                return std::unexpected(Error{
-                    ErrorCode::unsupported,
-                    0,
-                    "The compute shader's [WaveSize] is outside this device's subgroup size range.",
-                });
-            }
-            return {};
+            return dxil::validateComputeWaveSize(*shader.bytecode,
+                                                 requiredSubgroupSize,
+                                                 interfaceWorkgroup,
+                                                 {.minimum = subgroup.minSize, .maximum = subgroup.maxSize});
         }
 
         [[nodiscard]] Result<ComPtr<ID3D12PipelineState>> createNativeComputePipeline(
