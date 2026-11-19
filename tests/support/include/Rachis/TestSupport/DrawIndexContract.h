@@ -357,13 +357,18 @@ namespace rachis::test::draw_index
         CHECK(pixel.error().code == ErrorCode::invalidArgument);
     }
 
+    struct RecordBatch final
+    {
+        std::uint32_t maxRecords = 1;
+        BufferHandle countBuffer = {};
+        std::uint32_t drawnRecords = 1;
+        bool multiRecord = false;
+    };
+
     inline void runContract(Device& device, const Bytecode& bytecode)
     {
         const auto capabilities = requireCapabilities(device);
         REQUIRE(capabilities.shaderDrawIndex);
-        REQUIRE(capabilities.multiDrawIndirect);
-        const bool counted = capabilities.drawIndirectCount;
-        const std::uint32_t maxRecords = counted ? recordCount : drawnRecordCount;
 
         checkModuleValidation(device, bytecode);
 
@@ -470,74 +475,8 @@ namespace rachis::test::draw_index
         const std::array<std::uint32_t, 1> drawnCount{drawnRecordCount};
         const auto countBuffer =
             uploadBuffer(device, BufferUsage::indirect, std::span<const std::uint32_t>(drawnCount));
-        const BufferHandle recordCountBuffer = counted ? countBuffer : BufferHandle{};
 
         Target target(device);
-        const IndirectDrawDesc prefixedDraws{
-            .argumentBuffer = drawArguments,
-            .maxDrawCount = maxRecords,
-            .countBuffer = recordCountBuffer,
-            .drawIndexPrefix = true,
-        };
-
-        const auto drawColumns = target.render([&](CommandBuffer& command) {
-            REQUIRE(device.bindGraphicsPipeline(command, *drawIndexPipeline).has_value());
-            REQUIRE(device.bindVertexBuffer(command, 0, vertexBuffer).has_value());
-            target.setViewportAndScissor(command);
-
-            checkRejected(
-                device.drawIndirect(command, IndirectDrawDesc{.argumentBuffer = emptyArguments, .maxDrawCount = 2}),
-                ErrorCode::invalidArgument);
-            CHECK(device.drawIndirect(command, IndirectDrawDesc{.argumentBuffer = emptyArguments, .maxDrawCount = 1})
-                      .has_value());
-            auto shortStride = prefixedDraws;
-            shortStride.stride = sizeof(DrawIndirectArguments);
-            checkRejected(device.drawIndirect(command, shortStride), ErrorCode::invalidArgument);
-            auto unalignedStride = prefixedDraws;
-            unalignedStride.stride = sizeof(DrawRecord) + 2;
-            checkRejected(device.drawIndirect(command, unalignedStride), ErrorCode::invalidArgument);
-            auto pastEnd = prefixedDraws;
-            pastEnd.maxDrawCount = recordCount + 1;
-            checkRejected(device.drawIndirect(command, pastEnd), ErrorCode::invalidArgument);
-
-            REQUIRE(device.draw(command, verticesPerQuad, 1, 3 * verticesPerQuad, 0).has_value());
-            REQUIRE(device.drawIndirect(command, prefixedDraws).has_value());
-            REQUIRE(device.draw(command, verticesPerQuad, 1, 4 * verticesPerQuad, 0).has_value());
-        });
-        checkColumns(drawColumns, {Color::red, Color::green, Color::blue, Color::red, Color::red});
-
-        const auto indexedColumns = target.render([&](CommandBuffer& command) {
-            REQUIRE(device.bindGraphicsPipeline(command, *drawIndexPipeline).has_value());
-            REQUIRE(device.bindVertexBuffer(command, 0, vertexBuffer).has_value());
-            REQUIRE(device.bindIndexBuffer(command, indexBuffer, IndexFormat::uint16).has_value());
-            target.setViewportAndScissor(command);
-            const IndirectDrawDesc indexedDraws{
-                .argumentBuffer = indexedArguments,
-                .maxDrawCount = maxRecords,
-                .stride = sizeof(IndexedDrawRecord),
-                .countBuffer = recordCountBuffer,
-                .drawIndexPrefix = true,
-            };
-            auto shortStride = indexedDraws;
-            shortStride.stride = sizeof(DrawIndexedIndirectArguments);
-            checkRejected(device.drawIndexedIndirect(command, shortStride), ErrorCode::invalidArgument);
-
-            REQUIRE(device.drawIndexed(command, verticesPerQuad, 1, 0, 3 * verticesPerQuad, 0).has_value());
-            REQUIRE(device.drawIndexedIndirect(command, indexedDraws).has_value());
-            REQUIRE(device.drawIndexed(command, verticesPerQuad, 1, 0, 4 * verticesPerQuad, 0).has_value());
-        });
-        checkColumns(indexedColumns, {Color::red, Color::green, Color::blue, Color::red, Color::red});
-
-        const auto plainColumns = target.render([&](CommandBuffer& command) {
-            REQUIRE(device.bindGraphicsPipeline(command, *plainPipeline).has_value());
-            REQUIRE(device.bindVertexBuffer(command, 0, vertexBuffer).has_value());
-            target.setViewportAndScissor(command);
-            CHECK(device.drawIndirect(command, IndirectDrawDesc{.argumentBuffer = emptyArguments, .maxDrawCount = 2})
-                      .has_value());
-            REQUIRE(device.drawIndirect(command, prefixedDraws).has_value());
-        });
-        checkColumns(plainColumns, {Color::magenta, Color::magenta, Color::magenta, Color::clear, Color::clear});
-
         PipelineHandle meshPipeline = {};
         ShaderModuleHandle meshShader = {};
         if (capabilities.meshShaders)
@@ -559,20 +498,111 @@ namespace rachis::test::draw_index
             });
             REQUIRE(createdPipeline.has_value());
             meshPipeline = *createdPipeline;
+        }
 
+        const auto runRecords = [&](const RecordBatch& batch) {
+            INFO((batch.multiRecord ? "Batches of several records" : "Batches of one record"));
+            const auto recordColor = [&](std::uint32_t column) {
+                constexpr std::array colors{Color::red, Color::green, Color::blue};
+                return column < batch.drawnRecords ? colors[column] : Color::clear;
+            };
+            const auto plainColor = [&](std::uint32_t column) {
+                return column < batch.drawnRecords ? Color::magenta : Color::clear;
+            };
+            const IndirectDrawDesc prefixedDraws{
+                .argumentBuffer = drawArguments,
+                .maxDrawCount = batch.maxRecords,
+                .countBuffer = batch.countBuffer,
+                .drawIndexPrefix = true,
+            };
+
+            const auto drawColumns = target.render([&](CommandBuffer& command) {
+                REQUIRE(device.bindGraphicsPipeline(command, *drawIndexPipeline).has_value());
+                REQUIRE(device.bindVertexBuffer(command, 0, vertexBuffer).has_value());
+                target.setViewportAndScissor(command);
+
+                if (batch.multiRecord)
+                {
+                    checkRejected(device.drawIndirect(
+                                      command, IndirectDrawDesc{.argumentBuffer = emptyArguments, .maxDrawCount = 2}),
+                                  ErrorCode::invalidArgument);
+                    auto pastEnd = prefixedDraws;
+                    pastEnd.maxDrawCount = recordCount + 1;
+                    checkRejected(device.drawIndirect(command, pastEnd), ErrorCode::invalidArgument);
+                }
+                CHECK(
+                    device.drawIndirect(command, IndirectDrawDesc{.argumentBuffer = emptyArguments, .maxDrawCount = 1})
+                        .has_value());
+                auto shortStride = prefixedDraws;
+                shortStride.stride = sizeof(DrawIndirectArguments);
+                checkRejected(device.drawIndirect(command, shortStride), ErrorCode::invalidArgument);
+                auto unalignedStride = prefixedDraws;
+                unalignedStride.stride = sizeof(DrawRecord) + 2;
+                checkRejected(device.drawIndirect(command, unalignedStride), ErrorCode::invalidArgument);
+
+                REQUIRE(device.draw(command, verticesPerQuad, 1, 3 * verticesPerQuad, 0).has_value());
+                REQUIRE(device.drawIndirect(command, prefixedDraws).has_value());
+                REQUIRE(device.draw(command, verticesPerQuad, 1, 4 * verticesPerQuad, 0).has_value());
+            });
+            checkColumns(drawColumns, {recordColor(0), recordColor(1), recordColor(2), Color::red, Color::red});
+
+            const auto indexedColumns = target.render([&](CommandBuffer& command) {
+                REQUIRE(device.bindGraphicsPipeline(command, *drawIndexPipeline).has_value());
+                REQUIRE(device.bindVertexBuffer(command, 0, vertexBuffer).has_value());
+                REQUIRE(device.bindIndexBuffer(command, indexBuffer, IndexFormat::uint16).has_value());
+                target.setViewportAndScissor(command);
+                const IndirectDrawDesc indexedDraws{
+                    .argumentBuffer = indexedArguments,
+                    .maxDrawCount = batch.maxRecords,
+                    .stride = sizeof(IndexedDrawRecord),
+                    .countBuffer = batch.countBuffer,
+                    .drawIndexPrefix = true,
+                };
+                auto shortStride = indexedDraws;
+                shortStride.stride = sizeof(DrawIndexedIndirectArguments);
+                checkRejected(device.drawIndexedIndirect(command, shortStride), ErrorCode::invalidArgument);
+
+                REQUIRE(device.drawIndexed(command, verticesPerQuad, 1, 0, 3 * verticesPerQuad, 0).has_value());
+                REQUIRE(device.drawIndexedIndirect(command, indexedDraws).has_value());
+                REQUIRE(device.drawIndexed(command, verticesPerQuad, 1, 0, 4 * verticesPerQuad, 0).has_value());
+            });
+            checkColumns(indexedColumns, {recordColor(0), recordColor(1), recordColor(2), Color::red, Color::red});
+
+            const auto plainColumns = target.render([&](CommandBuffer& command) {
+                REQUIRE(device.bindGraphicsPipeline(command, *plainPipeline).has_value());
+                REQUIRE(device.bindVertexBuffer(command, 0, vertexBuffer).has_value());
+                target.setViewportAndScissor(command);
+                CHECK(device
+                          .drawIndirect(command,
+                                        IndirectDrawDesc{
+                                            .argumentBuffer = emptyArguments,
+                                            .maxDrawCount = batch.multiRecord ? 2U : 1U,
+                                        })
+                          .has_value());
+                REQUIRE(device.drawIndirect(command, prefixedDraws).has_value());
+            });
+            checkColumns(plainColumns, {plainColor(0), plainColor(1), plainColor(2), Color::clear, Color::clear});
+
+            if (!meshPipeline.isValid())
+            {
+                return;
+            }
             const auto meshColumns = target.render([&](CommandBuffer& command) {
                 REQUIRE(device.bindGraphicsPipeline(command, meshPipeline).has_value());
                 target.setViewportAndScissor(command);
                 const IndirectMeshDispatchDesc prefixedDispatches{
                     .argumentBuffer = meshArguments,
-                    .maxDispatchCount = maxRecords,
-                    .countBuffer = recordCountBuffer,
+                    .maxDispatchCount = batch.maxRecords,
+                    .countBuffer = batch.countBuffer,
                     .drawIndexPrefix = true,
                 };
-                checkRejected(
-                    device.dispatchMeshIndirect(
-                        command, IndirectMeshDispatchDesc{.argumentBuffer = meshArguments, .maxDispatchCount = 2}),
-                    ErrorCode::invalidArgument);
+                if (batch.multiRecord)
+                {
+                    checkRejected(
+                        device.dispatchMeshIndirect(
+                            command, IndirectMeshDispatchDesc{.argumentBuffer = meshArguments, .maxDispatchCount = 2}),
+                        ErrorCode::invalidArgument);
+                }
                 auto shortStride = prefixedDispatches;
                 shortStride.stride = sizeof(DispatchIndirectArguments);
                 checkRejected(device.dispatchMeshIndirect(command, shortStride), ErrorCode::invalidArgument);
@@ -580,7 +610,19 @@ namespace rachis::test::draw_index
                 REQUIRE(device.dispatchMeshIndirect(command, prefixedDispatches).has_value());
                 REQUIRE(device.dispatchMesh(command, 2, 1, 1).has_value());
             });
-            checkColumns(meshColumns, {Color::red, Color::green, Color::blue, Color::clear, Color::red});
+            checkColumns(meshColumns, {Color::red, recordColor(1), recordColor(2), Color::clear, Color::red});
+        };
+
+        runRecords(RecordBatch{});
+        if (capabilities.multiDrawIndirect)
+        {
+            const bool counted = capabilities.drawIndirectCount;
+            runRecords(RecordBatch{
+                .maxRecords = counted ? recordCount : drawnRecordCount,
+                .countBuffer = counted ? countBuffer : BufferHandle{},
+                .drawnRecords = drawnRecordCount,
+                .multiRecord = true,
+            });
         }
 
         const auto diagnostics = device.diagnosticCounts();
