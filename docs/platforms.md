@@ -14,6 +14,7 @@ This page describes the host platforms RachisRHI targets, optional feature avail
 - [GPU-counted draws on Vulkan](#gpu-counted-draws-on-vulkan)
 - [Draw index on Vulkan](#draw-index-on-vulkan)
 - [Conditional execution on Vulkan](#conditional-execution-on-vulkan)
+- [Swapchain images in binding sets on Vulkan](#swapchain-images-in-binding-sets-on-vulkan)
 - [Attachment clears on Metal](#attachment-clears-on-metal)
 - [Scissors on Metal](#scissors-on-metal)
 - [Shared resources](#shared-resources)
@@ -204,6 +205,10 @@ Core Vulkan dispatches one indirect record per call and has no GPU-counted dispa
 
 Vulkan implements conditional execution with `VK_EXT_conditional_rendering`, which reads a 32-bit predicate. RachisRHI passes the low 32 bits of the `uint64` predicate, so a value whose low 32 bits are zero counts as zero on Vulkan, while Direct3D 12 reads all 64 bits. Write predicate values below 2^32 for the same result on every backend.
 
+## Swapchain images in binding sets on Vulkan
+
+Binding a set that holds a view of a swapchain image records that image, as a barrier or a copy on it does. The image must be acquired (`ErrorCode::invalidState` otherwise), and `cancelSwapchainImage` and `present` treat the command buffer like any other that records the image. `updateBindingSet` fails with `ErrorCode::unsupported` when a write to an update-after-bind entry names a view of a swapchain image, even in a call that also writes other entries; name it in `createBindingSet` instead.
+
 ## Attachment clears on Metal
 
 - On Metal, `clearColorAttachment` and `clearDepthStencilAttachment` must clear the **entire render target** (either pass no rectangles, or rectangles whose union covers the full target). Clearing a sub-region fails with `ErrorCode::unsupported`, whereas Direct3D 12 and Vulkan clear only the specified rectangles.
@@ -300,6 +305,7 @@ On Vulkan:
 - **Pipeline layouts:** When a pipeline layout holds a set with an update-after-bind entry, the descriptors of all its sets must fit the device's update-after-bind limits (`maxPerStageDescriptorUpdateAfterBind*`, `maxPerStageUpdateAfterBindResources`, and `maxDescriptorSetUpdateAfterBind*`), and the sets without such an entry must still fit the regular limits. `createPipelineLayout` fails with `ErrorCode::unsupported` otherwise.
 - **Variable-count arrays:** An update-after-bind variable-count entry gets its capacity from the update-after-bind limits, capped by the `DeviceLimits` maximums in [Variable-count binding arrays](#variable-count-binding-arrays).
 - **Binding pools:** The first set with an update-after-bind entry in a binding pool adds a second native descriptor pool, created with `VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT` and sized like the first. Its descriptors count against the device's `maxUpdateAfterBindDescriptorsInAllPools`.
+- **Swapchain textures:** An update-after-bind entry takes a view of a swapchain image only in `createBindingSet` (see [Swapchain images in binding sets on Vulkan](#swapchain-images-in-binding-sets-on-vulkan)).
 - **Cost of in-place updates:** An in-place update stages and writes only the elements it changes, so its host time and memory grow with the number of writes, not with the size of the array. Work recorded before the update keeps both the elements it replaced and the new ones alive until it completes.
 
 ## Vulkan on macOS

@@ -5442,10 +5442,12 @@ namespace rachis::vulkan
                 "A binding write references a stale or foreign texture view handle.",
             });
         }
+        const auto* texture = textures_.find(record->texture);
         return ResolvedBindingTextureView{
             .view = record->view,
             .usage = record->desc.usage,
             .keepAlive = record->keepAlive,
+            .swapchainLease = texture != nullptr ? texture->swapchainLease : nullptr,
         };
     }
 

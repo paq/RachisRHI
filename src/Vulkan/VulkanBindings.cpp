@@ -1266,6 +1266,7 @@ namespace rachis::vulkan
                 });
             }
             slot.resource = std::monostate{};
+            slot.swapchainView = false;
             slot.keepAlive.reset();
             slot.buffer = VK_NULL_HANDLE;
             slot.imageView = VK_NULL_HANDLE;
@@ -1320,6 +1321,12 @@ namespace rachis::vulkan
             return {};
         }
 
+        struct SwapchainViewBinding final
+        {
+            std::shared_ptr<void> view;
+            std::shared_ptr<VulkanSwapchainImageLease> lease;
+        };
+
         [[nodiscard]] Status bindTextureView(VulkanResourceAllocator& resources,
                                              const BindingWrite& write,
                                              VulkanBindingManager::BindingSlot& slot)
@@ -1349,7 +1356,12 @@ namespace rachis::vulkan
                 });
             }
             slot.resource = *handle;
-            slot.keepAlive = std::move(view->keepAlive);
+            slot.swapchainView = view->swapchainLease != nullptr;
+            slot.keepAlive = slot.swapchainView ? std::make_shared<SwapchainViewBinding>(SwapchainViewBinding{
+                                                      .view = std::move(view->keepAlive),
+                                                      .lease = std::move(view->swapchainLease),
+                                                  })
+                                                : std::move(view->keepAlive);
             slot.buffer = VK_NULL_HANDLE;
             slot.imageView = view->view;
             slot.sampler = VK_NULL_HANDLE;
@@ -1462,10 +1474,34 @@ namespace rachis::vulkan
             return bindSampler(sources.resources, write, slot);
         }
 
+        [[nodiscard]] Status rejectSwapchainViewUpdate(const std::vector<BindingLayoutEntry>& entries,
+                                                       const BindingWrite& write,
+                                                       const VulkanBindingManager::BindingSlot& slot)
+        {
+            const auto* entry = findEntry(entries, write.binding);
+            if (slot.swapchainView && entry != nullptr && hasAny(entry->flags, BindingFlag::updateAfterBind))
+            {
+                return std::unexpected(Error{
+                    ErrorCode::unsupported,
+                    0,
+                    "updateBindingSet cannot write a view of a swapchain image to an update-after-bind entry; "
+                    "write it in createBindingSet instead.",
+                });
+            }
+            return {};
+        }
+
+        enum class WriteSource : std::uint8_t
+        {
+            creation,
+            update,
+        };
+
         [[nodiscard]] Status applyWrites(const BindingResourceSources& sources,
                                          const std::vector<BindingLayoutEntry>& entries,
                                          std::uint32_t variableDescriptorCount,
                                          std::span<const BindingWrite> writes,
+                                         WriteSource source,
                                          std::vector<VulkanBindingManager::BindingSlot>& slots)
         {
             std::vector<bool> written(slots.size(), false);
@@ -1495,6 +1531,13 @@ namespace rachis::vulkan
                 if (!bound)
                 {
                     return bound;
+                }
+                if (source == WriteSource::update)
+                {
+                    if (auto allowed = rejectSwapchainViewUpdate(entries, write, slot); !allowed)
+                    {
+                        return allowed;
+                    }
                 }
                 written[*index] = true;
             }
@@ -1562,6 +1605,55 @@ namespace rachis::vulkan
                 return nullptr;
             }
             return std::make_shared<const std::vector<VulkanAccelerationStructureUse>>(std::move(uses));
+        }
+
+        [[nodiscard]] std::shared_ptr<const VulkanBindingManager::SwapchainViewSlots> collectSwapchainViews(
+            const std::vector<VulkanBindingManager::BindingSlot>& slots)
+        {
+            VulkanBindingManager::SwapchainViewSlots views;
+            for (std::size_t index = 0; index < slots.size(); ++index)
+            {
+                const auto& slot = slots[index];
+                if (!slot.swapchainView || slot.keepAlive == nullptr)
+                {
+                    continue;
+                }
+                views.slots.push_back(index);
+                views.leases.push_back(static_cast<const SwapchainViewBinding*>(slot.keepAlive.get())->lease);
+            }
+            if (views.slots.empty())
+            {
+                return nullptr;
+            }
+            return std::make_shared<const VulkanBindingManager::SwapchainViewSlots>(std::move(views));
+        }
+
+        [[nodiscard]] std::shared_ptr<const VulkanBindingManager::SwapchainViewSlots> swapchainViewsAfterInPlaceWrites(
+            const std::shared_ptr<const VulkanBindingManager::SwapchainViewSlots>& current,
+            std::span<const VulkanBindingManager::StagedSlot> staged)
+        {
+            if (current == nullptr || std::ranges::none_of(staged, [&](const VulkanBindingManager::StagedSlot& write) {
+                    return std::ranges::binary_search(current->slots, write.index);
+                }))
+            {
+                return current;
+            }
+            VulkanBindingManager::SwapchainViewSlots kept;
+            for (std::size_t index = 0; index < current->slots.size(); ++index)
+            {
+                const auto slot = current->slots[index];
+                if (std::ranges::binary_search(staged, slot, {}, &VulkanBindingManager::StagedSlot::index))
+                {
+                    continue;
+                }
+                kept.slots.push_back(slot);
+                kept.leases.push_back(current->leases[index]);
+            }
+            if (kept.slots.empty())
+            {
+                return nullptr;
+            }
+            return std::make_shared<const VulkanBindingManager::SwapchainViewSlots>(std::move(kept));
         }
 
         [[nodiscard]] std::vector<VulkanBindingManager::BindingSlot> makeSlots(
@@ -1864,6 +1956,7 @@ namespace rachis::vulkan
         version->slots = std::make_shared<std::vector<BindingSlot>>(std::move(slots));
         version->dynamicBuffers = collectDynamicBuffers(*version->slots);
         version->accelerationStructureUses = collectAccelerationStructureUses(*version->slots);
+        version->swapchainViews = collectSwapchainViews(*version->slots);
         version->variableDescriptorCount = variableDescriptorCount;
         return version;
     }
@@ -1989,7 +2082,8 @@ namespace rachis::vulkan
             .bufferLimits = bufferLimits_,
         };
         auto slots = makeSlots(layout->entries, desc.variableDescriptorCount);
-        auto applied = applyWrites(sources, layout->entries, desc.variableDescriptorCount, desc.writes, slots);
+        auto applied = applyWrites(
+            sources, layout->entries, desc.variableDescriptorCount, desc.writes, WriteSource::creation, slots);
         if (!applied)
         {
             return std::unexpected(std::move(applied.error()));
@@ -2218,6 +2312,10 @@ namespace rachis::vulkan
             {
                 return std::unexpected(std::move(bound.error()));
             }
+            if (auto allowed = rejectSwapchainViewUpdate(entries, write, slot.slot); !allowed)
+            {
+                return std::unexpected(std::move(allowed.error()));
+            }
         }
         return staged;
     }
@@ -2244,6 +2342,7 @@ namespace rachis::vulkan
         version->slots = currentVersion.slots;
         version->dynamicBuffers = currentVersion.dynamicBuffers;
         version->accelerationStructureUses = currentVersion.accelerationStructureUses;
+        version->swapchainViews = swapchainViewsAfterInPlaceWrites(currentVersion.swapchainViews, staged);
         version->variableDescriptorCount = currentVersion.variableDescriptorCount;
 
         std::vector<BindingSlot> superseded;
@@ -2346,8 +2445,12 @@ namespace rachis::vulkan
             .bufferLimits = bufferLimits_,
         };
         auto slots = snapshotSlots(*current);
-        auto applied =
-            applyWrites(sources, current->layout->entries, current->version->variableDescriptorCount, writes, slots);
+        auto applied = applyWrites(sources,
+                                   current->layout->entries,
+                                   current->version->variableDescriptorCount,
+                                   writes,
+                                   WriteSource::update,
+                                   slots);
         if (!applied)
         {
             return applied;
@@ -2657,6 +2760,10 @@ namespace rachis::vulkan
                 version->accelerationStructureUses != nullptr
                     ? std::span<const VulkanAccelerationStructureUse>(*version->accelerationStructureUses)
                     : std::span<const VulkanAccelerationStructureUse>{},
+            .swapchainLeases =
+                version->swapchainViews != nullptr
+                    ? std::span<const std::shared_ptr<VulkanSwapchainImageLease>>(version->swapchainViews->leases)
+                    : std::span<const std::shared_ptr<VulkanSwapchainImageLease>>{},
         };
     }
 

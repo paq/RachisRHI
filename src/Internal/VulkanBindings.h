@@ -78,6 +78,7 @@ namespace rachis::vulkan
         std::uint32_t dynamicBufferCount = 0;
         std::span<const VulkanDynamicBufferBinding> dynamicBuffers = {};
         std::span<const VulkanAccelerationStructureUse> accelerationStructureUses = {};
+        std::span<const std::shared_ptr<VulkanSwapchainImageLease>> swapchainLeases = {};
     };
 
     struct VulkanNativePipelineLayout final
@@ -216,6 +217,7 @@ namespace rachis::vulkan
         struct BindingSlot final
         {
             BindingType type = BindingType::uniformBuffer;
+            bool swapchainView = false;
             std::variant<std::monostate, BufferBinding, TextureViewHandle, SamplerHandle, AccelerationStructureHandle>
                 resource = {};
             std::shared_ptr<void> keepAlive = {};
@@ -226,6 +228,12 @@ namespace rachis::vulkan
             VulkanAccelerationStructureUse accelerationStructureUse = {};
             std::uint64_t range = 0;
             std::uint64_t bufferSize = 0;
+        };
+
+        struct SwapchainViewSlots final
+        {
+            std::vector<std::size_t> slots;
+            std::vector<std::shared_ptr<VulkanSwapchainImageLease>> leases;
         };
 
         struct StagedSlot final
@@ -252,6 +260,7 @@ namespace rachis::vulkan
             std::uint32_t variableDescriptorCount = 0;
             std::shared_ptr<BindingPoolVersionLease> versionLease;
             std::shared_ptr<const std::vector<VulkanAccelerationStructureUse>> accelerationStructureUses;
+            std::shared_ptr<const SwapchainViewSlots> swapchainViews;
             std::vector<BindingSlot> superseded;
             std::shared_ptr<BindingSetVersion> next;
         };

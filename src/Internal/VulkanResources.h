@@ -299,6 +299,7 @@ namespace rachis::vulkan
             VkImageView view = VK_NULL_HANDLE;
             TextureViewUsage usage = TextureViewUsage::sampled;
             std::shared_ptr<void> keepAlive;
+            std::shared_ptr<VulkanSwapchainImageLease> swapchainLease;
         };
 
         struct ResolvedBindingSampler final

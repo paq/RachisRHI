@@ -443,6 +443,25 @@ namespace rachis::vulkan
             return retainVulkanAccelerationStructureConsumers(commandBuffer, uses);
         }
 
+        [[nodiscard]] Status retainSwapchainImageLeases(VulkanResourceAllocator& resources,
+                                                        VulkanCommandBuffer& commandBuffer,
+                                                        std::span<const VulkanNativeBindingSet> resolvedSets)
+        {
+            for (const auto& set : resolvedSets)
+            {
+                if (set.swapchainLeases.empty())
+                {
+                    continue;
+                }
+                if (auto referenced = resources.retainSwapchainImages(commandBuffer.native(), set.swapchainLeases);
+                    !referenced)
+                {
+                    return referenced;
+                }
+            }
+            return {};
+        }
+
         [[nodiscard]] Result<VulkanCommandUses*> reserveBindingSetUses(VulkanCommandBuffer& commandBuffer,
                                                                        std::size_t setCount)
         {
@@ -467,6 +486,7 @@ namespace rachis::vulkan
         }
 
         [[nodiscard]] Status bindDescriptorSetBatch(VulkanBindingManager* bindings,
+                                                    VulkanResourceAllocator* resources,
                                                     const VolkDeviceTable* table,
                                                     VulkanCommandBuffer& commandBuffer,
                                                     std::vector<std::shared_ptr<void>>* retained,
@@ -490,7 +510,7 @@ namespace rachis::vulkan
                     emptyOrExceedsMessage,
                 });
             }
-            if (bindings == nullptr || table == nullptr)
+            if (bindings == nullptr || resources == nullptr || table == nullptr)
             {
                 return std::unexpected(Error{
                     ErrorCode::invalidState,
@@ -527,6 +547,10 @@ namespace rachis::vulkan
             if (!uses)
             {
                 return std::unexpected(std::move(uses.error()));
+            }
+            if (auto leases = retainSwapchainImageLeases(*resources, commandBuffer, scratch.resolvedSets); !leases)
+            {
+                return leases;
             }
             if (auto consumers = retainAccelerationStructureConsumers(commandBuffer, scratch.resolvedSets); !consumers)
             {
@@ -1505,6 +1529,7 @@ namespace rachis::vulkan
         auto* const pipeline =
             static_cast<const VulkanNativePipeline*>(commandBuffer.graphicsState().pipelineOwner.get());
         return bindDescriptorSetBatch(bindings_,
+                                      resources_,
                                       table_,
                                       commandBuffer,
                                       retainSink(commandBuffer),
@@ -2259,6 +2284,7 @@ namespace rachis::vulkan
         }
         auto* const pipeline = static_cast<const VulkanNativePipeline*>(state.pipelineOwner.get());
         return bindDescriptorSetBatch(bindings_,
+                                      resources_,
                                       table_,
                                       commandBuffer,
                                       retainSink(commandBuffer),
@@ -3203,6 +3229,7 @@ namespace rachis::vulkan
         }
         auto* const pipeline = static_cast<const VulkanNativePipeline*>(state.pipelineOwner.get());
         return bindDescriptorSetBatch(bindings_,
+                                      resources_,
                                       table_,
                                       commandBuffer,
                                       retainSink(commandBuffer),
