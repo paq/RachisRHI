@@ -1217,7 +1217,14 @@ namespace rachis::d3d12
                                                            QueueType submissionQueue,
                                                            std::span<const TimelinePoint> waits) const
         {
-            for (const auto& lease : entry.residencyLeases)
+            return validateResidencyLeases(entry.residencyLeases, submissionQueue, waits);
+        }
+
+        [[nodiscard]] Status validateResidencyLeases(std::span<const ResidencyLease> leases,
+                                                     QueueType submissionQueue,
+                                                     std::span<const TimelinePoint> waits) const
+        {
+            for (const auto& lease : leases)
             {
                 auto* residency = lease.record();
                 if (residency == nullptr)
@@ -1237,7 +1244,8 @@ namespace rachis::d3d12
             return {};
         }
 
-        [[nodiscard]] static Status acquireInPlaceResidencies(PoolEntry& entry)
+        [[nodiscard]] static Status acquireInPlaceResidencies(const PoolEntry& entry,
+                                                              std::vector<ResidencyLease>& staged)
         {
             if (entry.inPlaceResidencies.empty())
             {
@@ -1256,7 +1264,7 @@ namespace rachis::d3d12
                                                   }
                                               });
                 }
-                return appendResidencyLeases(entry.residencyLeases, residencies);
+                return appendResidencyLeases(staged, residencies);
             }
             catch (const std::bad_alloc&)
             {
@@ -2223,21 +2231,41 @@ namespace rachis::d3d12
             });
         }
 
-        for (auto* native : nativeCommands)
+        std::vector<std::vector<ResidencyLease>> inPlaceLeases;
+        try
         {
-            auto acquired = Impl::acquireInPlaceResidencies(*native->entry());
+            inPlaceLeases.resize(nativeCommands.size());
+        }
+        catch (const std::bad_alloc&)
+        {
+            return std::unexpected(Error{
+                ErrorCode::outOfMemory,
+                0,
+                "Failed to prepare the update-after-bind elements of a D3D12 submission.",
+            });
+        }
+
+        for (std::size_t index = 0; index < nativeCommands.size(); ++index)
+        {
+            auto acquired = Impl::acquireInPlaceResidencies(*nativeCommands[index]->entry(), inPlaceLeases[index]);
             if (!acquired)
             {
                 return std::unexpected(std::move(acquired.error()));
             }
         }
 
-        for (const auto* native : nativeCommands)
+        for (std::size_t index = 0; index < nativeCommands.size(); ++index)
         {
-            auto validDependencies = impl_->validateSubmissionDependencies(*native->entry(), state.type, waits);
+            const auto& entry = *nativeCommands[index]->entry();
+            auto validDependencies = impl_->validateSubmissionDependencies(entry, state.type, waits);
             if (!validDependencies)
             {
                 return std::unexpected(std::move(validDependencies.error()));
+            }
+            auto validInPlace = impl_->validateResidencyLeases(inPlaceLeases[index], state.type, waits);
+            if (!validInPlace)
+            {
+                return std::unexpected(std::move(validInPlace.error()));
             }
         }
 
@@ -2257,6 +2285,22 @@ namespace rachis::d3d12
         {
             return std::unexpected(std::move(legacyStates.error()));
         }
+        try
+        {
+            for (std::size_t index = 0; index < nativeCommands.size(); ++index)
+            {
+                auto& leases = nativeCommands[index]->entry()->residencyLeases;
+                leases.reserve(leases.size() + inPlaceLeases[index].size());
+            }
+        }
+        catch (const std::bad_alloc&)
+        {
+            return std::unexpected(Error{
+                ErrorCode::outOfMemory,
+                0,
+                "Failed to retain the residency of update-after-bind binding elements.",
+            });
+        }
 
         const std::unique_lock retirementLock(state.retirementMutex);
         auto reserved = reserveBatchRetirementRecords(state, batch);
@@ -2267,6 +2311,10 @@ namespace rachis::d3d12
 
         for (std::size_t index = 0; index < nativeCommands.size(); ++index)
         {
+            auto& leases = nativeCommands[index]->entry()->residencyLeases;
+            leases.insert(leases.end(),
+                          std::make_move_iterator(inPlaceLeases[index].begin()),
+                          std::make_move_iterator(inPlaceLeases[index].end()));
             static_cast<void>(nativeCommands[index]->release());
             commandBuffers[index].reset();
         }

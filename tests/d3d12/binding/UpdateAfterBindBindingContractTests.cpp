@@ -588,6 +588,49 @@ TEST_CASE("an update-after-bind element written in place must be resident when w
     checkCleanDiagnostics(device);
 }
 
+TEST_CASE("a refused submission keeps no residency of update-after-bind elements written in place",
+          "[size:medium][rhi][binding][compute][residency][warp]")
+{
+    auto device = createWarpDevice();
+    REQUIRE(rachis::test::requireCapabilities(device).updateAfterBindBindingArrays);
+    REQUIRE(rachis::test::requireCapabilities(device).manualResidency);
+    LargeArrayFixture resident(device, rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind);
+    LargeArrayFixture evicted(device, rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind);
+    const auto residentBuffer = resident.createValueBuffer(
+        replacementValues, replacementLabel, rachis::ResourceAllocationFlag::manualResidency);
+    const auto evictedBuffer = evicted.createValueBuffer(
+        replacementValues, "Evicted update-after-bind element", rachis::ResourceAllocationFlag::manualResidency);
+    const std::array residentBuffers{residentBuffer};
+    const std::array evictedBuffers{evictedBuffer};
+
+    const std::array selections{Selection{.element = 1, .slot = 1}};
+    std::array batch{resident.record(selections), evicted.record(selections)};
+    resident.recordReadback(batch[0]);
+    REQUIRE(update(device, resident.set(), 1, 1, slice(residentBuffer, 0)).has_value());
+    REQUIRE(update(device, evicted.set(), 1, 1, slice(evictedBuffer, 0)).has_value());
+    REQUIRE(device.evict({.buffers = evictedBuffers}).has_value());
+
+    auto refused = device.submit(batch);
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error().code == rachis::ErrorCode::invalidState);
+    REQUIRE(batch[0].isValid());
+    REQUIRE(batch[1].isValid());
+
+    REQUIRE(update(device, resident.set(), 1, 1, slice(resident.values(), 2)).has_value());
+    REQUIRE(device.evict({.buffers = residentBuffers}).has_value());
+
+    auto submitted = device.submit(std::move(batch[0]));
+    REQUIRE(submitted.has_value());
+    REQUIRE(device.wait(*submitted).has_value());
+    CHECK(resident.result(sizeof(std::uint32_t)) == sliceValues[2]);
+
+    resident.destroySet();
+    evicted.destroySet();
+    REQUIRE(device.destroyBuffer(residentBuffer).has_value());
+    REQUIRE(device.destroyBuffer(evictedBuffer).has_value());
+    checkCleanDiagnostics(device);
+}
+
 TEST_CASE("unretained command pools do not keep update-after-bind elements written in place alive",
           "[size:medium][rhi][binding][compute][warp]")
 {
