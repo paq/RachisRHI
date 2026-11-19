@@ -2001,3 +2001,51 @@ using namespace metal;
     REQUIRE_FALSE(onlyOne.has_value());
     CHECK(onlyOne.error().find("'more'") != std::string::npos);
 }
+
+TEST_CASE("ShaderBinaryTool ignores array brackets in Metal preprocessor lines, comments, and literals",
+          "[size:small][rhi][shader][tooling]")
+{
+    constexpr std::string_view source = R"msl(#include <metal_stdlib>
+using namespace metal;
+
+#line 2 "/probe/scene textures[].slang"
+struct KernelContext_0
+{
+    float device* outputs_0;
+    texture2d<float, access::sample>  textures_0[];
+};
+/* float device* comment_0[] */
+// [[kernel]] void fake_0(float device* fake_1[])
+static_assert(sizeof(float) == 4, "values_9[] stays a literal");
+[[kernel]] void main_0(float device* outputs_1 [[buffer(0)]], texture2d<float, access::sample>  textures_1[])
+{
+    thread KernelContext_0 kernelContext_0;
+    (&kernelContext_0)->outputs_0 = outputs_1;
+    (&kernelContext_0)->textures_0 = textures_1;
+    *outputs_1 = (&kernelContext_0)->textures_0[int(0)].read(uint2(0U, 0U)).x;
+}
+)msl";
+    const auto parameters = rachis::shader_tool::collectMetalUnboundedArrayParameters(source);
+    REQUIRE(parameters.size() == 1);
+    CHECK(parameters[0].parameterName == "textures_1");
+
+    constexpr std::string_view spirvJson = R"({"parameters": [
+        {"name": "textures", "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 0}}]})";
+    constexpr std::string_view metalJson = R"({"parameters": [
+        {"name": "outputs", "binding": {"kind": "constantBuffer", "index": 0},
+         "type": {"kind": "resource", "baseShape": "structuredBuffer", "access": "readWrite"}},
+        {"name": "textures", "type": {"kind": "array", "elementCount": 0,
+            "elementType": {"kind": "resource", "baseShape": "texture2D"}}}]})";
+    const auto planned = rachis::shader_tool::planMetalArgumentBufferArrays(source, spirvJson, metalJson);
+    REQUIRE(planned.has_value());
+    REQUIRE(planned->size() == 1);
+    const auto rewritten = rachis::shader_tool::rewriteMetalArgumentBufferArrays(source, *planned);
+    INFO((rewritten.has_value() ? std::string{} : rewritten.error()));
+    REQUIRE(rewritten.has_value());
+    CHECK(rewritten->contains("#line 2 \"/probe/scene textures[].slang\"\n"));
+    CHECK(rewritten->contains("/* float device* comment_0[] */"));
+    CHECK(rewritten->contains("// [[kernel]] void fake_0(float device* fake_1[])"));
+    CHECK(rewritten->contains("static_assert(sizeof(float) == 4, \"values_9[] stays a literal\");"));
+    CHECK_FALSE(rewritten->contains("textures_0[]"));
+    checkMetalSourceCompiles(*rewritten);
+}

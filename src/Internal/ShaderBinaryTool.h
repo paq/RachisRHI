@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstring>
 #include <expected>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <span>
@@ -2194,14 +2195,97 @@ namespace rachis::shader_tool
             return std::nullopt;
         }
 
+        [[nodiscard]] inline std::vector<MetalSourceRange> metalNonCodeRanges(std::string_view source)
+        {
+            std::vector<MetalSourceRange> ranges;
+            bool lineStart = true;
+            std::size_t index = 0;
+            const auto skipToLineEnd = [&](std::size_t from) {
+                std::size_t end = from;
+                while (end < source.size() && source[end] != '\n')
+                {
+                    if (source[end] == '\\' && end + 1 < source.size() && source[end + 1] == '\n')
+                    {
+                        ++end;
+                    }
+                    ++end;
+                }
+                return end;
+            };
+            while (index < source.size())
+            {
+                const char ch = source[index];
+                if (ch == '\n')
+                {
+                    lineStart = true;
+                    ++index;
+                    continue;
+                }
+                if (lineStart && (ch == ' ' || ch == '\t' || ch == '\r'))
+                {
+                    ++index;
+                    continue;
+                }
+                if (lineStart && ch == '#')
+                {
+                    const auto end = skipToLineEnd(index);
+                    ranges.push_back(MetalSourceRange{index, end});
+                    index = end;
+                    continue;
+                }
+                lineStart = false;
+                if (ch == '/' && index + 1 < source.size() && source[index + 1] == '/')
+                {
+                    const auto end = skipToLineEnd(index);
+                    ranges.push_back(MetalSourceRange{index, end});
+                    index = end;
+                    continue;
+                }
+                if (ch == '/' && index + 1 < source.size() && source[index + 1] == '*')
+                {
+                    const auto close = source.find("*/", index + 2);
+                    const auto end = close == std::string_view::npos ? source.size() : close + 2;
+                    ranges.push_back(MetalSourceRange{index, end});
+                    index = end;
+                    continue;
+                }
+                if (ch == '"' || ch == '\'')
+                {
+                    std::size_t end = index + 1;
+                    while (end < source.size() && source[end] != ch && source[end] != '\n')
+                    {
+                        end += source[end] == '\\' ? 2U : 1U;
+                    }
+                    end = std::min(end + 1, source.size());
+                    ranges.push_back(MetalSourceRange{index, end});
+                    index = end;
+                    continue;
+                }
+                ++index;
+            }
+            return ranges;
+        }
+
+        [[nodiscard]] inline bool isMetalCodePosition(std::span<const MetalSourceRange> nonCode,
+                                                      std::size_t position) noexcept
+        {
+            const auto after = std::ranges::upper_bound(nonCode, position, {}, &MetalSourceRange::begin);
+            return after == nonCode.begin() || position >= std::prev(after)->end;
+        }
+
         [[nodiscard]] inline std::vector<MetalSourceRange> metalEntryParameterLists(std::string_view source)
         {
+            const auto nonCode = metalNonCodeRanges(source);
             std::vector<MetalSourceRange> ranges;
             for (const auto attribute : metalEntryAttributes)
             {
                 for (std::size_t found = source.find(attribute); found != std::string_view::npos;
                      found = source.find(attribute, found + attribute.size()))
                 {
+                    if (!isMetalCodePosition(nonCode, found))
+                    {
+                        continue;
+                    }
                     const auto open = source.find('(', found);
                     if (open == std::string_view::npos)
                     {
@@ -2290,11 +2374,17 @@ namespace rachis::shader_tool
 
         [[nodiscard]] inline std::vector<MetalUnboundedDeclaration> metalUnboundedDeclarations(std::string_view source)
         {
+            const auto nonCode = metalNonCodeRanges(source);
             std::vector<MetalUnboundedDeclaration> declarations;
             for (std::size_t found = source.find("[]"); found != std::string_view::npos;
                  found = source.find("[]", found + 2))
             {
-                if (auto declaration = metalUnboundedDeclarationAt(source, found); declaration.has_value())
+                if (!isMetalCodePosition(nonCode, found))
+                {
+                    continue;
+                }
+                if (auto declaration = metalUnboundedDeclarationAt(source, found);
+                    declaration.has_value() && isMetalCodePosition(nonCode, declaration->typeBegin))
                 {
                     declarations.push_back(std::move(*declaration));
                 }
