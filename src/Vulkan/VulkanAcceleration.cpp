@@ -983,24 +983,72 @@ namespace rachis::vulkan
         };
     }
 
-    Status VulkanAccelerationManager::recordBuildBarrier(VkCommandBuffer command, QueueType queueType) const
+    VkPipelineStageFlags2 VulkanAccelerationManager::readerStages(QueueType queueType) const noexcept
     {
-        VkPipelineStageFlags2 dstStages =
-            VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT_KHR;
+        VkPipelineStageFlags2 stages =
+            VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         if (queueType == QueueType::graphics)
         {
-            dstStages |= VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT_KHR;
+            stages |= VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            if (capabilities_ != nullptr && capabilities_->geometryShaders)
+            {
+                stages |= VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT;
+            }
+            if (capabilities_ != nullptr && capabilities_->tessellationShaders)
+            {
+                stages |= VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT |
+                          VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT;
+            }
+            if (capabilities_ != nullptr && capabilities_->taskShaders)
+            {
+                stages |= VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT;
+            }
+            if (capabilities_ != nullptr && capabilities_->meshShaders)
+            {
+                stages |= VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT;
+            }
         }
         if (capabilities_ != nullptr && capabilities_->rayTracing)
         {
-            dstStages |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+            stages |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
         }
+        return stages;
+    }
+
+    void VulkanAccelerationManager::recordInPlaceUpdateBarrier(VkCommandBuffer command,
+                                                               QueueType queueType) const noexcept
+    {
+        const VkMemoryBarrier2 barrier{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+            .pNext = {},
+            .srcStageMask = readerStages(queueType),
+            .srcAccessMask = VK_ACCESS_2_NONE,
+            .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+            .dstAccessMask =
+                VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+        };
+        const VkDependencyInfo dependency{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .pNext = {},
+            .dependencyFlags = {},
+            .memoryBarrierCount = 1,
+            .pMemoryBarriers = &barrier,
+            .bufferMemoryBarrierCount = {},
+            .pBufferMemoryBarriers = {},
+            .imageMemoryBarrierCount = {},
+            .pImageMemoryBarriers = {},
+        };
+        table_->vkCmdPipelineBarrier2(command, &dependency);
+    }
+
+    Status VulkanAccelerationManager::recordBuildBarrier(VkCommandBuffer command, QueueType queueType) const
+    {
         const VkMemoryBarrier2 barrier{
             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
             .pNext = {},
             .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
             .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
-            .dstStageMask = dstStages,
+            .dstStageMask = readerStages(queueType),
             .dstAccessMask =
                 VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
         };
@@ -1724,6 +1772,10 @@ namespace rachis::vulkan
                                             target.destination.accelerationStructure,
                                             target.scratch.deviceAddress + target.request.scratchOffset);
         info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
+        if (target.request.inPlace)
+        {
+            recordInPlaceUpdateBarrier(commandBuffer.native(), commandBuffer.queueType());
+        }
         info.srcAccelerationStructure = target.source.accelerationStructure;
         const auto range = nativeBuildRange(instances.count);
         const VkAccelerationStructureBuildRangeInfoKHR* rangePointer = &range;

@@ -2900,6 +2900,13 @@ namespace rachis::vulkan
         {
             return acceleration.recordBuildBarrier(command, queueType);
         }
+
+        static void recordInPlaceUpdateBarrier(const VulkanAccelerationManager& acceleration,
+                                               VkCommandBuffer command,
+                                               QueueType queueType) noexcept
+        {
+            acceleration.recordInPlaceUpdateBarrier(command, queueType);
+        }
     };
 
 } // namespace rachis::vulkan
@@ -3394,7 +3401,7 @@ TEST_CASE("Vulkan barriers map vertex-buffer and acceleration-structure accesses
     gMock = nullptr;
 }
 
-TEST_CASE("Vulkan acceleration-structure build barriers wait in ray-tracing shaders only with ray-tracing pipelines",
+TEST_CASE("Vulkan acceleration-structure barriers cover every enabled shader stage that can trace the structure",
           "[size:small][rhi][vulkan][vuid][raytracing-mock]")
 {
     MockVulkanDispatch mock;
@@ -3402,9 +3409,17 @@ TEST_CASE("Vulkan acceleration-structure build barriers wait in ray-tracing shad
     const auto table = makeMockDeviceTable();
     const auto device = fakeHandle<VkDevice>(0x26);
     const auto command = fakeHandle<VkCommandBuffer>(0x7201);
-    constexpr VkPipelineStageFlags2 rayQueryStages = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
-                                                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-                                                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    constexpr VkPipelineStageFlags2 computeReaders =
+        VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    constexpr VkPipelineStageFlags2 coreGraphicsReaders =
+        computeReaders | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    constexpr VkPipelineStageFlags2 everyGraphicsReader =
+        coreGraphicsReaders | VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT |
+        VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT |
+        VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT | VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT |
+        VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+    constexpr VkAccessFlags2 structureAccess =
+        VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
 
     rachis::DeviceCapabilities rayQueryOnly{};
     rayQueryOnly.rayQuery = true;
@@ -3423,14 +3438,34 @@ TEST_CASE("Vulkan acceleration-structure build barriers wait in ray-tracing shad
     REQUIRE(rachis::vulkan::VulkanAccelerationTestAccess::recordBuildBarrier(
                 rayTracingAcceleration, command, rachis::QueueType::compute)
                 .has_value());
+    rachis::vulkan::VulkanAccelerationTestAccess::recordInPlaceUpdateBarrier(
+        rayQueryAcceleration, command, rachis::QueueType::graphics);
+    rachis::vulkan::VulkanAccelerationTestAccess::recordInPlaceUpdateBarrier(
+        rayTracingAcceleration, command, rachis::QueueType::graphics);
+    rachis::vulkan::VulkanAccelerationTestAccess::recordInPlaceUpdateBarrier(
+        rayTracingAcceleration, command, rachis::QueueType::compute);
 
-    REQUIRE(mock.memoryBarriers.size() == 3);
-    CHECK(mock.memoryBarriers[0].srcStageMask == VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR);
-    CHECK(mock.memoryBarriers[0].dstStageMask == rayQueryStages);
-    CHECK(mock.memoryBarriers[1].dstStageMask == (rayQueryStages | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR));
-    CHECK(mock.memoryBarriers[2].dstStageMask ==
-          (VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-           VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR));
+    REQUIRE(mock.memoryBarriers.size() == 6);
+    for (std::size_t index = 0; index < 3; ++index)
+    {
+        CAPTURE(index);
+        CHECK(mock.memoryBarriers[index].srcStageMask == VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR);
+        CHECK(mock.memoryBarriers[index].srcAccessMask == VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR);
+        CHECK(mock.memoryBarriers[index].dstAccessMask == structureAccess);
+    }
+    CHECK(mock.memoryBarriers[0].dstStageMask == coreGraphicsReaders);
+    CHECK(mock.memoryBarriers[1].dstStageMask == everyGraphicsReader);
+    CHECK(mock.memoryBarriers[2].dstStageMask == (computeReaders | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR));
+    for (std::size_t index = 3; index < 6; ++index)
+    {
+        CAPTURE(index);
+        CHECK(mock.memoryBarriers[index].srcAccessMask == VK_ACCESS_2_NONE);
+        CHECK(mock.memoryBarriers[index].dstStageMask == VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR);
+        CHECK(mock.memoryBarriers[index].dstAccessMask == structureAccess);
+    }
+    CHECK(mock.memoryBarriers[3].srcStageMask == coreGraphicsReaders);
+    CHECK(mock.memoryBarriers[4].srcStageMask == everyGraphicsReader);
+    CHECK(mock.memoryBarriers[5].srcStageMask == (computeReaders | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR));
     rayTracingAcceleration.shutdown();
     rayQueryAcceleration.shutdown();
     gMock = nullptr;

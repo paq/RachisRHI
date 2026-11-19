@@ -148,7 +148,9 @@ namespace rachis::vulkan
             std::uint32_t geometryCount,
             const VkAccelerationStructureGeometryKHR* geometries,
             const std::uint32_t* primitiveCounts) const;
+        [[nodiscard]] VkPipelineStageFlags2 readerStages(QueueType queueType) const noexcept;
         [[nodiscard]] Status recordBuildBarrier(VkCommandBuffer command, QueueType queueType) const;
+        void recordInPlaceUpdateBarrier(VkCommandBuffer command, QueueType queueType) const noexcept;
         [[nodiscard]] Result<std::shared_ptr<AccelerationStructureStorageLease>> leaseStorageRange(BufferHandle storage,
                                                                                                    std::uint64_t offset,
                                                                                                    std::uint64_t size);
