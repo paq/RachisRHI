@@ -1104,6 +1104,7 @@ namespace rachis::d3d12
             .residencyLeases = native->entry()->residencyLeases.size(),
             .swapchainReferences = native->entry()->swapchainImageReferences.size(),
             .sparseMappingDependencies = native->entry()->sparseMappingDependencies.size(),
+            .textureLayoutUses = native->entry()->legacyTextureStates.uses().size(),
         };
     }
 

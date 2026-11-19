@@ -329,3 +329,42 @@ TEST_CASE("D3D12 clearStorageTexture writes 32-bit float values bit for bit", "[
         REQUIRE(device.destroyTexture(texture.texture).has_value());
     }
 }
+
+TEST_CASE("D3D12 clearStorageTexture keeps no layout tracking for a clear it rejects",
+          "[size:medium][rhi][d3d12][clear][residency][warp]")
+{
+    namespace contract = rachis::test::fill_and_clear;
+    for (const bool legacyBarriers : {false, true})
+    {
+        INFO("Legacy barriers: " << legacyBarriers);
+        auto device = createWarpDevice(legacyBarriers);
+        REQUIRE(rachis::test::requireCapabilities(device).manualResidency);
+        const auto texture =
+            contract::createStorageTexture(device,
+                                           rachis::TextureDesc{
+                                               .width = 4,
+                                               .height = 4,
+                                               .format = rachis::Format::r32Uint,
+                                               .allocationFlags = rachis::ResourceAllocationFlag::manualResidency,
+                                           });
+        const auto view =
+            contract::requireStorageView(device, texture.texture, rachis::TextureViewDimension::texture2D, 0);
+        const std::array textures{texture.texture};
+        REQUIRE(device.evict({.textures = textures}).has_value());
+
+        auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+        REQUIRE(command.has_value());
+        const auto before = rachis::d3d12::test::commandDependencySnapshot(*command);
+        REQUIRE(before.has_value());
+        const auto rejected = device.clearStorageTexture(*command, view, contract::uintClear(7));
+        REQUIRE_FALSE(rejected.has_value());
+        CHECK(rejected.error().code == rachis::ErrorCode::invalidState);
+        const auto after = rachis::d3d12::test::commandDependencySnapshot(*command);
+        REQUIRE(after.has_value());
+        CHECK(after == before);
+        CHECK(after->textureLayoutUses == 0);
+
+        REQUIRE(device.destroyTextureView(view).has_value());
+        REQUIRE(device.destroyTexture(texture.texture).has_value());
+    }
+}

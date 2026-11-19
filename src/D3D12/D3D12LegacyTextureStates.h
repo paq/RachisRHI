@@ -220,6 +220,15 @@ namespace rachis::d3d12
             entries_.clear();
         }
 
+        void erase(const LegacyTextureStateTracker* tracker) noexcept
+        {
+            const auto position = std::ranges::lower_bound(entries_, tracker, std::ranges::less{}, &Entry::tracker);
+            if (position != entries_.end() && position->tracker == tracker)
+            {
+                entries_.erase(position);
+            }
+        }
+
         [[nodiscard]] std::optional<std::size_t> find(const LegacyTextureStateTracker* tracker) const noexcept
         {
             const auto position = std::ranges::lower_bound(entries_, tracker, std::ranges::less{}, &Entry::tracker);
@@ -351,6 +360,15 @@ namespace rachis::d3d12
             return uses_.empty();
         }
 
+        void truncate(std::size_t size) noexcept
+        {
+            while (uses_.size() > size)
+            {
+                indices_.erase(uses_.back().tracker.get());
+                uses_.pop_back();
+            }
+        }
+
         void clear() noexcept
         {
             uses_.clear();
@@ -360,6 +378,37 @@ namespace rachis::d3d12
     private:
         std::vector<LegacyTextureStateUse> uses_;
         LegacyTextureStateIndex indices_;
+    };
+
+    class LegacyTextureStateInsertionGuard final
+    {
+    public:
+        explicit LegacyTextureStateInsertionGuard(LegacyTextureStateRecording* recording) noexcept
+            : recording_(recording), size_(recording != nullptr ? recording->uses().size() : 0)
+        {
+        }
+
+        ~LegacyTextureStateInsertionGuard()
+        {
+            if (recording_ != nullptr)
+            {
+                recording_->truncate(size_);
+            }
+        }
+
+        LegacyTextureStateInsertionGuard(const LegacyTextureStateInsertionGuard&) = delete;
+        LegacyTextureStateInsertionGuard& operator=(const LegacyTextureStateInsertionGuard&) = delete;
+        LegacyTextureStateInsertionGuard(LegacyTextureStateInsertionGuard&&) = delete;
+        LegacyTextureStateInsertionGuard& operator=(LegacyTextureStateInsertionGuard&&) = delete;
+
+        void commit() noexcept
+        {
+            recording_ = nullptr;
+        }
+
+    private:
+        LegacyTextureStateRecording* recording_ = nullptr;
+        std::size_t size_ = 0;
     };
 
     [[nodiscard]] constexpr std::string_view textureLayoutName(TextureLayout layout) noexcept

@@ -20,6 +20,7 @@ namespace rachis::d3d12::test
         std::size_t residencyLeases = 0;
         std::size_t swapchainReferences = 0;
         std::size_t sparseMappingDependencies = 0;
+        std::size_t textureLayoutUses = 0;
 
         [[nodiscard]] friend constexpr bool operator==(const CommandDependencySnapshot&,
                                                        const CommandDependencySnapshot&) noexcept = default;

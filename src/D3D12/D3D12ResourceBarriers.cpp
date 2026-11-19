@@ -2041,13 +2041,27 @@ namespace rachis::d3d12
         std::vector<OrderedTextureBarrier> barriers;
         LegacyTextureStateRecording* legacyStates = nullptr;
         LegacyTextureStateRecording* layoutStates = nullptr;
+        std::size_t insertedFrom = 0;
+        std::size_t insertedTo = 0;
+        bool recorded = false;
     };
 
     NativeTextureBarrierSequence::NativeTextureBarrierSequence() : impl_(std::make_unique<Impl>())
     {
     }
 
-    NativeTextureBarrierSequence::~NativeTextureBarrierSequence() = default;
+    NativeTextureBarrierSequence::~NativeTextureBarrierSequence()
+    {
+        if (impl_ == nullptr || impl_->recorded || impl_->layoutStates == nullptr)
+        {
+            return;
+        }
+        auto& recording = *impl_->layoutStates;
+        if (recording.uses().size() == impl_->insertedTo)
+        {
+            recording.truncate(impl_->insertedFrom);
+        }
+    }
     NativeTextureBarrierSequence::NativeTextureBarrierSequence(NativeTextureBarrierSequence&&) noexcept = default;
     NativeTextureBarrierSequence& NativeTextureBarrierSequence::operator=(NativeTextureBarrierSequence&&) noexcept =
         default;
@@ -2065,6 +2079,7 @@ namespace rachis::d3d12
             return;
         }
 
+        impl_->recorded = true;
         const auto& barrier = impl_->barriers[index];
         if (impl_->enhancedCommandList != nullptr)
         {
@@ -2400,6 +2415,7 @@ namespace rachis::d3d12
         {
             return std::unexpected(std::move(layoutRecording.error()));
         }
+        LegacyTextureStateInsertionGuard insertions(*layoutRecording);
         auto layoutUses = prepareTextureBarrierLayouts(**layoutRecording, (*prepared)->textures);
         if (!layoutUses)
         {
@@ -2429,6 +2445,7 @@ namespace rachis::d3d12
         if (recorded)
         {
             recordTextureBarrierLayouts(**layoutRecording, (*prepared)->textures, *layoutUses);
+            insertions.commit();
         }
         return recorded;
     }
@@ -2467,6 +2484,8 @@ namespace rachis::d3d12
             return std::unexpected(std::move(layoutRecording.error()));
         }
         result.impl_->layoutStates = *layoutRecording;
+        result.impl_->insertedFrom = (**layoutRecording).uses().size();
+        result.impl_->insertedTo = result.impl_->insertedFrom;
         try
         {
             result.impl_->barriers.reserve(barriers.size());
@@ -2510,6 +2529,7 @@ namespace rachis::d3d12
                                                             commandBuffer.queueType(),
                                                             impl_->enhancedBarriers,
                                                             legacyStates ? &*legacyStates : nullptr);
+                result.impl_->insertedTo = (**layoutRecording).uses().size();
                 if (!ordered)
                 {
                     return std::unexpected(std::move(ordered.error()));
@@ -2518,6 +2538,7 @@ namespace rachis::d3d12
                 if (ordered->resource->legacyStates != nullptr)
                 {
                     ordered->layoutUse = (**layoutRecording).use(ordered->resource->legacyStates);
+                    result.impl_->insertedTo = (**layoutRecording).uses().size();
                 }
                 result.impl_->barriers.push_back(std::move(*ordered));
             }
@@ -2605,6 +2626,7 @@ namespace rachis::d3d12
         {
             return std::unexpected(std::move(afterRange.error()));
         }
+        LegacyTextureStateInsertionGuard insertions(*layoutRecording);
         std::size_t afterUse = untrackedLegacyTexture;
         try
         {
@@ -2639,6 +2661,7 @@ namespace rachis::d3d12
                                                       .layoutBefore = TextureLayout::undefined,
                                                       .layoutAfter = activation.layoutAfter});
         }
+        insertions.commit();
         return {};
     }
 

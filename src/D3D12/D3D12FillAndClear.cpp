@@ -299,6 +299,12 @@ namespace rachis::d3d12
         {
             return std::unexpected(std::move(format.error()));
         }
+        auto layoutRecording = queues.legacyTextureStates(commandBuffer);
+        if (!layoutRecording)
+        {
+            return std::unexpected(std::move(layoutRecording.error()));
+        }
+        LegacyTextureStateInsertionGuard insertions(*layoutRecording);
         auto layoutUse = prepareTextureLayoutUse(queues,
                                                  commandBuffer,
                                                  *texture,
@@ -368,6 +374,7 @@ namespace rachis::d3d12
             noteStorageTextureClear(false, values);
         }
         commitTextureLayoutUse(*layoutUse);
+        insertions.commit();
         test::noteResourceCommandRecorded();
         return {};
     }
