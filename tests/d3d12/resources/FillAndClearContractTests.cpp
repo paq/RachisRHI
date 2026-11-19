@@ -136,6 +136,29 @@ TEST_CASE("D3D12 fillBuffer writes 32-bit patterns across a large buffer", "[siz
     }
 }
 
+TEST_CASE("D3D12 clearStorageTexture clears the subresources a storage view covers",
+          "[size:medium][rhi][d3d12][clear][warp]")
+{
+    for (const bool legacyBarriers : {false, true})
+    {
+        INFO("Legacy barriers: " << legacyBarriers);
+        auto device = createWarpDevice(legacyBarriers);
+        rachis::test::fill_and_clear::verifyStorageTextureClears(device, rachis::QueueType::graphics);
+        rachis::test::fill_and_clear::verifyStorageTextureClears(device, rachis::QueueType::compute);
+    }
+}
+
+TEST_CASE("D3D12 fillBuffer and clearStorageTexture reject invalid queues, ranges, usages, values, and layouts",
+          "[size:medium][rhi][d3d12][fill][clear][warp]")
+{
+    for (const bool legacyBarriers : {false, true})
+    {
+        INFO("Legacy barriers: " << legacyBarriers);
+        auto device = createWarpDevice(legacyBarriers);
+        rachis::test::fill_and_clear::verifyFillAndClearRejections(device);
+    }
+}
+
 TEST_CASE("D3D12 fillBuffer orders the UAV clears of a fill that spans several typed views",
           "[size:medium][rhi][d3d12][fill][warp]")
 {
@@ -152,18 +175,6 @@ TEST_CASE("D3D12 fillBuffer orders the UAV clears of a fill that spans several t
         rachis::test::fill_and_clear::verifyLargeBufferFill(device, rachis::QueueType::compute);
         const auto recorded = rachis::d3d12::test::bufferFillChunkBarrierCount().load(std::memory_order_relaxed);
         CHECK(recorded - before == chunkBarriers(size) + chunkBarriers(size - 2 * offset));
-    }
-}
-
-TEST_CASE("D3D12 clearStorageTexture clears the subresources a storage view covers",
-          "[size:medium][rhi][d3d12][clear][warp]")
-{
-    for (const bool legacyBarriers : {false, true})
-    {
-        INFO("Legacy barriers: " << legacyBarriers);
-        auto device = createWarpDevice(legacyBarriers);
-        rachis::test::fill_and_clear::verifyStorageTextureClears(device, rachis::QueueType::graphics);
-        rachis::test::fill_and_clear::verifyStorageTextureClears(device, rachis::QueueType::compute);
     }
 }
 
@@ -213,16 +224,5 @@ TEST_CASE("D3D12 clearStorageTexture clamps normalized values like a shader writ
         CHECK(diagnostics.corruptions == 0);
         REQUIRE(device.destroyTextureView(view).has_value());
         REQUIRE(device.destroyTexture(texture.texture).has_value());
-    }
-}
-
-TEST_CASE("D3D12 fillBuffer and clearStorageTexture reject invalid queues, ranges, usages, values, and layouts",
-          "[size:medium][rhi][d3d12][fill][clear][warp]")
-{
-    for (const bool legacyBarriers : {false, true})
-    {
-        INFO("Legacy barriers: " << legacyBarriers);
-        auto device = createWarpDevice(legacyBarriers);
-        rachis::test::fill_and_clear::verifyFillAndClearRejections(device);
     }
 }
