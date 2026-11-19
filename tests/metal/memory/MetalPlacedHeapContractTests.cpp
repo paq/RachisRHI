@@ -278,6 +278,105 @@ TEST_CASE("Metal placed texture heaps preserve class and retained-range ownershi
     CHECK(released->retainedAllocationCount == baseline->retainedAllocationCount);
 }
 
+TEST_CASE("Metal texture views retained by binding sets and storage clears keep their placed range",
+          "[size:large][rhi][metal][heap][placed][texture][lifetime]")
+{
+    auto created = rachis::createDevice(metalDesc());
+    REQUIRE(created.has_value());
+    auto device = std::move(*created);
+
+    const rachis::TextureDesc textureDesc{
+        .dimension = rachis::TextureDimension::texture2D,
+        .width = 64,
+        .height = 64,
+        .format = rachis::Format::rgba8Unorm,
+        .usage = rachis::TextureUsage::sampled | rachis::TextureUsage::storage | rachis::TextureUsage::copyDestination,
+        .label = "Placed view-retained texture",
+    };
+    const auto requirements = device.queryTextureMemoryRequirements(textureDesc);
+    REQUIRE(requirements.has_value());
+    const auto heap = device.createResourceHeap({
+        .size = requirements->size,
+        .alignment = requirements->alignment,
+        .memoryType = rachis::MemoryType::deviceLocal,
+        .resourceClass = rachis::ResourceHeapClass::nonAttachmentTexture,
+        .label = "Placed view-retained texture heap",
+    });
+    REQUIRE(heap.has_value());
+    const auto requireRangeRetained = [&] {
+        auto overlap = device.createPlacedTexture({.heap = *heap, .offset = 0}, textureDesc);
+        REQUIRE_FALSE(overlap.has_value());
+        CHECK(overlap.error().code == rachis::ErrorCode::invalidState);
+    };
+    const auto requireRangeReleased = [&] {
+        device.collectGarbage();
+        auto replacement = device.createPlacedTexture({.heap = *heap, .offset = 0}, textureDesc);
+        REQUIRE(replacement.has_value());
+        REQUIRE(device.destroyTexture(*replacement).has_value());
+    };
+
+    SECTION("A binding set that holds a sampled view keeps the texture's range")
+    {
+        auto texture = device.createPlacedTexture({.heap = *heap, .offset = 0}, textureDesc);
+        REQUIRE(texture.has_value());
+        auto view = device.createTextureView({.texture = *texture, .usage = rachis::TextureViewUsage::sampled});
+        REQUIRE(view.has_value());
+        const std::array entries{
+            rachis::BindingLayoutEntry{0, rachis::BindingType::sampledTexture, rachis::ShaderStage::compute, 1},
+        };
+        auto layout = device.createBindingLayout({.entries = entries});
+        REQUIRE(layout.has_value());
+        const std::array writes{rachis::BindingWrite{.binding = 0, .resource = *view}};
+        auto set = rachis::test::createBindingSet(device, {.layout = *layout, .writes = writes});
+        REQUIRE(set.has_value());
+
+        REQUIRE(device.destroyTextureView(*view).has_value());
+        REQUIRE(device.destroyTexture(*texture).has_value());
+        requireRangeRetained();
+
+        REQUIRE(device.destroyBindingSet(*set).has_value());
+        requireRangeReleased();
+        REQUIRE(device.destroyBindingLayout(*layout).has_value());
+    }
+
+    SECTION("A recorded storage clear keeps the texture's range until it retires")
+    {
+        auto texture = device.createPlacedTexture({.heap = *heap, .offset = 0}, textureDesc);
+        REQUIRE(texture.has_value());
+        auto view = device.createTextureView({.texture = *texture, .usage = rachis::TextureViewUsage::storage});
+        REQUIRE(view.has_value());
+        auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+        REQUIRE(command.has_value());
+        REQUIRE(device
+                    .textureBarrier(*command,
+                                    {
+                                        .texture = *texture,
+                                        .stagesAfter = rachis::PipelineStage::computeShader,
+                                        .accessAfter = rachis::Access::unorderedAccess,
+                                        .layoutAfter = rachis::TextureLayout::unorderedAccess,
+                                    })
+                    .has_value());
+        REQUIRE(device
+                    .clearStorageTexture(
+                        *command,
+                        *view,
+                        {.type = rachis::StorageTextureClearType::float32, .float32 = {1.0F, 0.0F, 0.0F, 1.0F}})
+                    .has_value());
+
+        REQUIRE(device.destroyTextureView(*view).has_value());
+        REQUIRE(device.destroyTexture(*texture).has_value());
+        requireRangeRetained();
+
+        auto submitted = device.submit(std::move(*command));
+        REQUIRE(submitted.has_value());
+        requireRangeRetained();
+        REQUIRE(device.wait(*submitted).has_value());
+        requireRangeReleased();
+    }
+
+    REQUIRE(device.destroyResourceHeap(*heap).has_value());
+}
+
 TEST_CASE("Metal aliasable placed resources require explicit ordered activation",
           "[size:large][rhi][metal][heap][aliasing][gpu]")
 {

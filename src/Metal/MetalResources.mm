@@ -2075,6 +2075,7 @@ namespace rachis::metal
             MetalTextureViewRecord record{};
             record.owner = std::make_shared<MetalTextureOwner>();
             record.owner->texture = view;
+            record.owner->parent = texture->owner;
             record.parent = texture->owner;
             record.view = view;
             record.texture = desc.texture;

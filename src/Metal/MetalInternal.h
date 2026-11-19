@@ -274,6 +274,7 @@ namespace rachis::metal
         __strong id<MTLTexture> texture;
         std::shared_ptr<MetalAllocationTelemetry> telemetry;
         std::shared_ptr<MetalPlacedLease> placement;
+        std::shared_ptr<MetalTextureOwner> parent;
     };
 
     struct MetalSamplerOwner final
