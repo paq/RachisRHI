@@ -1,5 +1,67 @@
 # Changelog
 
+## Unreleased
+
+- Multi-record indirect calls can give each record a draw index that shaders
+  read. Set `drawIndexPrefix` in `IndirectDrawDesc` or
+  `IndirectMeshDispatchDesc` and start each record with a `uint32` equal to its
+  position, set `PipelineLayoutDesc::drawIndex`, and call `rachisDrawIndex()`
+  from `#include "Rachis/DrawIndex.hlsli"` in HLSL or Slang.
+  `DeviceCapabilities::shaderDrawIndex` reports support, on every backend.
+  `rachis_add_shader` passes the RachisRHI include directory to every HLSL and
+  Slang compiler run, and `RachisShaderBinaryTool reflect-interface` reads from
+  the bytecode whether an entry point reads the draw index, now also from a
+  Metal manifest with `--bytecode metal=<shader.pnms>`.
+  [Using](docs/using.md#draw-index-in-indirect-calls) explains.
+- `fillBuffer` writes a 32-bit value to a buffer range and
+  `clearStorageTexture` clears a storage-texture view, on the GPU and in
+  command-buffer order, on every backend. Both count as compute-stage
+  unordered-access writes for barriers.
+  [Using](docs/using.md#buffer-fills-and-storage-texture-clears) lists the
+  rules.
+- `BindingFlag::updateAfterBind` lets `updateBindingSet` change elements of a
+  large binding array in place while work in flight uses the set, without
+  copying the whole set into a new version. The application promises not to
+  change elements that such work reads. `DeviceCapabilities::updateAfterBindBindingArrays`
+  reports support: always on Direct3D 12, with the update-after-bind
+  descriptor-indexing features on Vulkan, and for variable-count entries only
+  on Metal.
+  [Using](docs/using.md#update-after-bind-binding-arrays) explains.
+- Top-level acceleration structures build and update from instance records
+  that the GPU writes into a buffer: `buildTopLevelAccelerationStructureFromBuffer`,
+  `updateTopLevelAccelerationStructureFromBuffer`, and
+  `updateTopLevelAccelerationStructureInPlaceFromBuffer`, with
+  `queryAccelerationStructureInstanceLayout` for the record layout
+  (`AccelerationStructureInstanceRecord`) and
+  `queryAccelerationStructureReference` for the 64-bit reference a record
+  stores for a bottom-level structure. On Direct3D 12 and Vulkan.
+- Vulkan implements top-level acceleration-structure updates, out of place and
+  in place.
+- Vulkan reports `conditionalExecution` on devices with
+  `VK_EXT_conditional_rendering`, and `multiDispatchIndirect` and
+  `dispatchIndirectCount`, which it emulates with one dispatch per record and,
+  for a count buffer, an internal compute pass.
+  [Platforms](docs/platforms.md#indirect-dispatch-batches-on-vulkan) describes
+  the cost.
+- Metal:
+  - Mesh and task shaders on Apple9 GPUs (M3, A17 Pro) and later, with
+    `dispatchMesh` and `dispatchMeshIndirect`. Mesh shaders written in Slang
+    must write each output vertex and primitive as a whole struct.
+    [Platforms](docs/platforms.md#mesh-shaders-on-metal) lists the limits.
+  - `multiDrawIndirect`, `drawIndirectCount`, `multiDispatchIndirect`, and
+    `dispatchIndirectCount`, built from one Metal call per record and a small
+    internal pass for count buffers. Recording cost grows with `maxDrawCount`
+    and `maxDispatchCount`; [Platforms](docs/platforms.md#indirect-calls-on-metal)
+    explains.
+  - Variable-count binding arrays live in argument buffers, so
+    `maxVariableBufferDescriptors` and `maxVariableResourceDescriptors` are
+    500,000 and `maxVariableSamplerDescriptors` is 1,024, instead of the
+    argument-table slot counts. `RachisShaderBinaryTool cook-metallib` rewrites
+    the unbounded arrays that `slangc` emits for Metal.
+- [Using](docs/using.md#per-record-state) records that indirect calls do not
+  change bindings or pipelines from one record to the next, and how to reach
+  per-record data with binding arrays and the draw index instead.
+
 ## 0.2.0
 
 - The C ABI is at `RACHIS_ABI_VERSION` 2, and the shared library is
