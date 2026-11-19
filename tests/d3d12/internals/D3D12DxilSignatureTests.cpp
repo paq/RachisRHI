@@ -347,6 +347,20 @@ TEST_CASE("Direct3D 12 draw-index declarations need a readable PSV0 resource tab
     REQUIRE_FALSE(unverifiable.has_value());
     CHECK(unverifiable.error().code == rachis::ErrorCode::invalidArgument);
 
+    auto programWithoutPsv = binding;
+    for (std::size_t index = 0; index < 4; ++index)
+    {
+        programWithoutPsv[36 + index] = static_cast<std::byte>(std::string_view("DXIL")[index]);
+    }
+    for (const bool declared : {true, false})
+    {
+        INFO("Declared: " << declared);
+        const auto result = validateDrawIndexDeclaration(programWithoutPsv, 0, 5, declared);
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().code == rachis::ErrorCode::invalidArgument);
+    }
+    CHECK(validateDrawIndexDeclaration(programWithoutPsv, 0, 5, false, false).has_value());
+
     CHECK(validateDrawIndexDeclaration(std::vector<std::byte>(8), 0, 5, false).has_value());
     CHECK_FALSE(validateDrawIndexDeclaration(std::vector<std::byte>(8), 0, 5, true).has_value());
     auto headerOnly = std::vector<std::byte>(binding.begin(), binding.begin() + 8);

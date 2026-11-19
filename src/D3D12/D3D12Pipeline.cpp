@@ -595,9 +595,15 @@ namespace rachis::d3d12
             return record;
         }
 
-        [[nodiscard]] Status validateDrawIndexBytecode(std::span<const std::byte> bytecode, bool declared)
+        [[nodiscard]] Status validateDrawIndexBytecode(std::span<const std::byte> bytecode,
+                                                       ShaderStage stage,
+                                                       bool declared)
         {
-            return dxil::validateDrawIndexDeclaration(bytecode, drawIndexRegister, drawIndexRegisterSpace, declared);
+            return dxil::validateDrawIndexDeclaration(bytecode,
+                                                      drawIndexRegister,
+                                                      drawIndexRegisterSpace,
+                                                      declared,
+                                                      !hasAny(stage, ShaderStage::allRayTracing));
         }
 
         [[nodiscard]] Status validateVertexInterface(const ShaderModuleRecord& shader,
@@ -2455,7 +2461,8 @@ namespace rachis::d3d12
 
         if (!hasLibrary)
         {
-            if (auto drawIndex = validateDrawIndexBytecode(desc.bytecode, record->shaderInterface.drawIndex);
+            if (auto drawIndex =
+                    validateDrawIndexBytecode(desc.bytecode, desc.stage, record->shaderInterface.drawIndex);
                 !drawIndex)
             {
                 return std::unexpected(std::move(drawIndex.error()));
@@ -2489,7 +2496,8 @@ namespace rachis::d3d12
                 "The shader library does not contain the requested stage, entry point, and specialization values.",
             });
         }
-        if (auto drawIndex = validateDrawIndexBytecode(foundEntry->bytecode, record->shaderInterface.drawIndex);
+        if (auto drawIndex =
+                validateDrawIndexBytecode(foundEntry->bytecode, desc.stage, record->shaderInterface.drawIndex);
             !drawIndex)
         {
             return std::unexpected(std::move(drawIndex.error()));

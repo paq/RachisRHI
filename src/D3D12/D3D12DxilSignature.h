@@ -610,7 +610,8 @@ namespace rachis::d3d12::dxil
     [[nodiscard]] inline Status validateDrawIndexDeclaration(std::span<const std::byte> container,
                                                              std::uint32_t shaderRegister,
                                                              std::uint32_t registerSpace,
-                                                             bool declared)
+                                                             bool declared,
+                                                             bool requiresPipelineState = true)
     {
         if (!declared && !isContainer(container))
         {
@@ -623,6 +624,22 @@ namespace rachis::d3d12::dxil
         }
         if (!binds->has_value())
         {
+            if (!declared && requiresPipelineState)
+            {
+                auto program = signature_detail::findPart(container, signature_detail::fourCC('D', 'X', 'I', 'L'));
+                if (!program)
+                {
+                    return std::unexpected(std::move(program.error()));
+                }
+                if (program->has_value())
+                {
+                    return std::unexpected(Error{
+                        ErrorCode::invalidArgument,
+                        0,
+                        "The DXIL container has no PSV0 part, so its draw-index declaration cannot be checked.",
+                    });
+                }
+            }
             if (!declared)
             {
                 return {};

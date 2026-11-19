@@ -58,16 +58,17 @@ namespace
     {
         constexpr std::uint32_t psv0 = 0x30565350U;
         const auto partCount = readU32(container, 28);
-        for (std::uint32_t index = 0; index < partCount; ++index)
+        std::size_t found = 0;
+        for (std::uint32_t index = 0; index < partCount && found == 0; ++index)
         {
             const auto partOffset = readU32(container, 32 + index * sizeof(std::uint32_t));
             if (readU32(container, partOffset) == psv0)
             {
-                return partOffset + 8;
+                found = partOffset + 8;
             }
         }
-        FAIL("The DXIL container has no PSV0 part.");
-        return 0;
+        REQUIRE(found != 0);
+        return found;
     }
 
     [[nodiscard]] rachis::Result<rachis::ShaderModuleHandle> createDrawIndexVertex(rachis::Device& device,
@@ -160,7 +161,11 @@ TEST_CASE("Direct3D 12 rejects draw-index modules whose DXIL resource table cann
 
     auto withoutPsv = vertex;
     withoutPsv[psv - 8] = std::byte{'X'};
-    const auto unverifiable = createDrawIndexVertex(device, withoutPsv, true);
-    REQUIRE_FALSE(unverifiable.has_value());
-    CHECK(unverifiable.error().code == rachis::ErrorCode::invalidArgument);
+    for (const bool drawIndex : {true, false})
+    {
+        INFO("Declared draw index: " << drawIndex);
+        const auto unverifiable = createDrawIndexVertex(device, withoutPsv, drawIndex);
+        REQUIRE_FALSE(unverifiable.has_value());
+        CHECK(unverifiable.error().code == rachis::ErrorCode::invalidArgument);
+    }
 }
