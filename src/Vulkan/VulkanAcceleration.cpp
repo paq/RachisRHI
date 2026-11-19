@@ -683,12 +683,13 @@ namespace rachis::vulkan
                 return std::unexpected(std::move(written.error()));
             }
             auto resolved = resources.resolveBindingBuffer(*buffer);
-            if (!resolved || resolved->deviceAddress == 0)
+            if (!resolved || resolved->deviceAddress == 0 ||
+                resolved->deviceAddress % accelerationStructureInstanceAddressAlignment != 0)
             {
                 return std::unexpected(Error{
                     ErrorCode::nativeFailure,
                     0,
-                    "Vulkan could not address the TLAS instance buffer.",
+                    "Vulkan could not give the TLAS instance buffer a 16-byte aligned device address.",
                 });
             }
             return UploadedInstances{
@@ -719,6 +720,8 @@ namespace rachis::vulkan
         }
 
         constexpr std::uint32_t instanceRecordAlignment = 16;
+
+        static_assert(instanceRecordAlignment == accelerationStructureInstanceAddressAlignment);
 
         static_assert(sizeof(VkAccelerationStructureInstanceKHR) == sizeof(AccelerationStructureInstanceRecord));
         static_assert(offsetof(VkAccelerationStructureInstanceKHR, accelerationStructureReference) ==

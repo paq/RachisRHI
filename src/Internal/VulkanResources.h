@@ -8,6 +8,7 @@
 #include "Rachis/Resource.h"
 #include "Rachis/Sampler.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
@@ -140,6 +141,28 @@ namespace rachis::vulkan
     };
 
     inline constexpr auto externallyUnknownTextureLayout = static_cast<TextureLayout>(0xFFU);
+
+    inline constexpr VkDeviceSize accelerationStructureInstanceAddressAlignment = 16;
+
+    [[nodiscard]] constexpr VkDeviceSize bufferAddressAlignment(BufferUsage usage,
+                                                                VkDeviceSize shaderGroupBaseAlignment,
+                                                                VkDeviceSize scratchAlignment) noexcept
+    {
+        VkDeviceSize alignment = 1;
+        if (hasAny(usage, BufferUsage::shaderBindingTable))
+        {
+            alignment = std::max(alignment, shaderGroupBaseAlignment);
+        }
+        if (hasAny(usage, BufferUsage::accelerationStructureScratch))
+        {
+            alignment = std::max(alignment, scratchAlignment);
+        }
+        if (hasAny(usage, BufferUsage::accelerationStructureBuildInput))
+        {
+            alignment = std::max(alignment, accelerationStructureInstanceAddressAlignment);
+        }
+        return alignment;
+    }
 
     inline constexpr std::size_t explicitResidencyPriorityCount = 4;
     inline constexpr std::size_t residencyPoolClassCount = static_cast<std::size_t>(ResidencyPoolClass::count);

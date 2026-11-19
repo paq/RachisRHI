@@ -5545,6 +5545,23 @@ namespace
 
 } // namespace
 
+TEST_CASE("Vulkan buffers for acceleration-structure build inputs get 16-byte aligned device addresses",
+          "[size:small][rhi][vulkan][vuid][raytracing-mock]")
+{
+    using rachis::BufferUsage;
+    constexpr VkDeviceSize sbtAlignment = 64;
+    constexpr VkDeviceSize scratchAlignment = 128;
+    const auto alignment = [](BufferUsage usage) {
+        return rachis::vulkan::bufferAddressAlignment(usage, sbtAlignment, scratchAlignment);
+    };
+    CHECK(alignment(BufferUsage::accelerationStructureBuildInput) == 16);
+    CHECK(alignment(BufferUsage::accelerationStructureBuildInput | BufferUsage::storage) == 16);
+    CHECK(alignment(BufferUsage::accelerationStructureBuildInput | BufferUsage::shaderBindingTable) == sbtAlignment);
+    CHECK(alignment(BufferUsage::accelerationStructureScratch) == scratchAlignment);
+    CHECK(alignment(BufferUsage::shaderBindingTable) == sbtAlignment);
+    CHECK(alignment(BufferUsage::storage | BufferUsage::indirect) == 1);
+}
+
 TEST_CASE("Vulkan acceleration-structure size queries accept a driver that needs no build scratch",
           "[size:small][rhi][vulkan][vuid][raytracing-mock]")
 {

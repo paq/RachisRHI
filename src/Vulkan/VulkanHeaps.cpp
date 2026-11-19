@@ -761,6 +761,16 @@ namespace rachis::vulkan
         }
         record.keepAlive = std::move(keepAlive);
         record.deviceAddress = queryPlacedBufferDeviceAddress(record.buffer, desc.usage);
+        if (record.deviceAddress %
+                bufferAddressAlignment(desc.usage, shaderGroupBaseAlignment_, accelerationStructureScratchAlignment_) !=
+            0)
+        {
+            return std::unexpected(Error{
+                ErrorCode::unsupported,
+                0,
+                "The device address of this placed buffer does not meet the alignment its usages require.",
+            });
+        }
 
         const std::scoped_lock lock(mutex_);
         trackKeepAliveLocked(record.keepAlive);

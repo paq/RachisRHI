@@ -1347,9 +1347,8 @@ namespace rachis::vulkan
         {
             return std::unexpected(std::move(allocationCreate.error()));
         }
-        const VkDeviceSize minAlignment = std::max(
-            hasAny(desc.usage, BufferUsage::shaderBindingTable) ? shaderGroupBaseAlignment_ : 0,
-            hasAny(desc.usage, BufferUsage::accelerationStructureScratch) ? accelerationStructureScratchAlignment_ : 0);
+        const VkDeviceSize minAlignment =
+            bufferAddressAlignment(desc.usage, shaderGroupBaseAlignment_, accelerationStructureScratchAlignment_);
         const auto createBuffer = [&](const VmaAllocationCreateInfo& allocation) {
             if (minAlignment > 1)
             {
