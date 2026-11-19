@@ -15,6 +15,10 @@
 namespace
 {
 
+    constexpr std::uint64_t caseStride = 256;
+    constexpr std::size_t caseCount = 4;
+    constexpr std::uint64_t outputSize = caseStride * caseCount;
+
     [[nodiscard]] std::vector<std::byte> loadBytes(const std::filesystem::path& path)
     {
         std::ifstream stream(path, std::ios::binary | std::ios::ate);
@@ -87,13 +91,13 @@ TEST_CASE("Vulkan conditional execution gates dispatches, rejects copies, and re
     REQUIRE(device.destroyBuffer(*stalePredicate).has_value());
 
     auto output = device.createBuffer({
-        .size = sizeof(std::uint32_t),
+        .size = outputSize,
         .usage = rachis::BufferUsage::copyDestination | rachis::BufferUsage::storage | rachis::BufferUsage::copySource,
         .memoryType = rachis::MemoryType::deviceLocal,
         .label = "Vulkan conditional-execution output",
     });
     auto readback = device.createBuffer({
-        .size = sizeof(std::uint32_t),
+        .size = outputSize,
         .usage = rachis::BufferUsage::copyDestination,
         .memoryType = rachis::MemoryType::readback,
         .label = "Vulkan conditional-execution readback",
@@ -125,19 +129,25 @@ TEST_CASE("Vulkan conditional execution gates dispatches, rejects copies, and re
     };
     auto bindingLayout = device.createBindingLayout({.entries = bindingEntries});
     REQUIRE(bindingLayout.has_value());
-    const std::array writes{
-        rachis::BindingWrite{
-            .binding = 0,
-            .resource =
-                rachis::BufferBinding{
-                    .buffer = *output,
-                    .size = sizeof(std::uint32_t),
-                    .structureByteStride = sizeof(std::uint32_t),
-                },
-        },
-    };
-    auto bindingSet = rachis::test::createBindingSet(device, {.layout = *bindingLayout, .writes = writes});
-    REQUIRE(bindingSet.has_value());
+    std::array<rachis::BindingSetHandle, caseCount> bindingSets{};
+    for (std::size_t index = 0; index < caseCount; ++index)
+    {
+        const std::array writes{
+            rachis::BindingWrite{
+                .binding = 0,
+                .resource =
+                    rachis::BufferBinding{
+                        .buffer = *output,
+                        .offset = index * caseStride,
+                        .size = sizeof(std::uint32_t),
+                        .structureByteStride = sizeof(std::uint32_t),
+                    },
+            },
+        };
+        auto bindingSet = rachis::test::createBindingSet(device, {.layout = *bindingLayout, .writes = writes});
+        REQUIRE(bindingSet.has_value());
+        bindingSets[index] = *bindingSet;
+    }
     const std::array bindingLayouts{*bindingLayout};
     auto pipelineLayout = device.createPipelineLayout({.bindingLayouts = bindingLayouts});
     REQUIRE(pipelineLayout.has_value());
@@ -245,33 +255,28 @@ TEST_CASE("Vulkan conditional execution gates dispatches, rejects copies, and re
                                {
                                    .buffer = *output,
                                    .stagesBefore = rachis::PipelineStage::all,
-                                   .stagesAfter = rachis::PipelineStage::copy,
+                                   .stagesAfter = rachis::PipelineStage::computeShader,
                                    .accessBefore = rachis::Access::common,
-                                   .accessAfter = rachis::Access::copyDestination,
+                                   .accessAfter = rachis::Access::unorderedAccess,
                                })
                 .has_value());
-    REQUIRE(device
-                .copyBuffer(*command,
-                            {
-                                .source = *predicateSeed,
-                                .destination = *output,
-                                .size = sizeof(std::uint32_t),
-                            })
-                .has_value());
+    REQUIRE(device.fillBuffer(*command, *output, 0, rachis::wholeResource, 0).has_value());
     REQUIRE(device
                 .bufferBarrier(*command,
                                {
                                    .buffer = *output,
-                                   .stagesBefore = rachis::PipelineStage::copy,
+                                   .stagesBefore = rachis::PipelineStage::computeShader,
                                    .stagesAfter = rachis::PipelineStage::computeShader,
-                                   .accessBefore = rachis::Access::copyDestination,
+                                   .accessBefore = rachis::Access::unorderedAccess,
                                    .accessAfter = rachis::Access::unorderedAccess,
                                })
                 .has_value());
     REQUIRE(device.bindComputePipeline(*command, *pipeline).has_value());
-    REQUIRE(device.bindComputeBindingSet(*command, 0, *bindingSet).has_value());
 
-    const auto conditionalDispatch = [&](std::uint64_t offset, rachis::PredicateOperation operation) {
+    const auto conditionalDispatch = [&](std::size_t caseIndex,
+                                         std::uint64_t offset,
+                                         rachis::PredicateOperation operation) {
+        REQUIRE(device.bindComputeBindingSet(*command, 0, bindingSets[caseIndex]).has_value());
         REQUIRE(
             device.beginConditionalExecution(*command, {.buffer = *predicate, .offset = offset, .operation = operation})
                 .has_value());
@@ -288,10 +293,10 @@ TEST_CASE("Vulkan conditional execution gates dispatches, rejects copies, and re
                                    })
                     .has_value());
     };
-    conditionalDispatch(0, rachis::PredicateOperation::notEqualZero);
-    conditionalDispatch(0, rachis::PredicateOperation::equalZero);
-    conditionalDispatch(sizeof(std::uint64_t), rachis::PredicateOperation::equalZero);
-    conditionalDispatch(sizeof(std::uint64_t), rachis::PredicateOperation::notEqualZero);
+    conditionalDispatch(0, 0, rachis::PredicateOperation::notEqualZero);
+    conditionalDispatch(1, 0, rachis::PredicateOperation::equalZero);
+    conditionalDispatch(2, sizeof(std::uint64_t), rachis::PredicateOperation::equalZero);
+    conditionalDispatch(3, sizeof(std::uint64_t), rachis::PredicateOperation::notEqualZero);
 
     REQUIRE(device
                 .bufferBarrier(*command,
@@ -308,14 +313,17 @@ TEST_CASE("Vulkan conditional execution gates dispatches, rejects copies, and re
                             {
                                 .source = *output,
                                 .destination = *readback,
-                                .size = sizeof(std::uint32_t),
+                                .size = outputSize,
                             })
                 .has_value());
 
     REQUIRE(device.destroyPipeline(*pipeline).has_value());
     REQUIRE(device.destroyPipelineLayout(*pipelineLayout).has_value());
     REQUIRE(device.destroyShaderModule(*shader).has_value());
-    REQUIRE(device.destroyBindingSet(*bindingSet).has_value());
+    for (const auto bindingSet : bindingSets)
+    {
+        REQUIRE(device.destroyBindingSet(bindingSet).has_value());
+    }
     REQUIRE(device.destroyBindingLayout(*bindingLayout).has_value());
     REQUIRE(device.destroyBuffer(*predicate).has_value());
     REQUIRE(device.destroyBuffer(*predicateSeed).has_value());
@@ -329,9 +337,12 @@ TEST_CASE("Vulkan conditional execution gates dispatches, rejects copies, and re
 
     auto mapped = device.mapBuffer(*readback);
     REQUIRE(mapped.has_value());
-    std::uint32_t dispatchCount = 0;
-    std::memcpy(&dispatchCount, mapped->data, sizeof(dispatchCount));
-    CHECK(dispatchCount == 2);
+    std::array<std::uint32_t, caseCount> executed{};
+    for (std::size_t index = 0; index < caseCount; ++index)
+    {
+        std::memcpy(&executed[index], mapped->data + index * caseStride, sizeof(std::uint32_t));
+    }
+    CHECK(executed == std::array<std::uint32_t, caseCount>{0, 1, 0, 1});
     REQUIRE(device.unmapBuffer(*readback).has_value());
     REQUIRE(device.destroyBuffer(*readback).has_value());
 
