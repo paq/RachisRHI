@@ -1853,6 +1853,17 @@ if(rachis_build_tests)
     set(rachis_c_abi_graphics_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/CAbiGraphicsTriangle.hlsl")
     set(rachis_c_abi_vulkan_graphics_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/CAbiGraphicsTriangleVulkan.hlsl")
     set(rachis_c_abi_indexed_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/CAbiGraphicsIndexed.hlsl")
+    set(rachis_c_abi_draw_index_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/CAbiDrawIndex.hlsl")
+    set(rachis_c_abi_binding_array_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/CAbiBindingArray.hlsl")
+    set(rachis_c_abi_indirect_dispatch_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/CAbiIndirectDispatch.hlsl")
+    set(rachis_c_abi_subgroup_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/SubgroupSize.hlsl")
+    # Each entry is <entry point>:<output stage name>:<dxc profile>:<Slang stage> for CAbiDrawIndex.hlsl.
+    set(rachis_c_abi_draw_index_entries
+        indirectVertex:vertex:vs_6_0:vertex
+        meshMain:mesh:ms_6_5:mesh
+        taskMain:task:as_6_5:amplification
+        meshFromTask:taskMesh:ms_6_5:mesh
+        recordPixel:pixel:ps_6_5:pixel)
     set(rachis_c_abi_shader_outputs)
     if(RACHIS_ENABLE_D3D12)
         rachis_cook_dxc_dxil(
@@ -1895,6 +1906,50 @@ if(rachis_build_tests)
                 COMMENT "Compiling the Rachis C ABI indexed graphics ${stage} shader"
             )
             list(APPEND rachis_c_abi_shader_outputs "${rachis_c_abi_shader_dir}/CAbiGraphicsIndexed.${stage}.dxil")
+        endforeach()
+        foreach(rachis_c_abi_entry IN LISTS rachis_c_abi_draw_index_entries)
+            string(REPLACE ":" ";" rachis_c_abi_entry_parts "${rachis_c_abi_entry}")
+            list(GET rachis_c_abi_entry_parts 0 entry)
+            list(GET rachis_c_abi_entry_parts 1 stage)
+            list(GET rachis_c_abi_entry_parts 2 profile)
+            rachis_cook_dxc_dxil(
+                SOURCE "${rachis_c_abi_draw_index_source}"
+                ENTRY ${entry}
+                PROFILE ${profile}
+                OUTPUT "${rachis_c_abi_shader_dir}/CAbiDrawIndex.${stage}.dxil"
+                INCLUDE_DIRECTORIES "${rachis_rhi_public_include_dir}"
+                COMMENT "Compiling the Rachis C ABI draw-index ${stage} shader"
+            )
+            list(APPEND rachis_c_abi_shader_outputs "${rachis_c_abi_shader_dir}/CAbiDrawIndex.${stage}.dxil")
+        endforeach()
+        rachis_cook_dxc_dxil(
+            SOURCE "${rachis_c_abi_binding_array_source}"
+            ENTRY arrayPixel
+            PROFILE ps_6_0
+            OUTPUT "${rachis_c_abi_shader_dir}/CAbiBindingArray.pixel.dxil"
+            COMMENT "Compiling the Rachis C ABI binding-array pixel shader"
+        )
+        rachis_cook_dxc_dxil(
+            SOURCE "${rachis_c_abi_indirect_dispatch_source}"
+            ENTRY countGroups
+            PROFILE cs_6_0
+            OUTPUT "${rachis_c_abi_shader_dir}/CAbiIndirectDispatch.dxil"
+            COMMENT "Compiling the Rachis C ABI indirect dispatch shader"
+        )
+        list(APPEND rachis_c_abi_shader_outputs
+            "${rachis_c_abi_shader_dir}/CAbiBindingArray.pixel.dxil"
+            "${rachis_c_abi_shader_dir}/CAbiIndirectDispatch.dxil")
+        # Direct3D 12 reads the subgroup size from [WaveSize(N)] in the shader, so each size has its own shader.
+        foreach(size IN ITEMS 4 8 16 32 64 128)
+            rachis_cook_dxc_dxil(
+                SOURCE "${rachis_c_abi_subgroup_source}"
+                ENTRY main
+                PROFILE cs_6_6
+                OUTPUT "${rachis_c_abi_shader_dir}/CAbiSubgroupSize${size}.dxil"
+                DEFINES RACHIS_D3D12=1 RACHIS_SUBGROUP_SIZE=${size}
+                COMMENT "Compiling the Rachis C ABI subgroup-size ${size} shader"
+            )
+            list(APPEND rachis_c_abi_shader_outputs "${rachis_c_abi_shader_dir}/CAbiSubgroupSize${size}.dxil")
         endforeach()
     endif()
     if(RACHIS_ENABLE_VULKAN)
@@ -1947,6 +2002,53 @@ if(rachis_build_tests)
             "${rachis_c_abi_shader_dir}/CAbiGraphicsTriangle.pixel.spv"
             "${rachis_c_abi_shader_dir}/CAbiGraphicsIndexed.vertex.spv"
             "${rachis_c_abi_shader_dir}/CAbiGraphicsIndexed.pixel.spv")
+        foreach(rachis_c_abi_entry IN LISTS rachis_c_abi_draw_index_entries)
+            string(REPLACE ":" ";" rachis_c_abi_entry_parts "${rachis_c_abi_entry}")
+            list(GET rachis_c_abi_entry_parts 0 entry)
+            list(GET rachis_c_abi_entry_parts 1 stage)
+            list(GET rachis_c_abi_entry_parts 2 profile)
+            set(rachis_c_abi_spirv_options)
+            if(profile MATCHES "^(ms|as)_")
+                set(rachis_c_abi_spirv_options -fspv-extension=SPV_EXT_mesh_shader)
+            elseif(profile STREQUAL "ps_6_5")
+                set(profile ps_6_0)
+            endif()
+            rachis_cook_dxc_spirv(
+                SOURCE "${rachis_c_abi_draw_index_source}"
+                ENTRY ${entry}
+                PROFILE ${profile}
+                OUTPUT "${rachis_c_abi_shader_dir}/CAbiDrawIndex.${stage}.spv"
+                OPTIONS ${rachis_c_abi_spirv_options}
+                INCLUDE_DIRECTORIES "${rachis_rhi_public_include_dir}"
+                COMMENT "Cooking Vulkan SPIR-V CAbiDrawIndex ${stage}"
+            )
+            list(APPEND rachis_c_abi_shader_outputs "${rachis_c_abi_shader_dir}/CAbiDrawIndex.${stage}.spv")
+        endforeach()
+        rachis_cook_dxc_spirv(
+            SOURCE "${rachis_c_abi_binding_array_source}"
+            ENTRY arrayPixel
+            PROFILE ps_6_0
+            OUTPUT "${rachis_c_abi_shader_dir}/CAbiBindingArray.pixel.spv"
+            COMMENT "Cooking Vulkan SPIR-V CAbiBindingArray pixel"
+        )
+        rachis_cook_dxc_spirv(
+            SOURCE "${rachis_c_abi_indirect_dispatch_source}"
+            ENTRY countGroups
+            PROFILE cs_6_0
+            OUTPUT "${rachis_c_abi_shader_dir}/CAbiIndirectDispatch.spv"
+            COMMENT "Cooking Vulkan SPIR-V CAbiIndirectDispatch"
+        )
+        rachis_cook_dxc_spirv(
+            SOURCE "${rachis_c_abi_subgroup_source}"
+            ENTRY main
+            PROFILE cs_6_0
+            OUTPUT "${rachis_c_abi_shader_dir}/CAbiSubgroupSize.spv"
+            COMMENT "Cooking Vulkan SPIR-V CAbiSubgroupSize"
+        )
+        list(APPEND rachis_c_abi_shader_outputs
+            "${rachis_c_abi_shader_dir}/CAbiBindingArray.pixel.spv"
+            "${rachis_c_abi_shader_dir}/CAbiIndirectDispatch.spv"
+            "${rachis_c_abi_shader_dir}/CAbiSubgroupSize.spv")
     endif()
     if(RACHIS_ENABLE_METAL)
         rachis_cook_slang_metallib(
@@ -1994,6 +2096,38 @@ if(rachis_build_tests)
             "${rachis_c_abi_shader_dir}/CAbiGraphicsTriangle.pixel.pnms"
             "${rachis_c_abi_shader_dir}/CAbiGraphicsIndexed.vertex.pnms"
             "${rachis_c_abi_shader_dir}/CAbiGraphicsIndexed.pixel.pnms")
+        foreach(rachis_c_abi_entry IN LISTS rachis_c_abi_draw_index_entries)
+            string(REPLACE ":" ";" rachis_c_abi_entry_parts "${rachis_c_abi_entry}")
+            list(GET rachis_c_abi_entry_parts 0 entry)
+            list(GET rachis_c_abi_entry_parts 1 stage)
+            list(GET rachis_c_abi_entry_parts 3 slang_stage)
+            rachis_cook_slang_metallib(
+                SOURCE "${rachis_c_abi_draw_index_source}"
+                ENTRY ${entry}
+                STAGE ${slang_stage}
+                OUTPUT "${rachis_c_abi_shader_dir}/CAbiDrawIndex.${stage}.metallib"
+                INCLUDE_DIRECTORIES "${rachis_rhi_public_include_dir}"
+                COMMENT "Cooking Metal PNMS CAbiDrawIndex ${stage}"
+            )
+            list(APPEND rachis_c_abi_shader_outputs "${rachis_c_abi_shader_dir}/CAbiDrawIndex.${stage}.pnms")
+        endforeach()
+        rachis_cook_slang_metallib(
+            SOURCE "${rachis_c_abi_binding_array_source}"
+            ENTRY arrayPixel
+            STAGE pixel
+            OUTPUT "${rachis_c_abi_shader_dir}/CAbiBindingArray.pixel.metallib"
+            COMMENT "Cooking Metal PNMS CAbiBindingArray pixel"
+        )
+        rachis_cook_slang_metallib(
+            SOURCE "${rachis_c_abi_indirect_dispatch_source}"
+            ENTRY countGroups
+            STAGE compute
+            OUTPUT "${rachis_c_abi_shader_dir}/CAbiIndirectDispatch.metallib"
+            COMMENT "Cooking Metal PNMS CAbiIndirectDispatch"
+        )
+        list(APPEND rachis_c_abi_shader_outputs
+            "${rachis_c_abi_shader_dir}/CAbiBindingArray.pixel.pnms"
+            "${rachis_c_abi_shader_dir}/CAbiIndirectDispatch.pnms")
     endif()
     if(rachis_c_abi_shader_outputs)
         add_custom_target(RachisCAbiShaders DEPENDS ${rachis_c_abi_shader_outputs})
@@ -2051,7 +2185,26 @@ if(rachis_build_tests)
                 RACHIS_CABI_GRAPHICS_VERTEX_PATH="${rachis_c_abi_shader_dir}/CAbiGraphicsTriangle.vertex.${graphics_extension}"
                 RACHIS_CABI_GRAPHICS_PIXEL_PATH="${rachis_c_abi_shader_dir}/CAbiGraphicsTriangle.pixel.${graphics_extension}"
                 RACHIS_CABI_INDEXED_VERTEX_PATH="${rachis_c_abi_shader_dir}/CAbiGraphicsIndexed.vertex.${graphics_extension}"
-                RACHIS_CABI_INDEXED_PIXEL_PATH="${rachis_c_abi_shader_dir}/CAbiGraphicsIndexed.pixel.${graphics_extension}")
+                RACHIS_CABI_INDEXED_PIXEL_PATH="${rachis_c_abi_shader_dir}/CAbiGraphicsIndexed.pixel.${graphics_extension}"
+                RACHIS_CABI_DRAW_INDEX_VERTEX_PATH="${rachis_c_abi_shader_dir}/CAbiDrawIndex.vertex.${graphics_extension}"
+                RACHIS_CABI_DRAW_INDEX_MESH_PATH="${rachis_c_abi_shader_dir}/CAbiDrawIndex.mesh.${graphics_extension}"
+                RACHIS_CABI_DRAW_INDEX_TASK_PATH="${rachis_c_abi_shader_dir}/CAbiDrawIndex.task.${graphics_extension}"
+                RACHIS_CABI_DRAW_INDEX_TASK_MESH_PATH="${rachis_c_abi_shader_dir}/CAbiDrawIndex.taskMesh.${graphics_extension}"
+                RACHIS_CABI_DRAW_INDEX_PIXEL_PATH="${rachis_c_abi_shader_dir}/CAbiDrawIndex.pixel.${graphics_extension}"
+                RACHIS_CABI_BINDING_ARRAY_PIXEL_PATH="${rachis_c_abi_shader_dir}/CAbiBindingArray.pixel.${graphics_extension}"
+                RACHIS_CABI_INDIRECT_DISPATCH_PATH="${rachis_c_abi_shader_dir}/CAbiIndirectDispatch.${graphics_extension}")
+            # Metal reports no required subgroup sizes, so only Direct3D 12 and Vulkan cook the subgroup-size shader.
+            if(backend STREQUAL "RACHIS_BACKEND_D3D12")
+                target_compile_definitions(${target} PRIVATE
+                    RACHIS_CABI_SUBGROUP_SHADER_PREFIX="${rachis_c_abi_shader_dir}/CAbiSubgroupSize"
+                    RACHIS_CABI_SUBGROUP_SHADER_EXTENSION=".dxil"
+                    RACHIS_CABI_SUBGROUP_SIZE_IN_SHADER=1)
+            elseif(backend STREQUAL "RACHIS_BACKEND_VULKAN")
+                target_compile_definitions(${target} PRIVATE
+                    RACHIS_CABI_SUBGROUP_SHADER_PREFIX="${rachis_c_abi_shader_dir}/CAbiSubgroupSize"
+                    RACHIS_CABI_SUBGROUP_SHADER_EXTENSION=".spv"
+                    RACHIS_CABI_SUBGROUP_SIZE_IN_SHADER=0)
+            endif()
         endif()
         catch_discover_tests(${target} TEST_PREFIX "${target}."
             DISCOVERY_MODE PRE_TEST ADD_TAGS_AS_LABELS PROPERTIES TIMEOUT 60)

@@ -181,6 +181,8 @@ namespace
     static_assert(bitsOf(RACHIS_STAGE_RENDER_TARGET) == bitsOf(rachis::PipelineStage::renderTarget));
     static_assert(bitsOf(RACHIS_STAGE_DEPTH_STENCIL) == bitsOf(rachis::PipelineStage::depthStencil));
     static_assert(bitsOf(RACHIS_STAGE_INDIRECT) == bitsOf(rachis::PipelineStage::indirect));
+    static_assert(bitsOf(RACHIS_STAGE_TASK_SHADER) == bitsOf(rachis::PipelineStage::taskShader));
+    static_assert(bitsOf(RACHIS_STAGE_MESH_SHADER) == bitsOf(rachis::PipelineStage::meshShader));
     static_assert(bitsOf(RACHIS_ACCESS_COMMON) == bitsOf(rachis::Access::common));
     static_assert(bitsOf(RACHIS_ACCESS_VERTEX_BUFFER) == bitsOf(rachis::Access::vertexBuffer));
     static_assert(bitsOf(RACHIS_ACCESS_CONSTANT_BUFFER) == bitsOf(rachis::Access::constantBuffer));
@@ -217,11 +219,25 @@ namespace
     static_assert(bitsOf(RACHIS_BINDING_SAMPLED_TEXTURE) == bitsOf(rachis::BindingType::sampledTexture));
     static_assert(bitsOf(RACHIS_BINDING_STORAGE_TEXTURE) == bitsOf(rachis::BindingType::storageTexture));
     static_assert(bitsOf(RACHIS_BINDING_SAMPLER) == bitsOf(rachis::BindingType::sampler));
+    static_assert(bitsOf(RACHIS_BINDING_FLAG_PARTIALLY_BOUND) == bitsOf(rachis::BindingFlag::partiallyBound));
+    static_assert(bitsOf(RACHIS_BINDING_FLAG_VARIABLE_DESCRIPTOR_COUNT) ==
+                  bitsOf(rachis::BindingFlag::variableDescriptorCount));
+    static_assert(bitsOf(RACHIS_BINDING_FLAG_UPDATE_AFTER_BIND) == bitsOf(rachis::BindingFlag::updateAfterBind));
+    static_assert(RACHIS_UNBOUNDED_BINDING_COUNT == rachis::unboundedBindingCount);
     static_assert(bitsOf(RACHIS_SHADER_VERTEX) == bitsOf(rachis::ShaderStage::vertex));
     static_assert(bitsOf(RACHIS_SHADER_PIXEL) == bitsOf(rachis::ShaderStage::pixel));
     static_assert(bitsOf(RACHIS_SHADER_COMPUTE) == bitsOf(rachis::ShaderStage::compute));
+    static_assert(bitsOf(RACHIS_SHADER_TASK) == bitsOf(rachis::ShaderStage::task));
+    static_assert(bitsOf(RACHIS_SHADER_MESH) == bitsOf(rachis::ShaderStage::mesh));
     static_assert(bitsOf(RACHIS_SHADER_ALL) ==
-                  bitsOf(rachis::ShaderStage::vertex | rachis::ShaderStage::pixel | rachis::ShaderStage::compute));
+                  bitsOf(rachis::ShaderStage::vertex | rachis::ShaderStage::pixel | rachis::ShaderStage::compute |
+                         rachis::ShaderStage::task | rachis::ShaderStage::mesh));
+    static_assert(bitsOf(RACHIS_STORAGE_TEXTURE_CLEAR_FLOAT32) == bitsOf(rachis::StorageTextureClearType::float32));
+    static_assert(bitsOf(RACHIS_STORAGE_TEXTURE_CLEAR_UINT32) == bitsOf(rachis::StorageTextureClearType::uint32));
+    static_assert(bitsOf(RACHIS_STORAGE_TEXTURE_CLEAR_SINT32) == bitsOf(rachis::StorageTextureClearType::sint32));
+    static_assert(sizeof(rachis_dispatch_indirect_arguments) == sizeof(rachis::DispatchIndirectArguments));
+    static_assert(sizeof(rachis_draw_indirect_arguments) == sizeof(rachis::DrawIndirectArguments));
+    static_assert(sizeof(rachis_draw_indexed_indirect_arguments) == sizeof(rachis::DrawIndexedIndirectArguments));
     static_assert(bitsOf(RACHIS_BLEND_ONE_MINUS_SOURCE1_ALPHA) == bitsOf(rachis::BlendFactor::oneMinusSource1Alpha));
     static_assert(bitsOf(RACHIS_COMPARE_LESS) == bitsOf(rachis::CompareOperation::less));
     static_assert(bitsOf(RACHIS_COMPARE_ALWAYS) == bitsOf(rachis::CompareOperation::always));
@@ -282,10 +298,11 @@ namespace
     static_assert(RACHIS_MAX_VERTEX_BUFFERS == rachis::maxVertexBuffers);
     static_assert(RACHIS_MAX_VERTEX_ATTRIBUTES == rachis::maxVertexAttributes);
 
-    constexpr std::uint32_t knownStages =
-        RACHIS_STAGE_ALL | RACHIS_STAGE_DRAW | RACHIS_STAGE_VERTEX_INPUT | RACHIS_STAGE_VERTEX_SHADER |
-        RACHIS_STAGE_PIXEL_SHADER | RACHIS_STAGE_COMPUTE_SHADER | RACHIS_STAGE_COPY | RACHIS_STAGE_RESOLVE |
-        RACHIS_STAGE_RENDER_TARGET | RACHIS_STAGE_DEPTH_STENCIL | RACHIS_STAGE_INDIRECT;
+    constexpr std::uint32_t knownStages = RACHIS_STAGE_ALL | RACHIS_STAGE_DRAW | RACHIS_STAGE_VERTEX_INPUT |
+                                          RACHIS_STAGE_VERTEX_SHADER | RACHIS_STAGE_PIXEL_SHADER |
+                                          RACHIS_STAGE_COMPUTE_SHADER | RACHIS_STAGE_COPY | RACHIS_STAGE_RESOLVE |
+                                          RACHIS_STAGE_RENDER_TARGET | RACHIS_STAGE_DEPTH_STENCIL |
+                                          RACHIS_STAGE_INDIRECT | RACHIS_STAGE_TASK_SHADER | RACHIS_STAGE_MESH_SHADER;
     constexpr std::uint32_t knownAccess =
         RACHIS_ACCESS_COMMON | RACHIS_ACCESS_VERTEX_BUFFER | RACHIS_ACCESS_CONSTANT_BUFFER |
         RACHIS_ACCESS_INDEX_BUFFER | RACHIS_ACCESS_SHADER_RESOURCE | RACHIS_ACCESS_UNORDERED_ACCESS |
@@ -295,6 +312,9 @@ namespace
     constexpr std::uint32_t knownTextureUsage = RACHIS_TEXTURE_COPY_SOURCE | RACHIS_TEXTURE_COPY_DESTINATION |
                                                 RACHIS_TEXTURE_SAMPLED | RACHIS_TEXTURE_STORAGE |
                                                 RACHIS_TEXTURE_RENDER_TARGET | RACHIS_TEXTURE_DEPTH_STENCIL;
+    constexpr std::uint32_t knownBindingFlags = RACHIS_BINDING_FLAG_PARTIALLY_BOUND |
+                                                RACHIS_BINDING_FLAG_VARIABLE_DESCRIPTOR_COUNT |
+                                                RACHIS_BINDING_FLAG_UPDATE_AFTER_BIND;
 
     [[nodiscard]] rachis::detail::MonotonicIdentitySource& activeTokenSource() noexcept
     {
@@ -1017,6 +1037,173 @@ namespace
                       flush ? device->native.flushMappedMemoryRanges(nativeBuffer, nativeRanges)
                             : device->native.invalidateMappedMemoryRanges(nativeBuffer, nativeRanges));
     }
+
+    [[nodiscard]] rachis_status collectBindingWrites(const rachis_device& device,
+                                                     std::span<const rachis_buffer_binding> buffers,
+                                                     std::span<const rachis_texture_binding> textures,
+                                                     std::span<const rachis_sampler_binding> samplers,
+                                                     bool zeroHandleEmptiesElement,
+                                                     std::vector<rachis::BindingWrite>& writes,
+                                                     rachis_error* error)
+    {
+        writes.reserve(buffers.size() + textures.size() + samplers.size());
+        for (const auto& value : buffers)
+        {
+            if (zeroHandleEmptiesElement && value.buffer == 0)
+            {
+                writes.push_back({.binding = value.binding, .arrayElement = value.array_element});
+                continue;
+            }
+            const auto* buffer = findToken(device.tokens, value.buffer, TokenKind::buffer);
+            if (buffer == nullptr)
+            {
+                return invalidHandle(error);
+            }
+            writes.push_back({.binding = value.binding,
+                              .arrayElement = value.array_element,
+                              .resource = rachis::BufferBinding{.buffer = rachis::BufferHandle{buffer->native},
+                                                                .offset = value.offset,
+                                                                .size = value.size,
+                                                                .structureByteStride = value.structure_byte_stride}});
+        }
+        for (const auto& value : textures)
+        {
+            if (zeroHandleEmptiesElement && value.view == 0)
+            {
+                writes.push_back({.binding = value.binding, .arrayElement = value.array_element});
+                continue;
+            }
+            const auto* view = findView(device.tokens, value.view);
+            if (view == nullptr)
+            {
+                return invalidHandle(error);
+            }
+            writes.push_back({.binding = value.binding,
+                              .arrayElement = value.array_element,
+                              .resource = rachis::TextureViewHandle{view->native}});
+        }
+        for (const auto& value : samplers)
+        {
+            if (zeroHandleEmptiesElement && value.sampler == 0)
+            {
+                writes.push_back({.binding = value.binding, .arrayElement = value.array_element});
+                continue;
+            }
+            const auto* sampler = findToken(device.tokens, value.sampler, TokenKind::sampler);
+            if (sampler == nullptr)
+            {
+                return invalidHandle(error);
+            }
+            writes.push_back({.binding = value.binding,
+                              .arrayElement = value.array_element,
+                              .resource = rachis::SamplerHandle{sampler->native}});
+        }
+        return RACHIS_STATUS_OK;
+    }
+
+    template<typename Record>
+    [[nodiscard]] rachis_status recordCommand(rachis_device& device,
+                                              rachis_handle command,
+                                              rachis_error* error,
+                                              Record&& record)
+    {
+        std::shared_lock const lock(device.mutex);
+        if (const auto lost = rejectLostDevice(device, error))
+        {
+            return *lost;
+        }
+        CommandUseGuard commandUse;
+        rachis::CommandBuffer* commandBuffer = nullptr;
+        if (const auto status = acquireCommandForRecording(device, command, commandUse, commandBuffer, error);
+            status != RACHIS_STATUS_OK)
+        {
+            return status;
+        }
+        return std::forward<Record>(record)(*commandBuffer);
+    }
+
+    struct IndirectBuffers final
+    {
+        rachis::BufferHandle arguments;
+        rachis::BufferHandle count;
+    };
+
+    [[nodiscard]] std::optional<IndirectBuffers> findIndirectBuffers(const rachis_device& device,
+                                                                     rachis_handle argumentBuffer,
+                                                                     rachis_handle countBuffer) noexcept
+    {
+        const auto* arguments = findToken(device.tokens, argumentBuffer, TokenKind::buffer);
+        if (arguments == nullptr)
+        {
+            return std::nullopt;
+        }
+        IndirectBuffers buffers{.arguments = rachis::BufferHandle{arguments->native}};
+        if (countBuffer != 0)
+        {
+            const auto* count = findToken(device.tokens, countBuffer, TokenKind::buffer);
+            if (count == nullptr)
+            {
+                return std::nullopt;
+            }
+            buffers.count = rachis::BufferHandle{count->native};
+        }
+        return buffers;
+    }
+
+    template<typename Desc>
+    [[nodiscard]] std::optional<rachis_status> rejectIndirectDesc(const rachis_device* device,
+                                                                  const Desc* desc,
+                                                                  rachis_error* error) noexcept
+    {
+        if (device == nullptr)
+        {
+            return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "device is null");
+        }
+        if (desc == nullptr)
+        {
+            return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "descriptor is null");
+        }
+        if (!validDesc(desc))
+        {
+            return fail(error, RACHIS_STATUS_ABI_MISMATCH, "unsupported indirect command descriptor");
+        }
+        return std::nullopt;
+    }
+
+    [[nodiscard]] rachis_status drawIndirect(rachis_device* device,
+                                             rachis_handle command,
+                                             const rachis_indirect_draw_desc* desc,
+                                             rachis_error* error,
+                                             bool indexed)
+    {
+        if (const auto rejected = rejectIndirectDesc(device, desc, error))
+        {
+            return *rejected;
+        }
+        if (desc->draw_index_prefix > 1)
+        {
+            return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "invalid indirect draw descriptor");
+        }
+        return recordCommand(*device, command, error, [&](rachis::CommandBuffer& commandBuffer) {
+            const auto buffers = findIndirectBuffers(*device, desc->argument_buffer, desc->count_buffer);
+            if (!buffers)
+            {
+                return invalidHandle(error);
+            }
+            const rachis::IndirectDrawDesc native{
+                .argumentBuffer = buffers->arguments,
+                .argumentOffset = desc->argument_offset,
+                .maxDrawCount = desc->max_draw_count,
+                .stride = desc->stride,
+                .countBuffer = buffers->count,
+                .countOffset = desc->count_offset,
+                .drawIndexPrefix = desc->draw_index_prefix != 0,
+            };
+            return result(error,
+                          indexed ? device->native.drawIndexedIndirect(commandBuffer, native)
+                                  : device->native.drawIndirect(commandBuffer, native));
+        });
+    }
 } // namespace
 
 extern "C"
@@ -1231,6 +1418,46 @@ extern "C"
             output->max_vertex_attribute_offset = capabilities->vertexInput.maxAttributeOffset;
             output->max_vertex_instance_step_rate = capabilities->vertexInput.maxInstanceStepRate;
             output->reserved0 = 0;
+            const auto flag = [](bool value) noexcept { return value ? 1U : 0U; };
+            output->indirect_dispatch = flag(capabilities->indirectDispatch);
+            output->multi_dispatch_indirect = flag(capabilities->multiDispatchIndirect);
+            output->dispatch_indirect_count = flag(capabilities->dispatchIndirectCount);
+            output->indirect_draws = flag(capabilities->indirectDraws);
+            output->indirect_draw_base_instance = flag(capabilities->indirectDrawBaseInstance);
+            output->multi_draw_indirect = flag(capabilities->multiDrawIndirect);
+            output->draw_indirect_count = flag(capabilities->drawIndirectCount);
+            output->shader_draw_index = flag(capabilities->shaderDrawIndex);
+            output->conditional_execution = flag(capabilities->conditionalExecution);
+            output->mesh_shaders = flag(capabilities->meshShaders);
+            output->task_shaders = flag(capabilities->taskShaders);
+            output->partially_bound_binding_arrays = flag(capabilities->partiallyBoundBindingArrays);
+            output->variable_descriptor_count_binding_arrays = flag(capabilities->variableDescriptorCountBindingArrays);
+            output->update_after_bind_binding_arrays = flag(capabilities->updateAfterBindBindingArrays);
+            output->shader_int64 = flag(capabilities->shaderInt64);
+            output->shader_int64_atomic_group_shared = flag(capabilities->shaderInt64AtomicGroupShared);
+            output->shader_int64_atomic_typed_resource = flag(capabilities->shaderInt64AtomicTypedResource);
+            output->shader_int64_atomic_storage_buffer = flag(capabilities->shaderInt64AtomicStorageBuffer);
+            output->subgroup_operations = flag(capabilities->subgroupOperations);
+            output->subgroup_min_size = capabilities->subgroup.minSize;
+            output->subgroup_max_size = capabilities->subgroup.maxSize;
+            output->subgroup_required_size_stages =
+                bitsOf(capabilities->subgroup.requiredSizeStages) & RACHIS_SHADER_ALL;
+            output->max_variable_resource_descriptors = capabilities->limits.maxVariableResourceDescriptors;
+            output->max_variable_buffer_descriptors = capabilities->limits.maxVariableBufferDescriptors;
+            output->max_variable_sampler_descriptors = capabilities->limits.maxVariableSamplerDescriptors;
+            const auto& mesh = capabilities->meshShader;
+            output->max_task_workgroup_invocations = mesh.maxTaskWorkgroupInvocations;
+            output->max_task_payload_bytes = mesh.maxTaskPayloadBytes;
+            output->max_mesh_workgroup_invocations = mesh.maxMeshWorkgroupInvocations;
+            output->max_mesh_output_vertices = mesh.maxMeshOutputVertices;
+            output->max_mesh_output_primitives = mesh.maxMeshOutputPrimitives;
+            output->max_mesh_output_memory_bytes = mesh.maxMeshOutputMemoryBytes;
+            for (std::size_t axis = 0; axis < mesh.maxWorkgroupCount.size(); ++axis)
+            {
+                output->max_mesh_workgroup_count[axis] = mesh.maxWorkgroupCount[axis];
+            }
+            output->max_mesh_total_workgroups = mesh.maxTotalWorkgroups;
+            output->reserved1 = 0;
             return RACHIS_STATUS_OK;
         });
     }
@@ -1914,6 +2141,67 @@ extern "C"
                         [&]() -> rachis_status { return copyBufferTexture(device, command, desc, error, false); });
     }
 
+    rachis_status rachis_command_fill_buffer(rachis_device* device,
+                                             rachis_handle command,
+                                             rachis_handle buffer,
+                                             std::uint64_t offset,
+                                             std::uint64_t size,
+                                             std::uint32_t value,
+                                             rachis_error* error)
+    {
+        return boundary(error, [&]() -> rachis_status {
+            if (device == nullptr)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "device is null");
+            }
+            return recordCommand(*device, command, error, [&](rachis::CommandBuffer& commandBuffer) {
+                const auto* token = findToken(device->tokens, buffer, TokenKind::buffer);
+                if (token == nullptr)
+                {
+                    return invalidHandle(error);
+                }
+                return result(
+                    error,
+                    device->native.fillBuffer(commandBuffer, rachis::BufferHandle{token->native}, offset, size, value));
+            });
+        });
+    }
+
+    rachis_status rachis_command_clear_storage_texture(rachis_device* device,
+                                                       rachis_handle command,
+                                                       rachis_handle view,
+                                                       const rachis_storage_texture_clear_value* value,
+                                                       rachis_error* error)
+    {
+        return boundary(error, [&]() -> rachis_status {
+            if (device == nullptr || value == nullptr)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "device or clear value is null");
+            }
+            if (value->type > RACHIS_STORAGE_TEXTURE_CLEAR_SINT32)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "invalid storage texture clear type");
+            }
+            rachis::StorageTextureClearValue clear{.type = static_cast<rachis::StorageTextureClearType>(value->type)};
+            for (std::size_t channel = 0; channel < clear.float32.size(); ++channel)
+            {
+                clear.float32[channel] = value->float32[channel];
+                clear.uint32[channel] = value->uint32[channel];
+                clear.sint32[channel] = value->sint32[channel];
+            }
+            return recordCommand(*device, command, error, [&](rachis::CommandBuffer& commandBuffer) {
+                const auto* token = findView(device->tokens, view);
+                if (token == nullptr)
+                {
+                    return invalidHandle(error);
+                }
+                return result(
+                    error,
+                    device->native.clearStorageTexture(commandBuffer, rachis::TextureViewHandle{token->native}, clear));
+            });
+        });
+    }
+
     rachis_status rachis_command_barriers(rachis_device* device,
                                           rachis_handle command,
                                           const rachis_barrier_batch* batch,
@@ -2281,7 +2569,7 @@ extern "C"
             {
                 const auto& value = desc->entries[i];
                 if (value.type > RACHIS_BINDING_SAMPLER || value.count == 0 || value.visibility == 0 ||
-                    (value.visibility & ~RACHIS_SHADER_ALL) != 0)
+                    (value.visibility & ~RACHIS_SHADER_ALL) != 0 || (value.flags & ~knownBindingFlags) != 0)
                 {
                     return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "invalid binding layout entry");
                 }
@@ -2290,6 +2578,7 @@ extern "C"
                     .type = static_cast<rachis::BindingType>(value.type),
                     .visibility = static_cast<rachis::ShaderStage>(value.visibility),
                     .count = value.count,
+                    .flags = static_cast<rachis::BindingFlag>(value.flags),
                 });
             }
             std::scoped_lock const lock(device->mutex);
@@ -2417,58 +2706,74 @@ extern "C"
             const auto nativeLayout = rachis::BindingLayoutHandle{layout->native};
             const auto nativePool = rachis::BindingPoolHandle{pool->native};
             std::vector<rachis::BindingWrite> writes;
-            writes.reserve(static_cast<std::size_t>(desc->write_count) + desc->texture_write_count +
-                           desc->sampler_write_count);
-            for (std::uint32_t i = 0; i < desc->write_count; ++i)
+            if (const auto status = collectBindingWrites(*device,
+                                                         std::span{desc->writes, desc->write_count},
+                                                         std::span{desc->texture_writes, desc->texture_write_count},
+                                                         std::span{desc->sampler_writes, desc->sampler_write_count},
+                                                         false,
+                                                         writes,
+                                                         error);
+                status != RACHIS_STATUS_OK)
             {
-                const auto& value = desc->writes[i];
-                const auto* buffer = findToken(device->tokens, value.buffer, TokenKind::buffer);
-                if (buffer == nullptr)
-                {
-                    return invalidHandle(error);
-                }
-                writes.push_back(
-                    {.binding = value.binding,
-                     .arrayElement = value.array_element,
-                     .resource = rachis::BufferBinding{.buffer = rachis::BufferHandle{buffer->native},
-                                                       .offset = value.offset,
-                                                       .size = value.size,
-                                                       .structureByteStride = value.structure_byte_stride}});
-            }
-            for (std::uint32_t i = 0; i < desc->texture_write_count; ++i)
-            {
-                const auto& value = desc->texture_writes[i];
-                const auto* view = findToken(device->tokens, value.view, TokenKind::textureView);
-                if (view == nullptr)
-                {
-                    view = findToken(device->tokens, value.view, TokenKind::borrowedView);
-                }
-                if (view == nullptr)
-                {
-                    return invalidHandle(error);
-                }
-                writes.push_back({.binding = value.binding,
-                                  .arrayElement = value.array_element,
-                                  .resource = rachis::TextureViewHandle{view->native}});
-            }
-            for (std::uint32_t i = 0; i < desc->sampler_write_count; ++i)
-            {
-                const auto& value = desc->sampler_writes[i];
-                const auto* sampler = findToken(device->tokens, value.sampler, TokenKind::sampler);
-                if (sampler == nullptr)
-                {
-                    return invalidHandle(error);
-                }
-                writes.push_back({.binding = value.binding,
-                                  .arrayElement = value.array_element,
-                                  .resource = rachis::SamplerHandle{sampler->native}});
+                return status;
             }
             return createToken(*device, TokenKind::bindingSet, output, error, [&] {
                 return device->native.createBindingSet({.layout = nativeLayout,
                                                         .writes = writes,
+                                                        .variableDescriptorCount = desc->variable_descriptor_count,
                                                         .label = optionalString(desc->label),
                                                         .pool = nativePool});
             });
+        });
+    }
+
+    rachis_status rachis_binding_set_update(rachis_device* device,
+                                            rachis_handle set,
+                                            const rachis_binding_set_update_desc* desc,
+                                            rachis_error* error)
+    {
+        return boundary(error, [&]() -> rachis_status {
+            if (device == nullptr)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "device is null");
+            }
+            if (desc == nullptr)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "descriptor is null");
+            }
+            if (!validDesc(desc))
+            {
+                return fail(error, RACHIS_STATUS_ABI_MISMATCH, "unsupported binding set update descriptor");
+            }
+            if (!validArray(desc->writes, desc->write_count) ||
+                !validArray(desc->texture_writes, desc->texture_write_count) ||
+                !validArray(desc->sampler_writes, desc->sampler_write_count))
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "binding writes are null");
+            }
+            std::scoped_lock const lock(device->mutex);
+            if (const auto lost = rejectLostDevice(*device, error))
+            {
+                return *lost;
+            }
+            const auto* token = findToken(device->tokens, set, TokenKind::bindingSet);
+            if (token == nullptr)
+            {
+                return invalidHandle(error);
+            }
+            std::vector<rachis::BindingWrite> writes;
+            if (const auto status = collectBindingWrites(*device,
+                                                         std::span{desc->writes, desc->write_count},
+                                                         std::span{desc->texture_writes, desc->texture_write_count},
+                                                         std::span{desc->sampler_writes, desc->sampler_write_count},
+                                                         true,
+                                                         writes,
+                                                         error);
+                status != RACHIS_STATUS_OK)
+            {
+                return status;
+            }
+            return result(error, device->native.updateBindingSet(rachis::BindingSetHandle{token->native}, writes));
         });
     }
 
@@ -2562,17 +2867,16 @@ extern "C"
             {
                 return fail(error, RACHIS_STATUS_ABI_MISMATCH, "unsupported shader descriptor");
             }
-            if ((desc->stage != RACHIS_SHADER_VERTEX && desc->stage != RACHIS_SHADER_PIXEL &&
-                 desc->stage != RACHIS_SHADER_COMPUTE) ||
+            const bool workgroupStage = desc->stage == RACHIS_SHADER_COMPUTE || desc->stage == RACHIS_SHADER_TASK ||
+                                        desc->stage == RACHIS_SHADER_MESH;
+            if ((desc->stage != RACHIS_SHADER_VERTEX && desc->stage != RACHIS_SHADER_PIXEL && !workgroupStage) ||
                 !validHostByteSpan(desc->bytecode, desc->bytecode_size) ||
                 !validArray(desc->bindings, desc->binding_count) ||
                 !validArray(desc->push_constants, desc->push_constant_count) ||
                 !validArray(desc->vertex_input_locations, desc->vertex_input_location_count) ||
-                desc->vertex_input_location_count > RACHIS_MAX_VERTEX_ATTRIBUTES ||
-                (desc->stage == RACHIS_SHADER_COMPUTE &&
-                 (desc->workgroup_x == 0 || desc->workgroup_y == 0 || desc->workgroup_z == 0)) ||
-                (desc->stage != RACHIS_SHADER_COMPUTE &&
-                 (desc->workgroup_x != 0 || desc->workgroup_y != 0 || desc->workgroup_z != 0)))
+                desc->vertex_input_location_count > RACHIS_MAX_VERTEX_ATTRIBUTES || desc->draw_index > 1 ||
+                (workgroupStage && (desc->workgroup_x == 0 || desc->workgroup_y == 0 || desc->workgroup_z == 0)) ||
+                (!workgroupStage && (desc->workgroup_x != 0 || desc->workgroup_y != 0 || desc->workgroup_z != 0)))
             {
                 return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "invalid shader descriptor");
             }
@@ -2618,11 +2922,12 @@ extern "C"
                     native.shaderInterface.vertexInputLocations =
                         std::span<const std::uint32_t>{desc->vertex_input_locations, desc->vertex_input_location_count};
                 }
-                if (desc->stage == RACHIS_SHADER_COMPUTE)
+                if (workgroupStage)
                 {
                     native.shaderInterface.workgroupSize =
                         rachis::ShaderWorkgroupSize{desc->workgroup_x, desc->workgroup_y, desc->workgroup_z};
                 }
+                native.shaderInterface.drawIndex = desc->draw_index != 0;
                 return device->native.createShaderModule(native);
             });
         });
@@ -2663,7 +2968,7 @@ extern "C"
             }
             if (!validArray(desc->binding_layouts, desc->binding_layout_count) ||
                 !validArray(desc->push_constant_ranges, desc->push_constant_range_count) ||
-                desc->binding_layout_count > rachis::maxBindingSets)
+                desc->binding_layout_count > rachis::maxBindingSets || desc->draw_index > 1)
             {
                 return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "invalid pipeline binding layouts");
             }
@@ -2706,6 +3011,7 @@ extern "C"
                 rachis::PipelineLayoutDesc native{};
                 native.bindingLayouts = layouts;
                 native.pushConstantRanges = pushRanges;
+                native.drawIndex = desc->draw_index != 0;
                 native.label = optionalString(desc->label);
                 return device->native.createPipelineLayout(native);
             });
@@ -2763,6 +3069,7 @@ extern "C"
                 native.layout = nativeLayout;
                 native.computeShader = nativeShader;
                 native.label = optionalString(desc->label);
+                native.requiredSubgroupSize = desc->required_subgroup_size;
                 return device->native.createComputePipeline(native);
             });
         });
@@ -2891,20 +3198,38 @@ extern "C"
                 return *lost;
             }
             const auto* layout = findToken(device->tokens, desc->layout, TokenKind::pipelineLayout);
-            const auto* vertex = findToken(device->tokens, desc->vertex_shader, TokenKind::shaderModule);
             const auto* pixel = findToken(device->tokens, desc->pixel_shader, TokenKind::shaderModule);
-            if (layout == nullptr || vertex == nullptr || pixel == nullptr)
+            const auto findStage = [&](rachis_handle handle, rachis::ShaderModuleHandle& native) {
+                if (handle == 0)
+                {
+                    return true;
+                }
+                const auto* shader = findToken(device->tokens, handle, TokenKind::shaderModule);
+                if (shader == nullptr)
+                {
+                    return false;
+                }
+                native = rachis::ShaderModuleHandle{shader->native};
+                return true;
+            };
+            rachis::ShaderModuleHandle nativeVertex;
+            rachis::ShaderModuleHandle nativeTask;
+            rachis::ShaderModuleHandle nativeMesh;
+            if (layout == nullptr || pixel == nullptr || (desc->vertex_shader == 0 && desc->mesh_shader == 0) ||
+                !findStage(desc->vertex_shader, nativeVertex) || !findStage(desc->task_shader, nativeTask) ||
+                !findStage(desc->mesh_shader, nativeMesh))
             {
                 return invalidHandle(error);
             }
             const auto nativeLayout = rachis::PipelineLayoutHandle{layout->native};
-            const auto nativeVertex = rachis::ShaderModuleHandle{vertex->native};
             const auto nativePixel = rachis::ShaderModuleHandle{pixel->native};
             return createToken(*device, TokenKind::pipeline, output, error, [&] {
                 return device->native.createGraphicsPipeline({
                     .layout = nativeLayout,
                     .vertexShader = nativeVertex,
                     .pixelShader = nativePixel,
+                    .taskShader = nativeTask,
+                    .meshShader = nativeMesh,
                     .vertexBuffers = vertexBuffers,
                     .topology = static_cast<rachis::PrimitiveTopology>(desc->topology),
                     .stripIndexFormat = stripIndexFormat,
@@ -3269,6 +3594,75 @@ extern "C"
         });
     }
 
+    rachis_status rachis_command_draw_indirect(rachis_device* device,
+                                               rachis_handle command,
+                                               const rachis_indirect_draw_desc* desc,
+                                               rachis_error* error)
+    {
+        return boundary(error, [&]() -> rachis_status { return drawIndirect(device, command, desc, error, false); });
+    }
+
+    rachis_status rachis_command_draw_indexed_indirect(rachis_device* device,
+                                                       rachis_handle command,
+                                                       const rachis_indirect_draw_desc* desc,
+                                                       rachis_error* error)
+    {
+        return boundary(error, [&]() -> rachis_status { return drawIndirect(device, command, desc, error, true); });
+    }
+
+    rachis_status rachis_command_dispatch_mesh(rachis_device* device,
+                                               rachis_handle command,
+                                               std::uint32_t x,
+                                               std::uint32_t y,
+                                               std::uint32_t z,
+                                               rachis_error* error)
+    {
+        return boundary(error, [&]() -> rachis_status {
+            if (device == nullptr)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "device is null");
+            }
+            return recordCommand(*device, command, error, [&](rachis::CommandBuffer& commandBuffer) {
+                return result(error, device->native.dispatchMesh(commandBuffer, x, y, z));
+            });
+        });
+    }
+
+    rachis_status rachis_command_dispatch_mesh_indirect(rachis_device* device,
+                                                        rachis_handle command,
+                                                        const rachis_indirect_mesh_dispatch_desc* desc,
+                                                        rachis_error* error)
+    {
+        return boundary(error, [&]() -> rachis_status {
+            if (const auto rejected = rejectIndirectDesc(device, desc, error))
+            {
+                return *rejected;
+            }
+            if (desc->draw_index_prefix > 1)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "invalid indirect mesh dispatch descriptor");
+            }
+            return recordCommand(*device, command, error, [&](rachis::CommandBuffer& commandBuffer) {
+                const auto buffers = findIndirectBuffers(*device, desc->argument_buffer, desc->count_buffer);
+                if (!buffers)
+                {
+                    return invalidHandle(error);
+                }
+                return result(error,
+                              device->native.dispatchMeshIndirect(commandBuffer,
+                                                                  {
+                                                                      .argumentBuffer = buffers->arguments,
+                                                                      .argumentOffset = desc->argument_offset,
+                                                                      .maxDispatchCount = desc->max_dispatch_count,
+                                                                      .stride = desc->stride,
+                                                                      .countBuffer = buffers->count,
+                                                                      .countOffset = desc->count_offset,
+                                                                      .drawIndexPrefix = desc->draw_index_prefix != 0,
+                                                                  }));
+            });
+        });
+    }
+
     rachis_status rachis_command_bind_compute_set(
         rachis_device* device, rachis_handle command, std::uint32_t setIndex, rachis_handle set, rachis_error* error)
     {
@@ -3355,6 +3749,36 @@ extern "C"
                 return status;
             }
             return result(error, device->native.dispatch(*commandBuffer, x, y, z));
+        });
+    }
+
+    rachis_status rachis_command_dispatch_indirect(rachis_device* device,
+                                                   rachis_handle command,
+                                                   const rachis_indirect_dispatch_desc* desc,
+                                                   rachis_error* error)
+    {
+        return boundary(error, [&]() -> rachis_status {
+            if (const auto rejected = rejectIndirectDesc(device, desc, error))
+            {
+                return *rejected;
+            }
+            return recordCommand(*device, command, error, [&](rachis::CommandBuffer& commandBuffer) {
+                const auto buffers = findIndirectBuffers(*device, desc->argument_buffer, desc->count_buffer);
+                if (!buffers)
+                {
+                    return invalidHandle(error);
+                }
+                return result(error,
+                              device->native.dispatchIndirect(commandBuffer,
+                                                              rachis::IndirectDispatchDesc{
+                                                                  .argumentBuffer = buffers->arguments,
+                                                                  .argumentOffset = desc->argument_offset,
+                                                                  .maxDispatchCount = desc->max_dispatch_count,
+                                                                  .stride = desc->stride,
+                                                                  .countBuffer = buffers->count,
+                                                                  .countOffset = desc->count_offset,
+                                                              }));
+            });
         });
     }
 

@@ -2276,7 +2276,7 @@ TEST_CASE("C ABI reports Vulkan compute pipeline out-of-memory as RACHIS_STATUS_
     rachis_handle shader = 0;
     requireOk(rachis_shader_module_create(device.get(), &shaderDesc, &shader, &error), error);
 
-    const rachis_binding_layout_entry entry{0, RACHIS_BINDING_STORAGE_BUFFER, RACHIS_SHADER_COMPUTE, 1};
+    const rachis_binding_layout_entry entry{0, RACHIS_BINDING_STORAGE_BUFFER, RACHIS_SHADER_COMPUTE, 1, 0};
     rachis_binding_layout_desc bindingLayoutDesc{};
     bindingLayoutDesc.struct_size = sizeof(bindingLayoutDesc);
     bindingLayoutDesc.abi_version = RACHIS_ABI_VERSION;
@@ -2477,7 +2477,7 @@ TEST_CASE("C ABI destroy and release calls succeed after device loss and retire 
     rachis_handle sampler = 0;
     requireOk(rachis_sampler_create(device.get(), &samplerDesc, &sampler, &error), error);
 
-    const rachis_binding_layout_entry entry{0, RACHIS_BINDING_STORAGE_BUFFER, RACHIS_SHADER_COMPUTE, 1};
+    const rachis_binding_layout_entry entry{0, RACHIS_BINDING_STORAGE_BUFFER, RACHIS_SHADER_COMPUTE, 1, 0};
     rachis_binding_layout_desc layoutDesc{};
     layoutDesc.struct_size = sizeof(layoutDesc);
     layoutDesc.abi_version = RACHIS_ABI_VERSION;

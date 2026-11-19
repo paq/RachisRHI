@@ -21,13 +21,15 @@ extern "C"
 {
 #endif
 
-#define RACHIS_ABI_VERSION 2U
+#define RACHIS_ABI_VERSION 3U
 #define RACHIS_ERROR_MESSAGE_CAPACITY 256u
 #define RACHIS_MAX_SURFACE_FORMATS 16U
 #define RACHIS_MAX_VERTEX_BUFFERS 8U
 #define RACHIS_MAX_VERTEX_ATTRIBUTES 16U
 
 #define RACHIS_REMAINING_SUBRESOURCES 0xffffffffu
+
+#define RACHIS_UNBOUNDED_BINDING_COUNT 0xffffffffu
 
 #define RACHIS_WHOLE_SIZE 0xffffffffffffffffull
 
@@ -225,7 +227,9 @@ extern "C"
         RACHIS_STAGE_RESOLVE = 1U << 7U,
         RACHIS_STAGE_RENDER_TARGET = 1U << 8U,
         RACHIS_STAGE_DEPTH_STENCIL = 1U << 9U,
-        RACHIS_STAGE_INDIRECT = 1U << 10U
+        RACHIS_STAGE_INDIRECT = 1U << 10U,
+        RACHIS_STAGE_TASK_SHADER = 1U << 14U,
+        RACHIS_STAGE_MESH_SHADER = 1U << 15U
     };
     enum
     {
@@ -261,7 +265,9 @@ extern "C"
         RACHIS_SHADER_VERTEX = 1U << 0U,
         RACHIS_SHADER_PIXEL = 1U << 1U,
         RACHIS_SHADER_COMPUTE = 1U << 2U,
-        RACHIS_SHADER_ALL = 0x7U
+        RACHIS_SHADER_TASK = 1U << 6U,
+        RACHIS_SHADER_MESH = 1U << 7U,
+        RACHIS_SHADER_ALL = 0xc7U
     };
     enum
     {
@@ -271,6 +277,18 @@ extern "C"
         RACHIS_BINDING_SAMPLED_TEXTURE = 3,
         RACHIS_BINDING_STORAGE_TEXTURE = 4,
         RACHIS_BINDING_SAMPLER = 5
+    };
+    enum
+    {
+        RACHIS_BINDING_FLAG_PARTIALLY_BOUND = 1U << 0U,
+        RACHIS_BINDING_FLAG_VARIABLE_DESCRIPTOR_COUNT = 1U << 1U,
+        RACHIS_BINDING_FLAG_UPDATE_AFTER_BIND = 1U << 2U
+    };
+    enum
+    {
+        RACHIS_STORAGE_TEXTURE_CLEAR_FLOAT32 = 0,
+        RACHIS_STORAGE_TEXTURE_CLEAR_UINT32 = 1,
+        RACHIS_STORAGE_TEXTURE_CLEAR_SINT32 = 2
     };
     enum
     {
@@ -451,6 +469,40 @@ extern "C"
         uint32_t max_vertex_attribute_offset;
         uint32_t max_vertex_instance_step_rate;
         uint32_t reserved0;
+        uint32_t indirect_dispatch;
+        uint32_t multi_dispatch_indirect;
+        uint32_t dispatch_indirect_count;
+        uint32_t indirect_draws;
+        uint32_t indirect_draw_base_instance;
+        uint32_t multi_draw_indirect;
+        uint32_t draw_indirect_count;
+        uint32_t shader_draw_index;
+        uint32_t conditional_execution;
+        uint32_t mesh_shaders;
+        uint32_t task_shaders;
+        uint32_t partially_bound_binding_arrays;
+        uint32_t variable_descriptor_count_binding_arrays;
+        uint32_t update_after_bind_binding_arrays;
+        uint32_t shader_int64;
+        uint32_t shader_int64_atomic_group_shared;
+        uint32_t shader_int64_atomic_typed_resource;
+        uint32_t shader_int64_atomic_storage_buffer;
+        uint32_t subgroup_operations;
+        uint32_t subgroup_min_size;
+        uint32_t subgroup_max_size;
+        uint32_t subgroup_required_size_stages;
+        uint32_t max_variable_resource_descriptors;
+        uint32_t max_variable_buffer_descriptors;
+        uint32_t max_variable_sampler_descriptors;
+        uint32_t max_task_workgroup_invocations;
+        uint32_t max_task_payload_bytes;
+        uint32_t max_mesh_workgroup_invocations;
+        uint32_t max_mesh_output_vertices;
+        uint32_t max_mesh_output_primitives;
+        uint32_t max_mesh_output_memory_bytes;
+        uint32_t max_mesh_workgroup_count[3];
+        uint32_t max_mesh_total_workgroups;
+        uint32_t reserved1;
     } rachis_device_capabilities;
 
     typedef struct rachis_buffer_desc
@@ -727,6 +779,7 @@ extern "C"
         uint32_t type;
         uint32_t visibility;
         uint32_t count;
+        uint32_t flags;
     } rachis_binding_layout_entry;
 
     typedef struct rachis_binding_layout_desc
@@ -804,7 +857,20 @@ extern "C"
         uint32_t texture_write_count;
         const rachis_sampler_binding* sampler_writes;
         uint32_t sampler_write_count;
+        uint32_t variable_descriptor_count;
     } rachis_binding_set_desc;
+
+    typedef struct rachis_binding_set_update_desc
+    {
+        uint32_t struct_size;
+        uint32_t abi_version;
+        const rachis_buffer_binding* writes;
+        uint32_t write_count;
+        const rachis_texture_binding* texture_writes;
+        uint32_t texture_write_count;
+        const rachis_sampler_binding* sampler_writes;
+        uint32_t sampler_write_count;
+    } rachis_binding_set_update_desc;
 
     typedef struct rachis_shader_binding_requirement
     {
@@ -838,6 +904,7 @@ extern "C"
         uint32_t push_constant_count;
         const uint32_t* vertex_input_locations;
         uint32_t vertex_input_location_count;
+        uint32_t draw_index;
     } rachis_shader_module_desc;
 
     typedef struct rachis_push_constant_range
@@ -856,6 +923,7 @@ extern "C"
         const char* label;
         const rachis_push_constant_range* push_constant_ranges;
         uint32_t push_constant_range_count;
+        uint32_t draw_index;
     } rachis_pipeline_layout_desc;
 
     typedef struct rachis_compute_pipeline_desc
@@ -865,6 +933,7 @@ extern "C"
         rachis_handle layout;
         rachis_handle shader;
         const char* label;
+        uint32_t required_subgroup_size;
     } rachis_compute_pipeline_desc;
 
     typedef struct rachis_blend_component
@@ -929,6 +998,8 @@ extern "C"
         const rachis_vertex_buffer_layout* vertex_buffers;
         uint32_t vertex_buffer_count;
         uint32_t strip_index_format;
+        rachis_handle task_shader;
+        rachis_handle mesh_shader;
     } rachis_graphics_pipeline_desc;
 
     typedef struct rachis_viewport
@@ -948,6 +1019,76 @@ extern "C"
         uint32_t width;
         uint32_t height;
     } rachis_scissor;
+
+    typedef struct rachis_dispatch_indirect_arguments
+    {
+        uint32_t group_count_x;
+        uint32_t group_count_y;
+        uint32_t group_count_z;
+    } rachis_dispatch_indirect_arguments;
+
+    typedef struct rachis_draw_indirect_arguments
+    {
+        uint32_t vertex_count;
+        uint32_t instance_count;
+        uint32_t first_vertex;
+        uint32_t first_instance;
+    } rachis_draw_indirect_arguments;
+
+    typedef struct rachis_draw_indexed_indirect_arguments
+    {
+        uint32_t index_count;
+        uint32_t instance_count;
+        uint32_t first_index;
+        int32_t base_vertex;
+        uint32_t first_instance;
+    } rachis_draw_indexed_indirect_arguments;
+
+    typedef struct rachis_indirect_dispatch_desc
+    {
+        uint32_t struct_size;
+        uint32_t abi_version;
+        rachis_handle argument_buffer;
+        uint64_t argument_offset;
+        uint32_t max_dispatch_count;
+        uint32_t stride;
+        rachis_handle count_buffer;
+        uint64_t count_offset;
+    } rachis_indirect_dispatch_desc;
+
+    typedef struct rachis_indirect_draw_desc
+    {
+        uint32_t struct_size;
+        uint32_t abi_version;
+        rachis_handle argument_buffer;
+        uint64_t argument_offset;
+        uint32_t max_draw_count;
+        uint32_t stride;
+        rachis_handle count_buffer;
+        uint64_t count_offset;
+        uint32_t draw_index_prefix;
+    } rachis_indirect_draw_desc;
+
+    typedef struct rachis_indirect_mesh_dispatch_desc
+    {
+        uint32_t struct_size;
+        uint32_t abi_version;
+        rachis_handle argument_buffer;
+        uint64_t argument_offset;
+        uint32_t max_dispatch_count;
+        uint32_t stride;
+        rachis_handle count_buffer;
+        uint64_t count_offset;
+        uint32_t draw_index_prefix;
+    } rachis_indirect_mesh_dispatch_desc;
+
+    typedef struct rachis_storage_texture_clear_value
+    {
+        uint32_t type;
+        float float32[4];
+        uint32_t uint32[4];
+        int32_t sint32[4];
+    } rachis_storage_texture_clear_value;
 
     typedef struct rachis_timestamp_pool_desc
     {
@@ -1072,6 +1213,18 @@ extern "C"
                                                                    rachis_handle command,
                                                                    const rachis_buffer_texture_copy_desc* desc,
                                                                    rachis_error* error);
+    RACHIS_API rachis_status rachis_command_fill_buffer(rachis_device* device,
+                                                        rachis_handle command,
+                                                        rachis_handle buffer,
+                                                        uint64_t offset,
+                                                        uint64_t size,
+                                                        uint32_t value,
+                                                        rachis_error* error);
+    RACHIS_API rachis_status rachis_command_clear_storage_texture(rachis_device* device,
+                                                                  rachis_handle command,
+                                                                  rachis_handle view,
+                                                                  const rachis_storage_texture_clear_value* value,
+                                                                  rachis_error* error);
 
     RACHIS_API rachis_status rachis_command_barriers(rachis_device* device,
                                                      rachis_handle command,
@@ -1112,6 +1265,10 @@ extern "C"
     RACHIS_API rachis_status rachis_binding_set_create(rachis_device* device,
                                                        const rachis_binding_set_desc* desc,
                                                        rachis_handle* output,
+                                                       rachis_error* error);
+    RACHIS_API rachis_status rachis_binding_set_update(rachis_device* device,
+                                                       rachis_handle set,
+                                                       const rachis_binding_set_update_desc* desc,
                                                        rachis_error* error);
     RACHIS_API rachis_status rachis_binding_set_destroy(rachis_device* device, rachis_handle set, rachis_error* error);
     RACHIS_API rachis_status rachis_sampler_create(rachis_device* device,
@@ -1196,6 +1353,20 @@ extern "C"
                                                          int32_t base_vertex,
                                                          uint32_t first_instance,
                                                          rachis_error* error);
+    RACHIS_API rachis_status rachis_command_draw_indirect(rachis_device* device,
+                                                          rachis_handle command,
+                                                          const rachis_indirect_draw_desc* desc,
+                                                          rachis_error* error);
+    RACHIS_API rachis_status rachis_command_draw_indexed_indirect(rachis_device* device,
+                                                                  rachis_handle command,
+                                                                  const rachis_indirect_draw_desc* desc,
+                                                                  rachis_error* error);
+    RACHIS_API rachis_status rachis_command_dispatch_mesh(
+        rachis_device* device, rachis_handle command, uint32_t x, uint32_t y, uint32_t z, rachis_error* error);
+    RACHIS_API rachis_status rachis_command_dispatch_mesh_indirect(rachis_device* device,
+                                                                   rachis_handle command,
+                                                                   const rachis_indirect_mesh_dispatch_desc* desc,
+                                                                   rachis_error* error);
     RACHIS_API rachis_status rachis_command_bind_compute_set(
         rachis_device* device, rachis_handle command, uint32_t set_index, rachis_handle set, rachis_error* error);
     RACHIS_API rachis_status rachis_command_set_compute_push_constants(rachis_device* device,
@@ -1206,6 +1377,10 @@ extern "C"
                                                                        rachis_error* error);
     RACHIS_API rachis_status rachis_command_dispatch(
         rachis_device* device, rachis_handle command, uint32_t x, uint32_t y, uint32_t z, rachis_error* error);
+    RACHIS_API rachis_status rachis_command_dispatch_indirect(rachis_device* device,
+                                                              rachis_handle command,
+                                                              const rachis_indirect_dispatch_desc* desc,
+                                                              rachis_error* error);
     RACHIS_API rachis_status rachis_timestamp_pool_create(rachis_device* device,
                                                           const rachis_timestamp_pool_desc* desc,
                                                           rachis_handle* output,

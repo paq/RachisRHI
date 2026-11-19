@@ -689,8 +689,8 @@ TEST_CASE("C ABI texture and sampler bindings validate handles and publish a set
     CHECK(rachis_sampler_create(other.get(), &samplerDesc, &foreign, &error) == RACHIS_STATUS_OK);
 
     const std::array entries{
-        rachis_binding_layout_entry{0, RACHIS_BINDING_SAMPLED_TEXTURE, RACHIS_SHADER_PIXEL, 1},
-        rachis_binding_layout_entry{1, RACHIS_BINDING_SAMPLER, RACHIS_SHADER_PIXEL, 1},
+        rachis_binding_layout_entry{0, RACHIS_BINDING_SAMPLED_TEXTURE, RACHIS_SHADER_PIXEL, 1, 0},
+        rachis_binding_layout_entry{1, RACHIS_BINDING_SAMPLER, RACHIS_SHADER_PIXEL, 1, 0},
     };
     rachis_binding_layout_desc layoutDesc{};
     layoutDesc.struct_size = sizeof(layoutDesc);
@@ -740,7 +740,8 @@ TEST_CASE("C ABI texture and sampler bindings validate handles and publish a set
 TEST_CASE("C ABI stage masks accept RACHIS_SHADER_ALL and reject stages outside the C ABI",
           RACHIS_CABI_DEVICE_SIZE RACHIS_CABI_DEVICE_REQUIRES "[rachis][cabi]")
 {
-    constexpr std::uint32_t cAbiStages = RACHIS_SHADER_VERTEX | RACHIS_SHADER_PIXEL | RACHIS_SHADER_COMPUTE;
+    constexpr std::uint32_t cAbiStages =
+        RACHIS_SHADER_VERTEX | RACHIS_SHADER_PIXEL | RACHIS_SHADER_COMPUTE | RACHIS_SHADER_TASK | RACHIS_SHADER_MESH;
     constexpr std::uint32_t graphicsStages = RACHIS_SHADER_VERTEX | RACHIS_SHADER_PIXEL;
     constexpr std::uint32_t formerShaderAll = 0x3fffU;
     CHECK(cAbiStages == RACHIS_SHADER_ALL);
@@ -748,13 +749,17 @@ TEST_CASE("C ABI stage masks accept RACHIS_SHADER_ALL and reject stages outside 
     auto error = makeError();
     auto device = createDevice(error, RACHIS_VALIDATION_STANDARD);
 
-    rachis_binding_layout_entry entry{0, RACHIS_BINDING_UNIFORM_BUFFER, RACHIS_SHADER_ALL, 1};
+    rachis_binding_layout_entry entry{
+        0, RACHIS_BINDING_UNIFORM_BUFFER, RACHIS_SHADER_VERTEX | RACHIS_SHADER_MESH, 1, 0};
     rachis_binding_layout_desc bindingLayoutDesc{};
     bindingLayoutDesc.struct_size = sizeof(bindingLayoutDesc);
     bindingLayoutDesc.abi_version = RACHIS_ABI_VERSION;
     bindingLayoutDesc.entries = &entry;
     bindingLayoutDesc.entry_count = 1;
     rachis_handle bindingLayout = 0;
+    requireOk(rachis_binding_layout_create(device.get(), &bindingLayoutDesc, &bindingLayout, &error), error);
+    requireOk(rachis_binding_layout_destroy(device.get(), bindingLayout, &error), error);
+    entry.visibility = RACHIS_SHADER_ALL;
     requireOk(rachis_binding_layout_create(device.get(), &bindingLayoutDesc, &bindingLayout, &error), error);
 
     rachis_push_constant_range pushRange{RACHIS_SHADER_ALL, 0, 16};
@@ -774,6 +779,13 @@ TEST_CASE("C ABI stage masks accept RACHIS_SHADER_ALL and reject stages outside 
     CHECK(rachis_command_set_graphics_push_constants(
               device.get(), command, graphicsStages, 0, constants.data(), sizeof(constants), &error) ==
           RACHIS_STATUS_INVALID_STATE);
+    CHECK(rachis_command_set_graphics_push_constants(device.get(),
+                                                     command,
+                                                     graphicsStages | RACHIS_SHADER_TASK | RACHIS_SHADER_MESH,
+                                                     0,
+                                                     constants.data(),
+                                                     sizeof(constants),
+                                                     &error) == RACHIS_STATUS_INVALID_STATE);
     CHECK(rachis_command_set_graphics_push_constants(
               device.get(), command, RACHIS_SHADER_ALL, 0, constants.data(), sizeof(constants), &error) ==
           RACHIS_STATUS_INVALID_ARGUMENT);
@@ -781,6 +793,10 @@ TEST_CASE("C ABI stage masks accept RACHIS_SHADER_ALL and reject stages outside 
     std::vector<std::uint32_t> rejected{formerShaderAll, formerShaderAll & ~std::uint32_t{RACHIS_SHADER_COMPUTE}};
     for (std::uint32_t bit = 3; bit < 32; ++bit)
     {
+        if (((1U << bit) & RACHIS_SHADER_ALL) != 0)
+        {
+            continue;
+        }
         rejected.push_back(1U << bit);
         rejected.push_back(graphicsStages | (1U << bit));
     }
@@ -1126,6 +1142,1293 @@ TEST_CASE("C ABI draws an indexed quad from mapped vertex and index buffers",
 }
 #endif
 
+#ifdef RACHIS_CABI_DRAW_INDEX_VERTEX_PATH
+namespace
+{
+    using Texel = std::array<std::uint8_t, 4>;
+
+    constexpr Texel clearTexel{0, 0, 0, 0};
+    constexpr Texel redTexel{255, 0, 0, 255};
+    constexpr Texel greenTexel{0, 255, 0, 255};
+    constexpr Texel blueTexel{0, 0, 255, 255};
+    constexpr Texel magentaTexel{255, 0, 255, 255};
+    constexpr Texel whiteTexel{255, 255, 255, 255};
+
+    [[nodiscard]] constexpr std::uint32_t packTexel(const Texel& texel) noexcept
+    {
+        return std::uint32_t{texel[0]} | (std::uint32_t{texel[1]} << 8U) | (std::uint32_t{texel[2]} << 16U) |
+               (std::uint32_t{texel[3]} << 24U);
+    }
+
+    [[nodiscard]] std::vector<char> loadFile(const char* path)
+    {
+        std::ifstream input{path, std::ios::binary};
+        return {std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
+    }
+
+    [[nodiscard]] rachis_device_capabilities queryCapabilities(rachis_device* device, rachis_error& error)
+    {
+        rachis_device_capabilities capabilities{};
+        capabilities.struct_size = sizeof(capabilities);
+        requireOk(rachis_device_query_capabilities(device, &capabilities, &error), error);
+        return capabilities;
+    }
+
+    [[nodiscard]] rachis_shader_module_desc shaderModuleDesc(std::uint32_t stage,
+                                                             const std::vector<char>& bytecode,
+                                                             const char* entryPoint) noexcept
+    {
+        rachis_shader_module_desc desc{};
+        desc.struct_size = sizeof(desc);
+        desc.abi_version = RACHIS_ABI_VERSION;
+        desc.stage = stage;
+        desc.bytecode = bytecode.data();
+        desc.bytecode_size = bytecode.size();
+        desc.entry_point = entryPoint;
+        if (stage == RACHIS_SHADER_COMPUTE || stage == RACHIS_SHADER_TASK || stage == RACHIS_SHADER_MESH)
+        {
+            desc.workgroup_x = 1;
+            desc.workgroup_y = 1;
+            desc.workgroup_z = 1;
+        }
+        return desc;
+    }
+
+    [[nodiscard]] rachis_handle createShaderModule(rachis_device* device,
+                                                   const rachis_shader_module_desc& desc,
+                                                   rachis_error& error)
+    {
+        rachis_handle shader = 0;
+        requireOk(rachis_shader_module_create(device, &desc, &shader, &error), error);
+        return shader;
+    }
+
+    [[nodiscard]] rachis_status createDrawIndexLayout(rachis_device* device,
+                                                      const rachis_handle* bindingLayouts,
+                                                      std::uint32_t bindingLayoutCount,
+                                                      std::uint32_t drawIndex,
+                                                      rachis_handle& layout,
+                                                      rachis_error& error)
+    {
+        rachis_pipeline_layout_desc desc{};
+        desc.struct_size = sizeof(desc);
+        desc.abi_version = RACHIS_ABI_VERSION;
+        desc.binding_layouts = bindingLayouts;
+        desc.binding_layout_count = bindingLayoutCount;
+        desc.draw_index = drawIndex;
+        return rachis_pipeline_layout_create(device, &desc, &layout, &error);
+    }
+
+    [[nodiscard]] rachis_color_target opaqueTarget() noexcept
+    {
+        rachis_color_target target{};
+        target.format = RACHIS_FORMAT_RGBA8_UNORM;
+        target.write_mask = RACHIS_COLOR_WRITE_ALL;
+        target.color_blend.source_factor = RACHIS_BLEND_ONE;
+        target.alpha_blend.source_factor = RACHIS_BLEND_ONE;
+        return target;
+    }
+
+    struct CellTarget final
+    {
+        rachis_handle texture = 0;
+        rachis_handle view = 0;
+        rachis_handle readback = 0;
+        rachis_buffer_texture_region region{};
+    };
+
+    [[nodiscard]] CellTarget createCellTarget(rachis_device* device, rachis_error& error)
+    {
+        CellTarget target;
+        target.texture = createTexture(device,
+                                       RACHIS_FORMAT_RGBA8_UNORM,
+                                       textureSize,
+                                       textureSize,
+                                       RACHIS_TEXTURE_RENDER_TARGET | RACHIS_TEXTURE_COPY_SOURCE,
+                                       error);
+        const auto viewDesc = renderTargetViewDesc(target.texture);
+        requireOk(rachis_texture_view_create(device, &viewDesc, &target.view, &error), error);
+        target.region = wholeTextureRegion(textureSize, textureSize);
+        rachis_texture_transfer_layout transfer{};
+        transfer.struct_size = sizeof(transfer);
+        requireOk(rachis_texture_query_transfer_layout(device, target.texture, &target.region, &transfer, &error),
+                  error);
+        target.region.bytes_per_row = transfer.bytes_per_row;
+        target.readback = createBuffer(
+            device, transfer.required_buffer_size, RACHIS_BUFFER_COPY_DESTINATION, RACHIS_MEMORY_READBACK, error);
+        return target;
+    }
+
+    void beginCellRendering(rachis_device* device, rachis_handle command, const CellTarget& target, rachis_error& error)
+    {
+        const auto toRender = textureBarrier(target.texture,
+                                             RACHIS_STAGE_ALL,
+                                             RACHIS_ACCESS_NONE,
+                                             RACHIS_LAYOUT_UNDEFINED,
+                                             RACHIS_STAGE_RENDER_TARGET,
+                                             RACHIS_ACCESS_RENDER_TARGET,
+                                             RACHIS_LAYOUT_RENDER_TARGET);
+        requireOk(recordBarriers(device, command, nullptr, 0, &toRender, 1, error), error);
+        rachis_color_attachment attachment{};
+        attachment.view = target.view;
+        attachment.load_op = RACHIS_LOAD_OP_CLEAR;
+        attachment.store_op = RACHIS_STORE_OP_STORE;
+        rachis_rendering_desc rendering{};
+        rendering.struct_size = sizeof(rendering);
+        rendering.abi_version = RACHIS_ABI_VERSION;
+        rendering.color_attachments = &attachment;
+        rendering.color_attachment_count = 1;
+        requireOk(rachis_command_begin_rendering(device, command, &rendering, &error), error);
+        const rachis_viewport viewport{0, 0, textureSize, textureSize, 0, 1};
+        const rachis_scissor scissor{0, 0, textureSize, textureSize};
+        requireOk(rachis_command_set_viewport(device, command, &viewport, &error), error);
+        requireOk(rachis_command_set_scissor(device, command, &scissor, &error), error);
+    }
+
+    void endCellRendering(rachis_device* device, rachis_handle command, const CellTarget& target, rachis_error& error)
+    {
+        requireOk(rachis_command_end_rendering(device, command, &error), error);
+        const auto toCopy = textureBarrier(target.texture,
+                                           RACHIS_STAGE_RENDER_TARGET,
+                                           RACHIS_ACCESS_RENDER_TARGET,
+                                           RACHIS_LAYOUT_RENDER_TARGET,
+                                           RACHIS_STAGE_COPY,
+                                           RACHIS_ACCESS_COPY_SOURCE,
+                                           RACHIS_LAYOUT_COPY_SOURCE);
+        requireOk(recordBarriers(device, command, nullptr, 0, &toCopy, 1, error), error);
+        requireOk(copyBufferTexture(device, command, target.readback, target.texture, target.region, false, error),
+                  error);
+    }
+
+    [[nodiscard]] std::vector<Texel> readCells(rachis_device* device, const CellTarget& target, rachis_error& error)
+    {
+        rachis_mapped_memory mapped{};
+        mapped.struct_size = sizeof(mapped);
+        requireOk(rachis_buffer_map(device, target.readback, 0, RACHIS_WHOLE_SIZE, &mapped, &error), error);
+        REQUIRE(mapped.data != nullptr);
+        const rachis_mapped_range wholeRange{0, RACHIS_WHOLE_SIZE};
+        requireOk(rachis_buffer_invalidate_mapped_ranges(device, target.readback, &wholeRange, 1, &error), error);
+        std::vector<Texel> cells(static_cast<std::size_t>(textureSize) * textureSize);
+        for (std::uint32_t y = 0; y < textureSize; ++y)
+        {
+            for (std::uint32_t x = 0; x < textureSize; ++x)
+            {
+                const auto* texel = static_cast<const std::uint8_t*>(mapped.data) +
+                                    static_cast<std::size_t>(y) * target.region.bytes_per_row + x * 4U;
+                std::memcpy(cells[static_cast<std::size_t>(y) * textureSize + x].data(), texel, sizeof(Texel));
+            }
+        }
+        requireOk(rachis_buffer_unmap(device, target.readback, &error), error);
+        return cells;
+    }
+
+    using CellRow = std::array<Texel, textureSize>;
+
+    void checkCells(const std::vector<Texel>& cells, const std::array<CellRow, textureSize>& expected)
+    {
+        for (std::uint32_t y = 0; y < textureSize; ++y)
+        {
+            for (std::uint32_t x = 0; x < textureSize; ++x)
+            {
+                INFO("cell column " << x << ", row " << y);
+                const auto& actual = cells[static_cast<std::size_t>(y) * textureSize + x];
+                const auto& wanted = expected[y][x];
+                for (std::size_t channel = 0; channel < actual.size(); ++channel)
+                {
+                    INFO("channel " << channel);
+                    CHECK(int{actual[channel]} == int{wanted[channel]});
+                }
+            }
+        }
+    }
+
+    void destroyCellTarget(rachis_device* device, const CellTarget& target, rachis_error& error)
+    {
+        requireOk(rachis_buffer_destroy(device, target.readback, &error), error);
+        requireOk(rachis_texture_view_destroy(device, target.view, &error), error);
+        requireOk(rachis_texture_destroy(device, target.texture, &error), error);
+    }
+
+    [[nodiscard]] rachis_indirect_draw_desc indirectDrawDesc(rachis_handle arguments) noexcept
+    {
+        rachis_indirect_draw_desc desc{};
+        desc.struct_size = sizeof(desc);
+        desc.abi_version = RACHIS_ABI_VERSION;
+        desc.argument_buffer = arguments;
+        desc.max_draw_count = 1;
+        return desc;
+    }
+
+    template<typename Word, std::size_t Count>
+    void writeWords(rachis_device* device,
+                    rachis_handle buffer,
+                    const std::array<Word, Count>& words,
+                    rachis_error& error)
+    {
+        requireOk(rachis_buffer_write(device, buffer, 0, words.data(), sizeof(words), &error), error);
+    }
+} // namespace
+
+TEST_CASE("C ABI counted indirect draws read the draw index and a variable-count binding array",
+          RACHIS_CABI_DEVICE_SIZE RACHIS_CABI_DEVICE_REQUIRES "[rachis][cabi][graphics][indirect][bindless]")
+{
+    const auto vertexBytes = loadFile(RACHIS_CABI_DRAW_INDEX_VERTEX_PATH);
+    const auto pixelBytes = loadFile(RACHIS_CABI_BINDING_ARRAY_PIXEL_PATH);
+    REQUIRE_FALSE(vertexBytes.empty());
+    REQUIRE_FALSE(pixelBytes.empty());
+
+    auto error = makeError();
+    auto device = createDevice(error, RACHIS_VALIDATION_STANDARD);
+    const auto capabilities = queryCapabilities(device.get(), error);
+    if (RACHIS_SMOKE_BACKEND == RACHIS_BACKEND_D3D12)
+    {
+        REQUIRE(capabilities.shader_draw_index == 1);
+        REQUIRE(capabilities.multi_draw_indirect == 1);
+        REQUIRE(capabilities.draw_indirect_count == 1);
+        REQUIRE(capabilities.partially_bound_binding_arrays == 1);
+        REQUIRE(capabilities.variable_descriptor_count_binding_arrays == 1);
+        REQUIRE(capabilities.update_after_bind_binding_arrays == 1);
+    }
+    if (capabilities.shader_draw_index == 0 || capabilities.multi_draw_indirect == 0 ||
+        capabilities.partially_bound_binding_arrays == 0 || capabilities.variable_descriptor_count_binding_arrays == 0)
+    {
+        SKIP("The device lacks the draw index, multi-draw indirect, or variable-count binding arrays.");
+    }
+    const bool counted = capabilities.draw_indirect_count != 0;
+    const bool updateAfterBind = capabilities.update_after_bind_binding_arrays != 0;
+    REQUIRE(capabilities.max_variable_buffer_descriptors >= 8);
+
+    const std::array<std::uint32_t, 1> inputLocations{0};
+    auto vertexDesc = shaderModuleDesc(RACHIS_SHADER_VERTEX, vertexBytes, "indirectVertex");
+    vertexDesc.vertex_input_locations = inputLocations.data();
+    vertexDesc.vertex_input_location_count = static_cast<std::uint32_t>(inputLocations.size());
+    rachis_handle rejectedShader = 0;
+    vertexDesc.draw_index = 2;
+    CHECK(rachis_shader_module_create(device.get(), &vertexDesc, &rejectedShader, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rejectedShader == 0);
+    if (RACHIS_SMOKE_BACKEND != RACHIS_BACKEND_METAL)
+    {
+        vertexDesc.draw_index = 0;
+        CHECK(rachis_shader_module_create(device.get(), &vertexDesc, &rejectedShader, &error) ==
+              RACHIS_STATUS_INVALID_ARGUMENT);
+        CHECK(rejectedShader == 0);
+    }
+    vertexDesc.draw_index = 1;
+    const auto vertex = createShaderModule(device.get(), vertexDesc, error);
+
+    const rachis_shader_binding_requirement colorArray{
+        0, 0, RACHIS_BINDING_READ_ONLY_STORAGE_BUFFER, RACHIS_UNBOUNDED_BINDING_COUNT};
+    auto pixelDesc = shaderModuleDesc(RACHIS_SHADER_PIXEL, pixelBytes, "arrayPixel");
+    pixelDesc.bindings = &colorArray;
+    pixelDesc.binding_count = 1;
+    pixelDesc.draw_index = 1;
+    CHECK(rachis_shader_module_create(device.get(), &pixelDesc, &rejectedShader, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rejectedShader == 0);
+    pixelDesc.draw_index = 0;
+    const auto pixel = createShaderModule(device.get(), pixelDesc, error);
+
+    constexpr std::uint32_t arrayLength = 8;
+    std::uint32_t arrayFlags = RACHIS_BINDING_FLAG_PARTIALLY_BOUND | RACHIS_BINDING_FLAG_VARIABLE_DESCRIPTOR_COUNT;
+    if (updateAfterBind)
+    {
+        arrayFlags |= RACHIS_BINDING_FLAG_UPDATE_AFTER_BIND;
+    }
+    rachis_binding_layout_entry arrayEntry{
+        0, RACHIS_BINDING_READ_ONLY_STORAGE_BUFFER, RACHIS_SHADER_PIXEL, RACHIS_UNBOUNDED_BINDING_COUNT, 1U << 3U};
+    rachis_binding_layout_desc bindingLayoutDesc{};
+    bindingLayoutDesc.struct_size = sizeof(bindingLayoutDesc);
+    bindingLayoutDesc.abi_version = RACHIS_ABI_VERSION;
+    bindingLayoutDesc.entries = &arrayEntry;
+    bindingLayoutDesc.entry_count = 1;
+    rachis_handle rejectedLayout = 0;
+    CHECK(rachis_binding_layout_create(device.get(), &bindingLayoutDesc, &rejectedLayout, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rejectedLayout == 0);
+    arrayEntry.flags = RACHIS_BINDING_FLAG_PARTIALLY_BOUND;
+    CHECK(rachis_binding_layout_create(device.get(), &bindingLayoutDesc, &rejectedLayout, &error) != RACHIS_STATUS_OK);
+    CHECK(rejectedLayout == 0);
+    arrayEntry.flags = arrayFlags;
+    rachis_handle bindingLayout = 0;
+    requireOk(rachis_binding_layout_create(device.get(), &bindingLayoutDesc, &bindingLayout, &error), error);
+    const rachis_binding_pool_size poolSize{RACHIS_BINDING_READ_ONLY_STORAGE_BUFFER, 2 * arrayLength};
+    rachis_binding_pool_desc bindingPoolDesc{};
+    bindingPoolDesc.struct_size = sizeof(bindingPoolDesc);
+    bindingPoolDesc.abi_version = RACHIS_ABI_VERSION;
+    bindingPoolDesc.max_binding_sets = 2;
+    bindingPoolDesc.sizes = &poolSize;
+    bindingPoolDesc.size_count = 1;
+    rachis_handle bindingPool = 0;
+    requireOk(rachis_binding_pool_create(device.get(), &bindingPoolDesc, &bindingPool, &error), error);
+
+    constexpr std::uint64_t colorBytes = 256;
+    const std::array<Texel, 5> colors{redTexel, greenTexel, blueTexel, magentaTexel, whiteTexel};
+    std::array<rachis_handle, 5> colorBuffers{};
+    for (auto& buffer : colorBuffers)
+    {
+        buffer = createBuffer(device.get(),
+                              colorBytes,
+                              RACHIS_BUFFER_STORAGE | RACHIS_BUFFER_COPY_DESTINATION,
+                              RACHIS_MEMORY_DEVICE_LOCAL,
+                              error);
+    }
+    std::array<rachis_buffer_binding, 4> colorWrites{};
+    for (std::uint32_t index = 0; index < colorWrites.size(); ++index)
+    {
+        colorWrites[index] = {0, index * 2 + 1, colorBuffers[index], 0, 16, sizeof(std::uint32_t)};
+    }
+    rachis_binding_set_desc setDesc{};
+    setDesc.struct_size = sizeof(setDesc);
+    setDesc.abi_version = RACHIS_ABI_VERSION;
+    setDesc.layout = bindingLayout;
+    setDesc.pool = bindingPool;
+    setDesc.writes = colorWrites.data();
+    setDesc.write_count = static_cast<std::uint32_t>(colorWrites.size());
+    setDesc.variable_descriptor_count = capabilities.max_variable_buffer_descriptors + 1;
+    rachis_handle set = 0;
+    CHECK(rachis_binding_set_create(device.get(), &setDesc, &set, &error) != RACHIS_STATUS_OK);
+    CHECK(set == 0);
+    setDesc.variable_descriptor_count = arrayLength;
+    requireOk(rachis_binding_set_create(device.get(), &setDesc, &set, &error), error);
+
+    const std::array<rachis_buffer_binding, 2> laterWrites{{
+        {0, 5, colorBuffers[4], 0, 16, sizeof(std::uint32_t)},
+        {0, 7, 0, 0, 0, 0},
+    }};
+    rachis_binding_set_update_desc updateDesc{};
+    updateDesc.struct_size = sizeof(updateDesc);
+    updateDesc.abi_version = RACHIS_ABI_VERSION;
+    updateDesc.writes = laterWrites.data();
+    updateDesc.write_count = static_cast<std::uint32_t>(laterWrites.size());
+    CHECK(rachis_binding_set_update(device.get(), set, nullptr, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_binding_set_update(nullptr, set, &updateDesc, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_binding_set_update(device.get(), bindingLayout, &updateDesc, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    updateDesc.struct_size = sizeof(updateDesc) - 1;
+    CHECK(rachis_binding_set_update(device.get(), set, &updateDesc, &error) == RACHIS_STATUS_ABI_MISMATCH);
+    updateDesc.struct_size = sizeof(updateDesc);
+    updateDesc.abi_version = RACHIS_ABI_VERSION - 1;
+    CHECK(rachis_binding_set_update(device.get(), set, &updateDesc, &error) == RACHIS_STATUS_ABI_MISMATCH);
+    updateDesc.abi_version = RACHIS_ABI_VERSION;
+    updateDesc.writes = nullptr;
+    CHECK(rachis_binding_set_update(device.get(), set, &updateDesc, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    const rachis_buffer_binding foreignWrite{0, 5, set, 0, 16, sizeof(std::uint32_t)};
+    updateDesc.writes = &foreignWrite;
+    updateDesc.write_count = 1;
+    CHECK(rachis_binding_set_update(device.get(), set, &updateDesc, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    const rachis_buffer_binding pastEndWrite{0, arrayLength, colorBuffers[4], 0, 16, sizeof(std::uint32_t)};
+    updateDesc.writes = &pastEndWrite;
+    CHECK(rachis_binding_set_update(device.get(), set, &updateDesc, &error) != RACHIS_STATUS_OK);
+    updateDesc.writes = laterWrites.data();
+    updateDesc.write_count = static_cast<std::uint32_t>(laterWrites.size());
+    if (!updateAfterBind)
+    {
+        requireOk(rachis_binding_set_update(device.get(), set, &updateDesc, &error), error);
+    }
+
+    rachis_handle pipelineLayout = 0;
+    CHECK(createDrawIndexLayout(device.get(), &bindingLayout, 1, 2, pipelineLayout, error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(pipelineLayout == 0);
+    rachis_handle plainLayout = 0;
+    requireOk(createDrawIndexLayout(device.get(), &bindingLayout, 1, 0, plainLayout, error), error);
+    requireOk(createDrawIndexLayout(device.get(), &bindingLayout, 1, 1, pipelineLayout, error), error);
+
+    const auto target = opaqueTarget();
+    const rachis_vertex_attribute cellAttribute{RACHIS_VERTEX_FORMAT_FLOAT32X2, 0, 0};
+    rachis_vertex_buffer_layout vertexLayout{};
+    vertexLayout.stride = 2 * sizeof(float);
+    vertexLayout.step_mode = RACHIS_VERTEX_STEP_VERTEX;
+    vertexLayout.attributes = &cellAttribute;
+    vertexLayout.attribute_count = 1;
+    rachis_graphics_pipeline_desc pipelineDesc{};
+    pipelineDesc.struct_size = sizeof(pipelineDesc);
+    pipelineDesc.abi_version = RACHIS_ABI_VERSION;
+    pipelineDesc.layout = plainLayout;
+    pipelineDesc.vertex_shader = vertex;
+    pipelineDesc.pixel_shader = pixel;
+    pipelineDesc.topology = RACHIS_TOPOLOGY_TRIANGLE_LIST;
+    pipelineDesc.cull_mode = RACHIS_CULL_NONE;
+    pipelineDesc.color_targets = &target;
+    pipelineDesc.color_target_count = 1;
+    pipelineDesc.vertex_buffers = &vertexLayout;
+    pipelineDesc.vertex_buffer_count = 1;
+    rachis_handle pipeline = 0;
+    CHECK(rachis_graphics_pipeline_create(device.get(), &pipelineDesc, &pipeline, &error) ==
+          RACHIS_STATUS_VALIDATION_ERROR);
+    CHECK(pipeline == 0);
+    pipelineDesc.layout = pipelineLayout;
+    requireOk(rachis_graphics_pipeline_create(device.get(), &pipelineDesc, &pipeline, &error), error);
+
+    const std::array<float, 20> cellVertices{
+        0.0F, 1.0F, 1.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F,  1.0F, 1.0F,
+        1.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, -1.0F, 1.0F, -1.0F,
+    };
+    const std::array<std::uint16_t, 6> quadIndices{0, 1, 2, 2, 1, 3};
+    constexpr std::uint32_t drawRecordWords = 5;
+    constexpr std::uint32_t indexedRecordWords = 6;
+    constexpr std::uint32_t drawRecords = 4;
+    constexpr std::uint32_t indexedRecords = 2;
+    constexpr std::uint64_t indexedOffset = drawRecords * drawRecordWords * sizeof(std::uint32_t);
+    std::array<std::uint32_t, drawRecords * drawRecordWords + indexedRecords * indexedRecordWords> records{};
+    for (std::uint32_t index = 0; index < drawRecords; ++index)
+    {
+        const rachis_draw_indirect_arguments arguments{6, 1, 0, 0};
+        records[index * drawRecordWords] = index;
+        std::memcpy(&records[index * drawRecordWords + 1], &arguments, sizeof(arguments));
+    }
+    for (std::uint32_t index = 0; index < indexedRecords; ++index)
+    {
+        const rachis_draw_indexed_indirect_arguments arguments{6, 1, 0, 6, 0};
+        const auto first = drawRecords * drawRecordWords + index * indexedRecordWords;
+        records[first] = index;
+        std::memcpy(&records[first + 1], &arguments, sizeof(arguments));
+    }
+    const auto vertexBuffer =
+        createBuffer(device.get(), sizeof(cellVertices), RACHIS_BUFFER_VERTEX, RACHIS_MEMORY_UPLOAD, error);
+    const auto indexBuffer =
+        createBuffer(device.get(), sizeof(quadIndices), RACHIS_BUFFER_INDEX, RACHIS_MEMORY_UPLOAD, error);
+    const auto argumentBuffer =
+        createBuffer(device.get(), sizeof(records), RACHIS_BUFFER_INDIRECT, RACHIS_MEMORY_UPLOAD, error);
+    const auto countBuffer =
+        createBuffer(device.get(),
+                     16,
+                     RACHIS_BUFFER_STORAGE | RACHIS_BUFFER_COPY_DESTINATION | RACHIS_BUFFER_INDIRECT,
+                     RACHIS_MEMORY_DEVICE_LOCAL,
+                     error);
+    writeWords(device.get(), vertexBuffer, cellVertices, error);
+    writeWords(device.get(), indexBuffer, quadIndices, error);
+    writeWords(device.get(), argumentBuffer, records, error);
+    const auto cells = createCellTarget(device.get(), error);
+
+    rachis_handle pool = 0;
+    const auto command = acquireCommand(device.get(), RACHIS_QUEUE_GRAPHICS, pool, error);
+    std::vector<rachis_buffer_barrier> toFill{bufferBarrier(countBuffer,
+                                                            RACHIS_STAGE_ALL,
+                                                            RACHIS_ACCESS_COMMON,
+                                                            RACHIS_STAGE_COMPUTE_SHADER,
+                                                            RACHIS_ACCESS_UNORDERED_ACCESS)};
+    for (const auto buffer : colorBuffers)
+    {
+        toFill.push_back(bufferBarrier(buffer,
+                                       RACHIS_STAGE_ALL,
+                                       RACHIS_ACCESS_COMMON,
+                                       RACHIS_STAGE_COMPUTE_SHADER,
+                                       RACHIS_ACCESS_UNORDERED_ACCESS));
+    }
+    requireOk(recordBarriers(
+                  device.get(), command, toFill.data(), static_cast<std::uint32_t>(toFill.size()), nullptr, 0, error),
+              error);
+    CHECK(rachis_command_fill_buffer(nullptr, command, countBuffer, 0, 4, 3, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_command_fill_buffer(device.get(), 0, countBuffer, 0, 4, 3, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_command_fill_buffer(device.get(), command, pipeline, 0, 4, 3, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_command_fill_buffer(device.get(), command, countBuffer, 2, 4, 3, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_command_fill_buffer(device.get(), command, countBuffer, 0, 0, 3, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_command_fill_buffer(device.get(), command, countBuffer, 0, 20, 3, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_command_fill_buffer(device.get(), command, vertexBuffer, 0, 4, 3, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    requireOk(rachis_command_fill_buffer(device.get(), command, countBuffer, 0, RACHIS_WHOLE_SIZE, 0xFFFFFFFFU, &error),
+              error);
+    const auto refill = bufferBarrier(countBuffer,
+                                      RACHIS_STAGE_COMPUTE_SHADER,
+                                      RACHIS_ACCESS_UNORDERED_ACCESS,
+                                      RACHIS_STAGE_COMPUTE_SHADER,
+                                      RACHIS_ACCESS_UNORDERED_ACCESS);
+    requireOk(recordBarriers(device.get(), command, &refill, 1, nullptr, 0, error), error);
+    requireOk(rachis_command_fill_buffer(device.get(), command, countBuffer, 0, sizeof(std::uint32_t), 3, &error),
+              error);
+    for (std::size_t index = 0; index < colorBuffers.size(); ++index)
+    {
+        requireOk(
+            rachis_command_fill_buffer(
+                device.get(), command, colorBuffers[index], 0, RACHIS_WHOLE_SIZE, packTexel(colors[index]), &error),
+            error);
+    }
+    std::vector<rachis_buffer_barrier> toRead{bufferBarrier(countBuffer,
+                                                            RACHIS_STAGE_COMPUTE_SHADER,
+                                                            RACHIS_ACCESS_UNORDERED_ACCESS,
+                                                            RACHIS_STAGE_INDIRECT,
+                                                            RACHIS_ACCESS_INDIRECT_ARGUMENT)};
+    for (const auto buffer : colorBuffers)
+    {
+        toRead.push_back(bufferBarrier(buffer,
+                                       RACHIS_STAGE_COMPUTE_SHADER,
+                                       RACHIS_ACCESS_UNORDERED_ACCESS,
+                                       RACHIS_STAGE_PIXEL_SHADER,
+                                       RACHIS_ACCESS_SHADER_RESOURCE));
+    }
+    requireOk(recordBarriers(
+                  device.get(), command, toRead.data(), static_cast<std::uint32_t>(toRead.size()), nullptr, 0, error),
+              error);
+
+    beginCellRendering(device.get(), command, cells, error);
+    CHECK(rachis_command_fill_buffer(device.get(), command, countBuffer, 0, 4, 3, &error) ==
+          RACHIS_STATUS_INVALID_STATE);
+    requireOk(rachis_command_bind_graphics_pipeline(device.get(), command, pipeline, &error), error);
+    requireOk(rachis_command_bind_graphics_set(device.get(), command, 0, set, &error), error);
+    const rachis_vertex_buffer_binding vertexBinding{vertexBuffer, 0};
+    requireOk(rachis_command_bind_vertex_buffers(device.get(), command, 0, &vertexBinding, 1, &error), error);
+    requireOk(
+        rachis_command_bind_index_buffer(device.get(), command, indexBuffer, RACHIS_INDEX_FORMAT_UINT16, 0, &error),
+        error);
+
+    auto draw = indirectDrawDesc(argumentBuffer);
+    draw.max_draw_count = counted ? drawRecords : drawRecords - 1;
+    draw.count_buffer = counted ? countBuffer : 0;
+    draw.draw_index_prefix = 1;
+    const auto rejectsDraw = [&](const rachis_indirect_draw_desc& desc, rachis_status expected) {
+        CHECK(rachis_command_draw_indirect(device.get(), command, &desc, &error) == expected);
+        CHECK(error.code == expected);
+    };
+    CHECK(rachis_command_draw_indirect(device.get(), command, nullptr, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_command_draw_indirect(nullptr, command, &draw, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_command_draw_indirect(device.get(), 0, &draw, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    auto rejected = draw;
+    rejected.struct_size = sizeof(rejected) - 1;
+    rejectsDraw(rejected, RACHIS_STATUS_ABI_MISMATCH);
+    rejected = draw;
+    rejected.abi_version = RACHIS_ABI_VERSION - 1;
+    rejectsDraw(rejected, RACHIS_STATUS_ABI_MISMATCH);
+    rejected = draw;
+    rejected.draw_index_prefix = 2;
+    rejectsDraw(rejected, RACHIS_STATUS_INVALID_ARGUMENT);
+    rejected = draw;
+    rejected.argument_buffer = 0;
+    rejectsDraw(rejected, RACHIS_STATUS_INVALID_ARGUMENT);
+    rejected.argument_buffer = set;
+    rejectsDraw(rejected, RACHIS_STATUS_INVALID_ARGUMENT);
+    rejected = draw;
+    rejected.count_buffer = pipeline;
+    rejectsDraw(rejected, RACHIS_STATUS_INVALID_ARGUMENT);
+    rejected = draw;
+    rejected.stride = (drawRecordWords - 1) * sizeof(std::uint32_t);
+    rejectsDraw(rejected, RACHIS_STATUS_INVALID_ARGUMENT);
+    rejected = draw;
+    rejected.argument_offset = 2;
+    rejectsDraw(rejected, RACHIS_STATUS_INVALID_ARGUMENT);
+    rejected = draw;
+    rejected.max_draw_count = drawRecords + 3;
+    rejectsDraw(rejected, RACHIS_STATUS_INVALID_ARGUMENT);
+    rejected = draw;
+    rejected.draw_index_prefix = 0;
+    rejectsDraw(rejected, RACHIS_STATUS_INVALID_ARGUMENT);
+    if (counted)
+    {
+        rejected = draw;
+        rejected.count_offset = 2;
+        rejectsDraw(rejected, RACHIS_STATUS_INVALID_ARGUMENT);
+        rejected.count_offset = 16;
+        rejectsDraw(rejected, RACHIS_STATUS_INVALID_ARGUMENT);
+    }
+    requireOk(rachis_command_draw_indirect(device.get(), command, &draw, &error), error);
+
+    auto indexedDraw = indirectDrawDesc(argumentBuffer);
+    indexedDraw.argument_offset = indexedOffset;
+    indexedDraw.max_draw_count = indexedRecords;
+    indexedDraw.stride = indexedRecordWords * sizeof(std::uint32_t);
+    indexedDraw.draw_index_prefix = 1;
+    CHECK(rachis_command_draw_indexed_indirect(device.get(), command, nullptr, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    rejected = indexedDraw;
+    rejected.draw_index_prefix = 3;
+    CHECK(rachis_command_draw_indexed_indirect(device.get(), command, &rejected, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    rejected = indexedDraw;
+    rejected.max_draw_count = indexedRecords + 1;
+    CHECK(rachis_command_draw_indexed_indirect(device.get(), command, &rejected, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    requireOk(rachis_command_draw_indexed_indirect(device.get(), command, &indexedDraw, &error), error);
+    endCellRendering(device.get(), command, cells, error);
+    if (updateAfterBind)
+    {
+        requireOk(rachis_binding_set_update(device.get(), set, &updateDesc, &error), error);
+    }
+    submitAndWait(device.get(), command, error);
+
+    const CellRow drawnRow{redTexel, greenTexel, whiteTexel, clearTexel};
+    const CellRow indexedRow{redTexel, greenTexel, clearTexel, clearTexel};
+    checkCells(readCells(device.get(), cells, error), {drawnRow, drawnRow, indexedRow, indexedRow});
+
+    requireOk(rachis_command_pool_destroy(device.get(), pool, &error), error);
+    destroyCellTarget(device.get(), cells, error);
+    for (const auto buffer : {vertexBuffer, indexBuffer, argumentBuffer, countBuffer})
+    {
+        requireOk(rachis_buffer_destroy(device.get(), buffer, &error), error);
+    }
+    requireOk(rachis_pipeline_destroy(device.get(), pipeline, &error), error);
+    requireOk(rachis_pipeline_layout_destroy(device.get(), pipelineLayout, &error), error);
+    requireOk(rachis_pipeline_layout_destroy(device.get(), plainLayout, &error), error);
+    requireOk(rachis_binding_set_destroy(device.get(), set, &error), error);
+    for (const auto buffer : colorBuffers)
+    {
+        requireOk(rachis_buffer_destroy(device.get(), buffer, &error), error);
+    }
+    requireOk(rachis_binding_pool_destroy(device.get(), bindingPool, &error), error);
+    requireOk(rachis_binding_layout_destroy(device.get(), bindingLayout, &error), error);
+    requireOk(rachis_shader_module_destroy(device.get(), pixel, &error), error);
+    requireOk(rachis_shader_module_destroy(device.get(), vertex, &error), error);
+    requireNoValidationErrors(device.get(), error);
+}
+
+TEST_CASE("C ABI mesh pipelines dispatch directly, through counted indirect records, and from a task shader",
+          RACHIS_CABI_DEVICE_SIZE RACHIS_CABI_DEVICE_REQUIRES "[rachis][cabi][graphics][mesh][indirect]")
+{
+    const auto meshBytes = loadFile(RACHIS_CABI_DRAW_INDEX_MESH_PATH);
+    const auto taskBytes = loadFile(RACHIS_CABI_DRAW_INDEX_TASK_PATH);
+    const auto taskMeshBytes = loadFile(RACHIS_CABI_DRAW_INDEX_TASK_MESH_PATH);
+    const auto pixelBytes = loadFile(RACHIS_CABI_DRAW_INDEX_PIXEL_PATH);
+    REQUIRE_FALSE(meshBytes.empty());
+    REQUIRE_FALSE(taskBytes.empty());
+    REQUIRE_FALSE(taskMeshBytes.empty());
+    REQUIRE_FALSE(pixelBytes.empty());
+
+    auto error = makeError();
+    auto device = createDevice(error, RACHIS_VALIDATION_STANDARD);
+    const auto capabilities = queryCapabilities(device.get(), error);
+    if (RACHIS_SMOKE_BACKEND == RACHIS_BACKEND_D3D12)
+    {
+        REQUIRE(capabilities.mesh_shaders == 1);
+        REQUIRE(capabilities.task_shaders == 1);
+    }
+    if (capabilities.mesh_shaders == 0 || capabilities.shader_draw_index == 0 || capabilities.multi_draw_indirect == 0)
+    {
+        SKIP("The device lacks mesh shaders, the draw index, or multi-draw indirect.");
+    }
+    const bool counted = capabilities.draw_indirect_count != 0;
+    const bool taskShaders = capabilities.task_shaders != 0;
+    CHECK(capabilities.max_mesh_workgroup_count[0] >= textureSize);
+    CHECK(capabilities.max_mesh_output_vertices >= 4);
+    CHECK(capabilities.max_mesh_output_primitives >= 2);
+
+    auto meshDesc = shaderModuleDesc(RACHIS_SHADER_MESH, meshBytes, "meshMain");
+    meshDesc.draw_index = 1;
+    rachis_handle rejectedShader = 0;
+    meshDesc.workgroup_y = 0;
+    CHECK(rachis_shader_module_create(device.get(), &meshDesc, &rejectedShader, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rejectedShader == 0);
+    meshDesc.workgroup_y = 1;
+    const auto mesh = createShaderModule(device.get(), meshDesc, error);
+    auto pixelDesc = shaderModuleDesc(RACHIS_SHADER_PIXEL, pixelBytes, "recordPixel");
+    pixelDesc.workgroup_x = 1;
+    CHECK(rachis_shader_module_create(device.get(), &pixelDesc, &rejectedShader, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rejectedShader == 0);
+    pixelDesc.workgroup_x = 0;
+    const auto pixel = createShaderModule(device.get(), pixelDesc, error);
+
+    rachis_handle plainLayout = 0;
+    rachis_handle pipelineLayout = 0;
+    requireOk(createDrawIndexLayout(device.get(), nullptr, 0, 0, plainLayout, error), error);
+    requireOk(createDrawIndexLayout(device.get(), nullptr, 0, 1, pipelineLayout, error), error);
+    const auto target = opaqueTarget();
+    rachis_graphics_pipeline_desc pipelineDesc{};
+    pipelineDesc.struct_size = sizeof(pipelineDesc);
+    pipelineDesc.abi_version = RACHIS_ABI_VERSION;
+    pipelineDesc.layout = pipelineLayout;
+    pipelineDesc.pixel_shader = pixel;
+    pipelineDesc.topology = RACHIS_TOPOLOGY_TRIANGLE_LIST;
+    pipelineDesc.cull_mode = RACHIS_CULL_NONE;
+    pipelineDesc.color_targets = &target;
+    pipelineDesc.color_target_count = 1;
+    rachis_handle rejectedPipeline = 0;
+    CHECK(rachis_graphics_pipeline_create(device.get(), &pipelineDesc, &rejectedPipeline, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rejectedPipeline == 0);
+    pipelineDesc.mesh_shader = plainLayout;
+    CHECK(rachis_graphics_pipeline_create(device.get(), &pipelineDesc, &rejectedPipeline, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    pipelineDesc.mesh_shader = mesh;
+    pipelineDesc.vertex_shader = pixel;
+    CHECK(rachis_graphics_pipeline_create(device.get(), &pipelineDesc, &rejectedPipeline, &error) != RACHIS_STATUS_OK);
+    CHECK(rejectedPipeline == 0);
+    pipelineDesc.vertex_shader = 0;
+    pipelineDesc.layout = plainLayout;
+    CHECK(rachis_graphics_pipeline_create(device.get(), &pipelineDesc, &rejectedPipeline, &error) ==
+          RACHIS_STATUS_VALIDATION_ERROR);
+    CHECK(rejectedPipeline == 0);
+    pipelineDesc.layout = pipelineLayout;
+    rachis_handle meshPipeline = 0;
+    requireOk(rachis_graphics_pipeline_create(device.get(), &pipelineDesc, &meshPipeline, &error), error);
+
+    rachis_handle task = 0;
+    rachis_handle taskMesh = 0;
+    rachis_handle taskPipeline = 0;
+    if (taskShaders)
+    {
+        task = createShaderModule(device.get(), shaderModuleDesc(RACHIS_SHADER_TASK, taskBytes, "taskMain"), error);
+        taskMesh = createShaderModule(
+            device.get(), shaderModuleDesc(RACHIS_SHADER_MESH, taskMeshBytes, "meshFromTask"), error);
+        pipelineDesc.task_shader = task;
+        pipelineDesc.mesh_shader = 0;
+        CHECK(rachis_graphics_pipeline_create(device.get(), &pipelineDesc, &rejectedPipeline, &error) ==
+              RACHIS_STATUS_INVALID_ARGUMENT);
+        CHECK(rejectedPipeline == 0);
+        pipelineDesc.mesh_shader = taskMesh;
+        requireOk(rachis_graphics_pipeline_create(device.get(), &pipelineDesc, &taskPipeline, &error), error);
+    }
+
+    constexpr std::uint32_t recordWords = 4;
+    constexpr std::uint32_t recordCount = 4;
+    std::array<std::uint32_t, recordWords * recordCount> records{};
+    for (std::uint32_t index = 0; index < recordCount; ++index)
+    {
+        const rachis_dispatch_indirect_arguments arguments{index + 1, 1, 1};
+        records[index * recordWords] = index;
+        std::memcpy(&records[index * recordWords + 1], &arguments, sizeof(arguments));
+    }
+    const auto argumentBuffer =
+        createBuffer(device.get(), sizeof(records), RACHIS_BUFFER_INDIRECT, RACHIS_MEMORY_UPLOAD, error);
+    writeWords(device.get(), argumentBuffer, records, error);
+    const auto countBuffer =
+        createBuffer(device.get(),
+                     sizeof(std::uint32_t),
+                     RACHIS_BUFFER_STORAGE | RACHIS_BUFFER_COPY_DESTINATION | RACHIS_BUFFER_INDIRECT,
+                     RACHIS_MEMORY_DEVICE_LOCAL,
+                     error);
+    const auto cells = createCellTarget(device.get(), error);
+
+    rachis_handle pool = 0;
+    const auto command = acquireCommand(device.get(), RACHIS_QUEUE_GRAPHICS, pool, error);
+    const auto toFill = bufferBarrier(countBuffer,
+                                      RACHIS_STAGE_ALL,
+                                      RACHIS_ACCESS_COMMON,
+                                      RACHIS_STAGE_COMPUTE_SHADER,
+                                      RACHIS_ACCESS_UNORDERED_ACCESS);
+    requireOk(recordBarriers(device.get(), command, &toFill, 1, nullptr, 0, error), error);
+    requireOk(rachis_command_fill_buffer(device.get(), command, countBuffer, 0, RACHIS_WHOLE_SIZE, 3, &error), error);
+    const auto toCount = bufferBarrier(countBuffer,
+                                       RACHIS_STAGE_COMPUTE_SHADER,
+                                       RACHIS_ACCESS_UNORDERED_ACCESS,
+                                       RACHIS_STAGE_INDIRECT,
+                                       RACHIS_ACCESS_INDIRECT_ARGUMENT);
+    requireOk(recordBarriers(device.get(), command, &toCount, 1, nullptr, 0, error), error);
+
+    beginCellRendering(device.get(), command, cells, error);
+    requireOk(rachis_command_bind_graphics_pipeline(device.get(), command, meshPipeline, &error), error);
+    CHECK(rachis_command_dispatch_mesh(nullptr, command, 1, 1, 1, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_command_dispatch_mesh(device.get(), 0, 1, 1, 1, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    requireOk(rachis_command_dispatch_mesh(device.get(), command, textureSize, 1, 1, &error), error);
+
+    rachis_indirect_mesh_dispatch_desc dispatch{};
+    dispatch.struct_size = sizeof(dispatch);
+    dispatch.abi_version = RACHIS_ABI_VERSION;
+    dispatch.argument_buffer = argumentBuffer;
+    dispatch.max_dispatch_count = counted ? recordCount : recordCount - 1;
+    dispatch.count_buffer = counted ? countBuffer : 0;
+    dispatch.draw_index_prefix = 1;
+    CHECK(rachis_command_dispatch_mesh_indirect(device.get(), command, nullptr, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    auto rejected = dispatch;
+    rejected.struct_size = sizeof(rejected) + 8;
+    CHECK(rachis_command_dispatch_mesh_indirect(device.get(), command, &rejected, &error) ==
+          RACHIS_STATUS_ABI_MISMATCH);
+    rejected = dispatch;
+    rejected.draw_index_prefix = 2;
+    CHECK(rachis_command_dispatch_mesh_indirect(device.get(), command, &rejected, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    rejected = dispatch;
+    rejected.argument_buffer = meshPipeline;
+    CHECK(rachis_command_dispatch_mesh_indirect(device.get(), command, &rejected, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    rejected = dispatch;
+    rejected.draw_index_prefix = 0;
+    CHECK(rachis_command_dispatch_mesh_indirect(device.get(), command, &rejected, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    rejected = dispatch;
+    rejected.max_dispatch_count = recordCount + 1;
+    CHECK(rachis_command_dispatch_mesh_indirect(device.get(), command, &rejected, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    requireOk(rachis_command_dispatch_mesh_indirect(device.get(), command, &dispatch, &error), error);
+    if (taskShaders)
+    {
+        requireOk(rachis_command_bind_graphics_pipeline(device.get(), command, taskPipeline, &error), error);
+        requireOk(rachis_command_dispatch_mesh(device.get(), command, 1, 1, 1, &error), error);
+    }
+    endCellRendering(device.get(), command, cells, error);
+    submitAndWait(device.get(), command, error);
+
+    const auto lastCell = taskShaders ? magentaTexel : clearTexel;
+    checkCells(readCells(device.get(), cells, error),
+               {CellRow{redTexel, greenTexel, blueTexel, clearTexel},
+                CellRow{redTexel, greenTexel, blueTexel, clearTexel},
+                CellRow{redTexel, clearTexel, blueTexel, clearTexel},
+                CellRow{redTexel, clearTexel, clearTexel, lastCell}});
+
+    requireOk(rachis_command_pool_destroy(device.get(), pool, &error), error);
+    destroyCellTarget(device.get(), cells, error);
+    requireOk(rachis_buffer_destroy(device.get(), argumentBuffer, &error), error);
+    requireOk(rachis_buffer_destroy(device.get(), countBuffer, &error), error);
+    if (taskShaders)
+    {
+        requireOk(rachis_pipeline_destroy(device.get(), taskPipeline, &error), error);
+        requireOk(rachis_shader_module_destroy(device.get(), taskMesh, &error), error);
+        requireOk(rachis_shader_module_destroy(device.get(), task, &error), error);
+    }
+    requireOk(rachis_pipeline_destroy(device.get(), meshPipeline, &error), error);
+    requireOk(rachis_pipeline_layout_destroy(device.get(), pipelineLayout, &error), error);
+    requireOk(rachis_pipeline_layout_destroy(device.get(), plainLayout, &error), error);
+    requireOk(rachis_shader_module_destroy(device.get(), pixel, &error), error);
+    requireOk(rachis_shader_module_destroy(device.get(), mesh, &error), error);
+    requireNoValidationErrors(device.get(), error);
+}
+
+TEST_CASE("C ABI runs indirect dispatch batches with a GPU count and clears storage textures",
+          RACHIS_CABI_DEVICE_SIZE RACHIS_CABI_DEVICE_REQUIRES "[rachis][cabi][compute][indirect]")
+{
+    const auto bytecode = loadFile(RACHIS_CABI_INDIRECT_DISPATCH_PATH);
+    REQUIRE_FALSE(bytecode.empty());
+    auto error = makeError();
+    auto device = createDevice(error, RACHIS_VALIDATION_STANDARD);
+    const auto capabilities = queryCapabilities(device.get(), error);
+    REQUIRE(capabilities.indirect_dispatch == 1);
+    if (RACHIS_SMOKE_BACKEND == RACHIS_BACKEND_D3D12)
+    {
+        REQUIRE(capabilities.multi_dispatch_indirect == 1);
+        REQUIRE(capabilities.dispatch_indirect_count == 1);
+    }
+    const bool multi = capabilities.multi_dispatch_indirect != 0;
+    const bool counted = multi && capabilities.dispatch_indirect_count != 0;
+
+    const rachis_shader_binding_requirement requirement{0, 0, RACHIS_BINDING_STORAGE_BUFFER, 1};
+    auto shaderDesc = shaderModuleDesc(RACHIS_SHADER_COMPUTE, bytecode, "countGroups");
+    shaderDesc.bindings = &requirement;
+    shaderDesc.binding_count = 1;
+    const auto shader = createShaderModule(device.get(), shaderDesc, error);
+    const rachis_binding_layout_entry entry{0, RACHIS_BINDING_STORAGE_BUFFER, RACHIS_SHADER_COMPUTE, 1, 0};
+    rachis_binding_layout_desc bindingLayoutDesc{};
+    bindingLayoutDesc.struct_size = sizeof(bindingLayoutDesc);
+    bindingLayoutDesc.abi_version = RACHIS_ABI_VERSION;
+    bindingLayoutDesc.entries = &entry;
+    bindingLayoutDesc.entry_count = 1;
+    rachis_handle bindingLayout = 0;
+    requireOk(rachis_binding_layout_create(device.get(), &bindingLayoutDesc, &bindingLayout, &error), error);
+    const rachis_binding_pool_size poolSize{RACHIS_BINDING_STORAGE_BUFFER, 1};
+    rachis_binding_pool_desc bindingPoolDesc{};
+    bindingPoolDesc.struct_size = sizeof(bindingPoolDesc);
+    bindingPoolDesc.abi_version = RACHIS_ABI_VERSION;
+    bindingPoolDesc.max_binding_sets = 1;
+    bindingPoolDesc.sizes = &poolSize;
+    bindingPoolDesc.size_count = 1;
+    rachis_handle bindingPool = 0;
+    requireOk(rachis_binding_pool_create(device.get(), &bindingPoolDesc, &bindingPool, &error), error);
+    constexpr std::uint64_t counterBytes = 16;
+    const auto counter =
+        createBuffer(device.get(),
+                     counterBytes,
+                     RACHIS_BUFFER_STORAGE | RACHIS_BUFFER_COPY_SOURCE | RACHIS_BUFFER_COPY_DESTINATION,
+                     RACHIS_MEMORY_DEVICE_LOCAL,
+                     error);
+    const rachis_buffer_binding counterWrite{0, 0, counter, 0, counterBytes, sizeof(std::uint32_t)};
+    rachis_binding_set_desc setDesc{};
+    setDesc.struct_size = sizeof(setDesc);
+    setDesc.abi_version = RACHIS_ABI_VERSION;
+    setDesc.layout = bindingLayout;
+    setDesc.pool = bindingPool;
+    setDesc.writes = &counterWrite;
+    setDesc.write_count = 1;
+    rachis_handle set = 0;
+    requireOk(rachis_binding_set_create(device.get(), &setDesc, &set, &error), error);
+    rachis_handle pipelineLayout = 0;
+    requireOk(createDrawIndexLayout(device.get(), &bindingLayout, 1, 0, pipelineLayout, error), error);
+    rachis_compute_pipeline_desc pipelineDesc{};
+    pipelineDesc.struct_size = sizeof(pipelineDesc);
+    pipelineDesc.abi_version = RACHIS_ABI_VERSION;
+    pipelineDesc.layout = pipelineLayout;
+    pipelineDesc.shader = shader;
+    rachis_handle pipeline = 0;
+    requireOk(rachis_compute_pipeline_create(device.get(), &pipelineDesc, &pipeline, &error), error);
+
+    constexpr std::uint32_t recordWords = 3;
+    constexpr std::uint32_t batchRecords = 4;
+    std::array<std::uint32_t, recordWords*(batchRecords + 1)> records{};
+    for (std::uint32_t index = 0; index <= batchRecords; ++index)
+    {
+        const rachis_dispatch_indirect_arguments arguments{1U << index, 1, 1};
+        std::memcpy(&records[index * recordWords], &arguments, sizeof(arguments));
+    }
+    constexpr std::uint64_t recordBytes = recordWords * sizeof(std::uint32_t);
+    const auto argumentBuffer =
+        createBuffer(device.get(), sizeof(records), RACHIS_BUFFER_INDIRECT, RACHIS_MEMORY_UPLOAD, error);
+    writeWords(device.get(), argumentBuffer, records, error);
+    const auto countBuffer =
+        createBuffer(device.get(),
+                     sizeof(std::uint32_t),
+                     RACHIS_BUFFER_STORAGE | RACHIS_BUFFER_COPY_DESTINATION | RACHIS_BUFFER_INDIRECT,
+                     RACHIS_MEMORY_DEVICE_LOCAL,
+                     error);
+    const auto counterReadback =
+        createBuffer(device.get(), counterBytes, RACHIS_BUFFER_COPY_DESTINATION, RACHIS_MEMORY_READBACK, error);
+
+    const auto storageTexture =
+        createTexture(device.get(),
+                      RACHIS_FORMAT_R32_UINT,
+                      textureSize,
+                      textureSize,
+                      RACHIS_TEXTURE_STORAGE | RACHIS_TEXTURE_COPY_DESTINATION | RACHIS_TEXTURE_COPY_SOURCE,
+                      error);
+    rachis_texture_view_desc storageViewDesc{};
+    storageViewDesc.struct_size = sizeof(storageViewDesc);
+    storageViewDesc.abi_version = RACHIS_ABI_VERSION;
+    storageViewDesc.texture = storageTexture;
+    storageViewDesc.usage = RACHIS_VIEW_USAGE_STORAGE;
+    storageViewDesc.dimension = RACHIS_VIEW_2D;
+    storageViewDesc.aspect = RACHIS_ASPECT_COLOR;
+    storageViewDesc.mip_level_count = 1;
+    storageViewDesc.array_layer_count = 1;
+    rachis_handle storageView = 0;
+    requireOk(rachis_texture_view_create(device.get(), &storageViewDesc, &storageView, &error), error);
+    auto textureRegion = wholeTextureRegion(textureSize, textureSize);
+    rachis_texture_transfer_layout transfer{};
+    transfer.struct_size = sizeof(transfer);
+    requireOk(rachis_texture_query_transfer_layout(device.get(), storageTexture, &textureRegion, &transfer, &error),
+              error);
+    textureRegion.bytes_per_row = transfer.bytes_per_row;
+    const auto textureReadback = createBuffer(
+        device.get(), transfer.required_buffer_size, RACHIS_BUFFER_COPY_DESTINATION, RACHIS_MEMORY_READBACK, error);
+
+    rachis_handle pool = 0;
+    const auto command = acquireCommand(device.get(), RACHIS_QUEUE_COMPUTE, pool, error);
+    const std::array<rachis_buffer_barrier, 2> toFill{
+        bufferBarrier(counter,
+                      RACHIS_STAGE_ALL,
+                      RACHIS_ACCESS_COMMON,
+                      RACHIS_STAGE_COMPUTE_SHADER,
+                      RACHIS_ACCESS_UNORDERED_ACCESS),
+        bufferBarrier(countBuffer,
+                      RACHIS_STAGE_ALL,
+                      RACHIS_ACCESS_COMMON,
+                      RACHIS_STAGE_COMPUTE_SHADER,
+                      RACHIS_ACCESS_UNORDERED_ACCESS),
+    };
+    const auto toClear = textureBarrier(storageTexture,
+                                        RACHIS_STAGE_ALL,
+                                        RACHIS_ACCESS_NONE,
+                                        RACHIS_LAYOUT_UNDEFINED,
+                                        RACHIS_STAGE_COMPUTE_SHADER,
+                                        RACHIS_ACCESS_UNORDERED_ACCESS,
+                                        RACHIS_LAYOUT_UNORDERED_ACCESS);
+    requireOk(recordBarriers(device.get(), command, toFill.data(), 2, &toClear, 1, error), error);
+    requireOk(rachis_command_fill_buffer(device.get(), command, counter, 0, RACHIS_WHOLE_SIZE, 0, &error), error);
+    requireOk(rachis_command_fill_buffer(device.get(), command, countBuffer, 0, RACHIS_WHOLE_SIZE, 3, &error), error);
+
+    rachis_storage_texture_clear_value clear{};
+    clear.type = RACHIS_STORAGE_TEXTURE_CLEAR_UINT32;
+    clear.uint32[0] = 0xC0FFEEU;
+    CHECK(rachis_command_clear_storage_texture(device.get(), command, storageView, nullptr, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_command_clear_storage_texture(nullptr, command, storageView, &clear, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_command_clear_storage_texture(device.get(), command, storageTexture, &clear, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    auto rejectedClear = clear;
+    rejectedClear.type = RACHIS_STORAGE_TEXTURE_CLEAR_SINT32 + 1;
+    CHECK(rachis_command_clear_storage_texture(device.get(), command, storageView, &rejectedClear, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    rejectedClear.type = RACHIS_STORAGE_TEXTURE_CLEAR_FLOAT32;
+    CHECK(rachis_command_clear_storage_texture(device.get(), command, storageView, &rejectedClear, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    requireOk(rachis_command_clear_storage_texture(device.get(), command, storageView, &clear, &error), error);
+
+    const std::array<rachis_buffer_barrier, 2> afterFill{
+        bufferBarrier(counter,
+                      RACHIS_STAGE_COMPUTE_SHADER,
+                      RACHIS_ACCESS_UNORDERED_ACCESS,
+                      RACHIS_STAGE_COMPUTE_SHADER,
+                      RACHIS_ACCESS_UNORDERED_ACCESS),
+        bufferBarrier(countBuffer,
+                      RACHIS_STAGE_COMPUTE_SHADER,
+                      RACHIS_ACCESS_UNORDERED_ACCESS,
+                      RACHIS_STAGE_INDIRECT,
+                      RACHIS_ACCESS_INDIRECT_ARGUMENT),
+    };
+    requireOk(recordBarriers(device.get(), command, afterFill.data(), 2, nullptr, 0, error), error);
+    requireOk(rachis_command_bind_compute_pipeline(device.get(), command, pipeline, &error), error);
+    requireOk(rachis_command_bind_compute_set(device.get(), command, 0, set, &error), error);
+
+    rachis_indirect_dispatch_desc batch{};
+    batch.struct_size = sizeof(batch);
+    batch.abi_version = RACHIS_ABI_VERSION;
+    batch.argument_buffer = argumentBuffer;
+    batch.max_dispatch_count = counted ? batchRecords : batchRecords - 1;
+    batch.count_buffer = counted ? countBuffer : 0;
+    const auto rejectsDispatch = [&](const rachis_indirect_dispatch_desc& desc, rachis_status expected) {
+        CHECK(rachis_command_dispatch_indirect(device.get(), command, &desc, &error) == expected);
+        CHECK(error.code == expected);
+    };
+    CHECK(rachis_command_dispatch_indirect(device.get(), command, nullptr, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_command_dispatch_indirect(nullptr, command, &batch, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    auto rejected = batch;
+    rejected.struct_size = 0;
+    rejectsDispatch(rejected, RACHIS_STATUS_ABI_MISMATCH);
+    rejected = batch;
+    rejected.argument_buffer = 0;
+    rejectsDispatch(rejected, RACHIS_STATUS_INVALID_ARGUMENT);
+    rejected = batch;
+    rejected.count_buffer = set;
+    rejectsDispatch(rejected, RACHIS_STATUS_INVALID_ARGUMENT);
+    rejected = batch;
+    rejected.max_dispatch_count = 1;
+    rejected.stride = recordBytes - sizeof(std::uint32_t);
+    rejectsDispatch(rejected, RACHIS_STATUS_INVALID_ARGUMENT);
+    rejected.stride = recordBytes + 2;
+    rejectsDispatch(rejected, RACHIS_STATUS_INVALID_ARGUMENT);
+    rejected.stride = 0;
+    rejected.argument_offset = 2;
+    rejectsDispatch(rejected, RACHIS_STATUS_INVALID_ARGUMENT);
+    rejected.argument_offset = sizeof(records);
+    rejectsDispatch(rejected, RACHIS_STATUS_INVALID_ARGUMENT);
+    if (multi)
+    {
+        rejected = batch;
+        rejected.count_buffer = 0;
+        rejected.max_dispatch_count = batchRecords + 2;
+        rejectsDispatch(rejected, RACHIS_STATUS_INVALID_ARGUMENT);
+    }
+    else
+    {
+        rejected = batch;
+        rejected.max_dispatch_count = 2;
+        rejectsDispatch(rejected, RACHIS_STATUS_UNSUPPORTED);
+    }
+    if (multi)
+    {
+        requireOk(rachis_command_dispatch_indirect(device.get(), command, &batch, &error), error);
+    }
+    else
+    {
+        for (std::uint32_t index = 0; index + 1 < batchRecords; ++index)
+        {
+            auto single = batch;
+            single.argument_offset = index * recordBytes;
+            single.max_dispatch_count = 1;
+            requireOk(rachis_command_dispatch_indirect(device.get(), command, &single, &error), error);
+        }
+    }
+    auto single = batch;
+    single.argument_offset = batchRecords * recordBytes;
+    single.max_dispatch_count = 1;
+    single.count_buffer = 0;
+    requireOk(rachis_command_dispatch_indirect(device.get(), command, &single, &error), error);
+
+    const auto counterToCopy = bufferBarrier(counter,
+                                             RACHIS_STAGE_COMPUTE_SHADER,
+                                             RACHIS_ACCESS_UNORDERED_ACCESS,
+                                             RACHIS_STAGE_COPY,
+                                             RACHIS_ACCESS_COPY_SOURCE);
+    const auto textureToCopy = textureBarrier(storageTexture,
+                                              RACHIS_STAGE_COMPUTE_SHADER,
+                                              RACHIS_ACCESS_UNORDERED_ACCESS,
+                                              RACHIS_LAYOUT_UNORDERED_ACCESS,
+                                              RACHIS_STAGE_COPY,
+                                              RACHIS_ACCESS_COPY_SOURCE,
+                                              RACHIS_LAYOUT_COPY_SOURCE);
+    requireOk(recordBarriers(device.get(), command, &counterToCopy, 1, &textureToCopy, 1, error), error);
+    requireOk(rachis_command_copy_buffer(device.get(), command, counter, counterReadback, 0, 0, counterBytes, &error),
+              error);
+    requireOk(copyBufferTexture(device.get(), command, textureReadback, storageTexture, textureRegion, false, error),
+              error);
+    submitAndWait(device.get(), command, error);
+
+    std::array<std::uint32_t, counterBytes / sizeof(std::uint32_t)> groupCounts{};
+    requireOk(rachis_buffer_read(device.get(), counterReadback, 0, groupCounts.data(), counterBytes, &error), error);
+    CHECK(groupCounts[0] == 1U + 2U + 4U + 16U);
+    CHECK(groupCounts[1] == 0U);
+    std::vector<std::uint8_t> texels(static_cast<std::size_t>(transfer.required_buffer_size));
+    requireOk(rachis_buffer_read(device.get(), textureReadback, 0, texels.data(), texels.size(), &error), error);
+    for (std::uint32_t y = 0; y < textureSize; ++y)
+    {
+        for (std::uint32_t x = 0; x < textureSize; ++x)
+        {
+            INFO("texel " << x << ", " << y);
+            std::uint32_t value = 0;
+            std::memcpy(&value,
+                        texels.data() + static_cast<std::size_t>(y) * transfer.bytes_per_row + x * sizeof(value),
+                        sizeof(value));
+            CHECK(value == 0xC0FFEEU);
+        }
+    }
+
+    requireOk(rachis_command_pool_destroy(device.get(), pool, &error), error);
+    requireOk(rachis_texture_view_destroy(device.get(), storageView, &error), error);
+    requireOk(rachis_texture_destroy(device.get(), storageTexture, &error), error);
+    requireOk(rachis_pipeline_destroy(device.get(), pipeline, &error), error);
+    requireOk(rachis_pipeline_layout_destroy(device.get(), pipelineLayout, &error), error);
+    requireOk(rachis_binding_set_destroy(device.get(), set, &error), error);
+    requireOk(rachis_binding_pool_destroy(device.get(), bindingPool, &error), error);
+    requireOk(rachis_binding_layout_destroy(device.get(), bindingLayout, &error), error);
+    requireOk(rachis_shader_module_destroy(device.get(), shader, &error), error);
+    for (const auto buffer : {counter, argumentBuffer, countBuffer, counterReadback, textureReadback})
+    {
+        requireOk(rachis_buffer_destroy(device.get(), buffer, &error), error);
+    }
+    requireNoValidationErrors(device.get(), error);
+}
+#endif
+
+#if defined(RACHIS_CABI_COMPUTE_SHADER_PATH)
+TEST_CASE("C ABI compute pipelines run full subgroups of a required size",
+          RACHIS_CABI_DEVICE_SIZE RACHIS_CABI_DEVICE_REQUIRES "[rachis][cabi][compute][subgroup]")
+{
+    auto error = makeError();
+    auto device = createDevice(error, RACHIS_VALIDATION_STANDARD);
+    rachis_device_capabilities capabilities{};
+    capabilities.struct_size = sizeof(capabilities);
+    requireOk(rachis_device_query_capabilities(device.get(), &capabilities, &error), error);
+    const bool supported = (capabilities.subgroup_required_size_stages & RACHIS_SHADER_COMPUTE) != 0;
+
+    const auto writeBytecode = loadShader();
+    REQUIRE_FALSE(writeBytecode.empty());
+    const rachis_shader_binding_requirement writeRequirement{0, 0, RACHIS_BINDING_STORAGE_BUFFER, 1};
+    rachis_shader_module_desc writeDesc{};
+    writeDesc.struct_size = sizeof(writeDesc);
+    writeDesc.abi_version = RACHIS_ABI_VERSION;
+    writeDesc.stage = RACHIS_SHADER_COMPUTE;
+    writeDesc.bytecode = writeBytecode.data();
+    writeDesc.bytecode_size = writeBytecode.size();
+    writeDesc.entry_point = "main";
+    writeDesc.bindings = &writeRequirement;
+    writeDesc.binding_count = 1;
+    writeDesc.workgroup_x = valueCount;
+    writeDesc.workgroup_y = 1;
+    writeDesc.workgroup_z = 1;
+    rachis_handle writeShader = 0;
+    requireOk(rachis_shader_module_create(device.get(), &writeDesc, &writeShader, &error), error);
+    const rachis_binding_layout_entry entry{0, RACHIS_BINDING_STORAGE_BUFFER, RACHIS_SHADER_COMPUTE, 1, 0};
+    rachis_binding_layout_desc bindingLayoutDesc{};
+    bindingLayoutDesc.struct_size = sizeof(bindingLayoutDesc);
+    bindingLayoutDesc.abi_version = RACHIS_ABI_VERSION;
+    bindingLayoutDesc.entries = &entry;
+    bindingLayoutDesc.entry_count = 1;
+    rachis_handle bindingLayout = 0;
+    requireOk(rachis_binding_layout_create(device.get(), &bindingLayoutDesc, &bindingLayout, &error), error);
+    rachis_pipeline_layout_desc pipelineLayoutDesc{};
+    pipelineLayoutDesc.struct_size = sizeof(pipelineLayoutDesc);
+    pipelineLayoutDesc.abi_version = RACHIS_ABI_VERSION;
+    pipelineLayoutDesc.binding_layouts = &bindingLayout;
+    pipelineLayoutDesc.binding_layout_count = 1;
+    rachis_handle pipelineLayout = 0;
+    requireOk(rachis_pipeline_layout_create(device.get(), &pipelineLayoutDesc, &pipelineLayout, &error), error);
+    rachis_compute_pipeline_desc pipelineDesc{};
+    pipelineDesc.struct_size = sizeof(pipelineDesc);
+    pipelineDesc.abi_version = RACHIS_ABI_VERSION;
+    pipelineDesc.layout = pipelineLayout;
+    pipelineDesc.shader = writeShader;
+    pipelineDesc.required_subgroup_size = 3;
+    rachis_handle pipeline = 0;
+    CHECK(rachis_compute_pipeline_create(device.get(), &pipelineDesc, &pipeline, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(pipeline == 0);
+    if (!supported)
+    {
+        CHECK(capabilities.subgroup_required_size_stages == 0);
+        pipelineDesc.required_subgroup_size = 4;
+        CHECK(rachis_compute_pipeline_create(device.get(), &pipelineDesc, &pipeline, &error) ==
+              RACHIS_STATUS_UNSUPPORTED);
+        CHECK(pipeline == 0);
+    }
+#ifdef RACHIS_CABI_SUBGROUP_SHADER_PREFIX
+    if (supported)
+    {
+        REQUIRE(capabilities.subgroup_min_size > 0);
+        REQUIRE(capabilities.subgroup_min_size <= capabilities.subgroup_max_size);
+        const auto size = capabilities.subgroup_min_size;
+        constexpr std::uint32_t laneCountThreads = 128;
+        REQUIRE(laneCountThreads % size == 0);
+        std::string path = RACHIS_CABI_SUBGROUP_SHADER_PREFIX;
+        if (RACHIS_CABI_SUBGROUP_SIZE_IN_SHADER != 0)
+        {
+            path += std::to_string(size);
+        }
+        path += RACHIS_CABI_SUBGROUP_SHADER_EXTENSION;
+        std::ifstream input{path, std::ios::binary};
+        const std::vector<char> laneBytecode{std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
+        REQUIRE_FALSE(laneBytecode.empty());
+        auto laneDesc = writeDesc;
+        laneDesc.bytecode = laneBytecode.data();
+        laneDesc.bytecode_size = laneBytecode.size();
+        laneDesc.workgroup_x = laneCountThreads;
+        rachis_handle laneShader = 0;
+        requireOk(rachis_shader_module_create(device.get(), &laneDesc, &laneShader, &error), error);
+        pipelineDesc.shader = laneShader;
+        pipelineDesc.required_subgroup_size = size;
+        requireOk(rachis_compute_pipeline_create(device.get(), &pipelineDesc, &pipeline, &error), error);
+
+        const rachis_binding_pool_size poolSize{RACHIS_BINDING_STORAGE_BUFFER, 1};
+        rachis_binding_pool_desc bindingPoolDesc{};
+        bindingPoolDesc.struct_size = sizeof(bindingPoolDesc);
+        bindingPoolDesc.abi_version = RACHIS_ABI_VERSION;
+        bindingPoolDesc.max_binding_sets = 1;
+        bindingPoolDesc.sizes = &poolSize;
+        bindingPoolDesc.size_count = 1;
+        rachis_handle bindingPool = 0;
+        requireOk(rachis_binding_pool_create(device.get(), &bindingPoolDesc, &bindingPool, &error), error);
+        constexpr std::uint64_t laneBytes = laneCountThreads * 2 * sizeof(std::uint32_t);
+        const auto lanes = createBuffer(device.get(),
+                                        laneBytes,
+                                        RACHIS_BUFFER_STORAGE | RACHIS_BUFFER_COPY_SOURCE,
+                                        RACHIS_MEMORY_DEVICE_LOCAL,
+                                        error);
+        const auto readback =
+            createBuffer(device.get(), laneBytes, RACHIS_BUFFER_COPY_DESTINATION, RACHIS_MEMORY_READBACK, error);
+        const rachis_buffer_binding laneWrite{0, 0, lanes, 0, laneBytes, 2 * sizeof(std::uint32_t)};
+        rachis_binding_set_desc setDesc{};
+        setDesc.struct_size = sizeof(setDesc);
+        setDesc.abi_version = RACHIS_ABI_VERSION;
+        setDesc.layout = bindingLayout;
+        setDesc.pool = bindingPool;
+        setDesc.writes = &laneWrite;
+        setDesc.write_count = 1;
+        rachis_handle set = 0;
+        requireOk(rachis_binding_set_create(device.get(), &setDesc, &set, &error), error);
+
+        rachis_handle pool = 0;
+        const auto command = acquireCommand(device.get(), RACHIS_QUEUE_COMPUTE, pool, error);
+        const auto toWrite = bufferBarrier(
+            lanes, RACHIS_STAGE_ALL, RACHIS_ACCESS_COMMON, RACHIS_STAGE_COMPUTE_SHADER, RACHIS_ACCESS_UNORDERED_ACCESS);
+        requireOk(recordBarriers(device.get(), command, &toWrite, 1, nullptr, 0, error), error);
+        requireOk(rachis_command_bind_compute_pipeline(device.get(), command, pipeline, &error), error);
+        requireOk(rachis_command_bind_compute_set(device.get(), command, 0, set, &error), error);
+        requireOk(rachis_command_dispatch(device.get(), command, 1, 1, 1, &error), error);
+        const auto toCopy = bufferBarrier(lanes,
+                                          RACHIS_STAGE_COMPUTE_SHADER,
+                                          RACHIS_ACCESS_UNORDERED_ACCESS,
+                                          RACHIS_STAGE_COPY,
+                                          RACHIS_ACCESS_COPY_SOURCE);
+        requireOk(recordBarriers(device.get(), command, &toCopy, 1, nullptr, 0, error), error);
+        requireOk(rachis_command_copy_buffer(device.get(), command, lanes, readback, 0, 0, laneBytes, &error), error);
+        submitAndWait(device.get(), command, error);
+
+        std::array<std::uint32_t, laneCountThreads * 2> laneCounts{};
+        requireOk(rachis_buffer_read(device.get(), readback, 0, laneCounts.data(), laneBytes, &error), error);
+        for (std::uint32_t thread = 0; thread < laneCountThreads; ++thread)
+        {
+            INFO("thread " << thread << " of subgroup size " << size);
+            CHECK(laneCounts[thread * 2] == size);
+            CHECK(laneCounts[thread * 2 + 1] == size);
+        }
+
+        requireOk(rachis_command_pool_destroy(device.get(), pool, &error), error);
+        requireOk(rachis_binding_set_destroy(device.get(), set, &error), error);
+        requireOk(rachis_binding_pool_destroy(device.get(), bindingPool, &error), error);
+        requireOk(rachis_buffer_destroy(device.get(), lanes, &error), error);
+        requireOk(rachis_buffer_destroy(device.get(), readback, &error), error);
+        requireOk(rachis_pipeline_destroy(device.get(), pipeline, &error), error);
+        requireOk(rachis_shader_module_destroy(device.get(), laneShader, &error), error);
+    }
+#endif
+    requireOk(rachis_pipeline_layout_destroy(device.get(), pipelineLayout, &error), error);
+    requireOk(rachis_binding_layout_destroy(device.get(), bindingLayout, &error), error);
+    requireOk(rachis_shader_module_destroy(device.get(), writeShader, &error), error);
+    requireNoValidationErrors(device.get(), error);
+}
+#endif
+
 TEST_CASE("C ABI maps one range per buffer and validates mapped ranges",
           RACHIS_CABI_DEVICE_SIZE RACHIS_CABI_DEVICE_REQUIRES "[rachis][cabi]")
 {
@@ -1312,6 +2615,112 @@ TEST_CASE("C ABI reports mapping and vertex input capabilities",
     CHECK(capabilities.max_vertex_buffer_stride >= 1);
     CHECK(capabilities.max_vertex_instance_step_rate >= 1);
     CHECK(capabilities.reserved0 == 0);
+}
+
+TEST_CASE("C ABI reports indirect, mesh, binding-array, 64-bit atomic and subgroup capabilities",
+          RACHIS_CABI_DEVICE_SIZE RACHIS_CABI_DEVICE_REQUIRES "[rachis][cabi]")
+{
+    auto error = makeError();
+    auto device = createDevice(error);
+    rachis_device_capabilities capabilities{};
+    capabilities.struct_size = offsetof(rachis_device_capabilities, indirect_dispatch);
+    CHECK(rachis_device_query_capabilities(device.get(), &capabilities, &error) == RACHIS_STATUS_ABI_MISMATCH);
+    capabilities.struct_size = sizeof(capabilities);
+    capabilities.reserved1 = 7;
+    requireOk(rachis_device_query_capabilities(device.get(), &capabilities, &error), error);
+    CHECK(capabilities.reserved1 == 0);
+
+    const std::array<std::uint32_t, 19> flags{
+        capabilities.indirect_dispatch,
+        capabilities.multi_dispatch_indirect,
+        capabilities.dispatch_indirect_count,
+        capabilities.indirect_draws,
+        capabilities.indirect_draw_base_instance,
+        capabilities.multi_draw_indirect,
+        capabilities.draw_indirect_count,
+        capabilities.shader_draw_index,
+        capabilities.conditional_execution,
+        capabilities.mesh_shaders,
+        capabilities.task_shaders,
+        capabilities.partially_bound_binding_arrays,
+        capabilities.variable_descriptor_count_binding_arrays,
+        capabilities.update_after_bind_binding_arrays,
+        capabilities.shader_int64,
+        capabilities.shader_int64_atomic_group_shared,
+        capabilities.shader_int64_atomic_typed_resource,
+        capabilities.shader_int64_atomic_storage_buffer,
+        capabilities.subgroup_operations,
+    };
+    for (std::size_t index = 0; index < flags.size(); ++index)
+    {
+        INFO("flag " << index);
+        CHECK(flags[index] <= 1);
+    }
+    CHECK(capabilities.indirect_dispatch == 1);
+    CHECK(capabilities.indirect_draws == 1);
+    if (capabilities.dispatch_indirect_count != 0)
+    {
+        CHECK(capabilities.multi_dispatch_indirect == 1);
+    }
+    if (capabilities.task_shaders != 0)
+    {
+        CHECK(capabilities.mesh_shaders == 1);
+    }
+    if (capabilities.mesh_shaders != 0)
+    {
+        CHECK(capabilities.max_mesh_workgroup_invocations >= 1);
+        CHECK(capabilities.max_mesh_output_vertices >= 3);
+        CHECK(capabilities.max_mesh_output_primitives >= 1);
+        CHECK(capabilities.max_mesh_output_memory_bytes >= 1);
+        CHECK(capabilities.max_mesh_workgroup_count[0] >= 1);
+        CHECK(capabilities.max_mesh_workgroup_count[1] >= 1);
+        CHECK(capabilities.max_mesh_workgroup_count[2] >= 1);
+        CHECK(capabilities.max_mesh_total_workgroups >= capabilities.max_mesh_workgroup_count[0]);
+    }
+    if (capabilities.task_shaders != 0)
+    {
+        CHECK(capabilities.max_task_workgroup_invocations >= 1);
+        CHECK(capabilities.max_task_payload_bytes >= 1);
+    }
+    if (capabilities.variable_descriptor_count_binding_arrays != 0)
+    {
+        CHECK(capabilities.max_variable_resource_descriptors >= 1);
+        CHECK(capabilities.max_variable_buffer_descriptors >= 1);
+    }
+    if (capabilities.shader_int64_atomic_group_shared != 0 || capabilities.shader_int64_atomic_typed_resource != 0 ||
+        capabilities.shader_int64_atomic_storage_buffer != 0)
+    {
+        CHECK(capabilities.shader_int64 == 1);
+    }
+    if (capabilities.subgroup_operations != 0)
+    {
+        CHECK(capabilities.subgroup_min_size >= 1);
+        CHECK(capabilities.subgroup_min_size <= capabilities.subgroup_max_size);
+    }
+    CHECK((capabilities.subgroup_required_size_stages & ~std::uint32_t{RACHIS_SHADER_COMPUTE}) == 0);
+    if (capabilities.subgroup_required_size_stages != 0)
+    {
+        CHECK(capabilities.subgroup_operations == 1);
+    }
+    if (RACHIS_SMOKE_BACKEND == RACHIS_BACKEND_D3D12)
+    {
+        CHECK(capabilities.multi_dispatch_indirect == 1);
+        CHECK(capabilities.dispatch_indirect_count == 1);
+        CHECK(capabilities.indirect_draw_base_instance == 1);
+        CHECK(capabilities.multi_draw_indirect == 1);
+        CHECK(capabilities.draw_indirect_count == 1);
+        CHECK(capabilities.shader_draw_index == 1);
+        CHECK(capabilities.partially_bound_binding_arrays == 1);
+        CHECK(capabilities.variable_descriptor_count_binding_arrays == 1);
+        CHECK(capabilities.update_after_bind_binding_arrays == 1);
+        CHECK(capabilities.conditional_execution == 1);
+    }
+    if (RACHIS_SMOKE_BACKEND == RACHIS_BACKEND_METAL)
+    {
+        CHECK(capabilities.conditional_execution == 0);
+        CHECK(capabilities.shader_int64_atomic_storage_buffer == 0);
+        CHECK(capabilities.subgroup_required_size_stages == 0);
+    }
 }
 
 TEST_CASE("C ABI rejects descriptor version and layout mismatch", "[size:small]")
@@ -1646,6 +3055,35 @@ TEST_CASE("C ABI rejects a null device or output with invalid argument", "[size:
     CHECK(rachis_command_bind_index_buffer(nullptr, 1, 1, RACHIS_INDEX_FORMAT_UINT16, 0, &error) ==
           RACHIS_STATUS_INVALID_ARGUMENT);
     CHECK(rachis_command_draw_indexed(nullptr, 1, 3, 1, 0, 0, 0, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    rachis_indirect_draw_desc drawDesc{};
+    drawDesc.struct_size = sizeof(drawDesc);
+    drawDesc.abi_version = RACHIS_ABI_VERSION;
+    drawDesc.argument_buffer = 1;
+    drawDesc.max_draw_count = 1;
+    rachis_indirect_dispatch_desc dispatchDesc{};
+    dispatchDesc.struct_size = sizeof(dispatchDesc);
+    dispatchDesc.abi_version = RACHIS_ABI_VERSION;
+    dispatchDesc.argument_buffer = 1;
+    dispatchDesc.max_dispatch_count = 1;
+    rachis_indirect_mesh_dispatch_desc meshDesc{};
+    meshDesc.struct_size = sizeof(meshDesc);
+    meshDesc.abi_version = RACHIS_ABI_VERSION;
+    meshDesc.argument_buffer = 1;
+    meshDesc.max_dispatch_count = 1;
+    rachis_binding_set_update_desc updateDesc{};
+    updateDesc.struct_size = sizeof(updateDesc);
+    updateDesc.abi_version = RACHIS_ABI_VERSION;
+    const rachis_storage_texture_clear_value clearValue{};
+    CHECK(rachis_command_draw_indirect(nullptr, 1, &drawDesc, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_command_draw_indexed_indirect(nullptr, 1, &drawDesc, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_command_dispatch_indirect(nullptr, 1, &dispatchDesc, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_command_dispatch_mesh(nullptr, 1, 1, 1, 1, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_command_dispatch_mesh_indirect(nullptr, 1, &meshDesc, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_command_fill_buffer(nullptr, 1, 1, 0, 4, 0, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_command_clear_storage_texture(nullptr, 1, 1, &clearValue, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_binding_set_update(nullptr, 1, &updateDesc, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    drawDesc.struct_size = sizeof(drawDesc) - 4;
+    CHECK(rachis_command_draw_indirect(nullptr, 1, &drawDesc, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
     rachis_device_destroy(nullptr);
 }
 
@@ -2353,7 +3791,7 @@ TEST_CASE("C ABI compute output reaches a texture through barriers and timestamp
     rachis_handle shader = 0;
     requireOk(rachis_shader_module_create(device.get(), &shaderDesc, &shader, &error), error);
 
-    const rachis_binding_layout_entry entry{0, RACHIS_BINDING_STORAGE_BUFFER, RACHIS_SHADER_COMPUTE, 1};
+    const rachis_binding_layout_entry entry{0, RACHIS_BINDING_STORAGE_BUFFER, RACHIS_SHADER_COMPUTE, 1, 0};
     rachis_binding_layout_desc bindingLayoutDesc{};
     bindingLayoutDesc.struct_size = sizeof(bindingLayoutDesc);
     bindingLayoutDesc.abi_version = RACHIS_ABI_VERSION;
@@ -2547,7 +3985,7 @@ TEST_CASE("C ABI compute push constants reach a dispatch and reject invalid writ
     rachis_handle shader = 0;
     requireOk(rachis_shader_module_create(device.get(), &shaderDesc, &shader, &error), error);
 
-    const rachis_binding_layout_entry entry{outputBinding, RACHIS_BINDING_STORAGE_BUFFER, RACHIS_SHADER_COMPUTE, 1};
+    const rachis_binding_layout_entry entry{outputBinding, RACHIS_BINDING_STORAGE_BUFFER, RACHIS_SHADER_COMPUTE, 1, 0};
     rachis_binding_layout_desc bindingLayoutDesc{};
     bindingLayoutDesc.struct_size = sizeof(bindingLayoutDesc);
     bindingLayoutDesc.abi_version = RACHIS_ABI_VERSION;

@@ -4,6 +4,12 @@
 #include <stdio.h>
 #include <string.h>
 
+_Static_assert(sizeof(rachis_dispatch_indirect_arguments) == 12, "a dispatch record is three words");
+_Static_assert(sizeof(rachis_draw_indirect_arguments) == 16, "a draw record is four words");
+_Static_assert(sizeof(rachis_draw_indexed_indirect_arguments) == 20, "an indexed draw record is five words");
+_Static_assert(sizeof(rachis_binding_layout_entry) == 20, "a binding layout entry is five words");
+_Static_assert(sizeof(rachis_storage_texture_clear_value) == 52, "a clear value is a type and three vectors");
+
 static int check(rachis_status status, const rachis_error* error, const char* operation)
 {
     if (status == RACHIS_STATUS_OK)

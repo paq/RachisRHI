@@ -13,6 +13,12 @@ The C ABI lives in the `rachis` shared library (`Rachis::C` in CMake) and export
 - [Device capabilities](#device-capabilities)
 - [Mapped buffers](#mapped-buffers)
 - [Vertex buffers and indexed draws](#vertex-buffers-and-indexed-draws)
+- [Indirect draws and dispatches](#indirect-draws-and-dispatches)
+- [Draw index](#draw-index)
+- [Mesh and task shaders](#mesh-and-task-shaders)
+- [Binding arrays](#binding-arrays)
+- [Buffer fills and storage-texture clears](#buffer-fills-and-storage-texture-clears)
+- [Required subgroup size](#required-subgroup-size)
 - [Adapters](#adapters)
 - [Surfaces](#surfaces)
 - [Handles and lifetime](#handles-and-lifetime)
@@ -24,7 +30,20 @@ The C ABI lives in the `rachis` shared library (`Rachis::C` in CMake) and export
 
 ## Version
 
-Call `rachis_abi_version()` before creating a device and abort unless it equals the `RACHIS_ABI_VERSION` your module compiled against (currently `2`). ABI versions are not backwards-compatible.
+Call `rachis_abi_version()` before creating a device and abort unless it equals the `RACHIS_ABI_VERSION` your module compiled against (currently `3`). ABI versions are not backwards-compatible.
+
+### Changes in version 3
+
+Version 3 adds GPU-driven rendering. Modules built against version 2 must be rebuilt, because these declarations changed:
+
+- `rachis_device_capabilities` gains the indirect, mesh, binding-array, 64-bit atomic, and subgroup fields after `reserved0`, and `reserved1` at the end.
+- `rachis_binding_layout_entry` gains `flags`, and `rachis_binding_set_desc` gains `variable_descriptor_count`.
+- `rachis_shader_module_desc` and `rachis_pipeline_layout_desc` gain `draw_index`.
+- `rachis_graphics_pipeline_desc` gains `task_shader` and `mesh_shader`.
+- `rachis_compute_pipeline_desc` gains `required_subgroup_size`.
+- `RACHIS_SHADER_ALL` now also contains `RACHIS_SHADER_TASK` and `RACHIS_SHADER_MESH`.
+
+New calls: `rachis_command_draw_indirect`, `rachis_command_draw_indexed_indirect`, `rachis_command_dispatch_indirect`, `rachis_command_dispatch_mesh`, `rachis_command_dispatch_mesh_indirect`, `rachis_command_fill_buffer`, `rachis_command_clear_storage_texture`, and `rachis_binding_set_update`.
 
 ## Creating a device
 
@@ -82,20 +101,23 @@ Supported C ABI surface:
 - Buffer copies and bidirectional buffer-texture copies
 - Global, buffer, and texture barriers
 - Render passes with `load`, `clear`, or `discard` load ops and `store`
-- Buffer, texture-view, and sampler bindings
-- Vertex, pixel, and compute shader modules; graphics and compute pipelines; graphics and compute push constants; viewport, scissor, draw, and dispatch
+- Buffer, texture-view, and sampler bindings, binding set updates, and variable-count, partially bound, and update-after-bind binding arrays
+- Vertex, pixel, compute, task, and mesh shader modules; graphics (vertex or mesh) and compute pipelines; graphics and compute push constants; viewport, scissor, draw, dispatch, and mesh dispatch
 - Vertex buffer layouts, vertex and index buffer binding, and indexed draws
-- Device capabilities for mapping and vertex input
+- Indirect draws, indexed indirect draws, indirect dispatches, and indirect mesh dispatches, with several records, a GPU-written count, and the draw index
+- Buffer fills and storage-texture clears
+- A required subgroup size on compute pipelines
+- Device capabilities for mapping, vertex input, indirect calls, mesh shaders, binding arrays, 64-bit atomics, and subgroups
 - Timestamp queries
 - Adapter identification
 - Surfaces, swapchains, and presentation status
 
 ### C++-only features and stage rules
 
-- **Not exposed in C ABI:** Shared resources and cross-device ownership transfers (C ABI barriers always use `OwnershipTransfer::none`), variable-count binding arrays, device limits other than the vertex-input limits, indirect draws, stencil state, and optional pipeline stages (geometry, tessellation, mesh, task, ray tracing).
-- **Stage masks (`visibility` and push constants):** Combine `RACHIS_SHADER_VERTEX`, `RACHIS_SHADER_PIXEL`, and `RACHIS_SHADER_COMPUTE` (or `RACHIS_SHADER_ALL` for all three). `0` or unknown bits return `RACHIS_STATUS_INVALID_ARGUMENT`.
+- **Not exposed in C ABI:** Shared resources and cross-device ownership transfers (C ABI barriers always use `OwnershipTransfer::none`), conditional execution (`conditional_execution` reports the capability, but there are no calls to begin or end a scope), dynamic buffer offsets, stencil state, device limits other than those in [Device capabilities](#device-capabilities), and optional pipeline stages other than task and mesh (geometry, tessellation, ray tracing).
+- **Stage masks (`visibility` and push constants):** Combine `RACHIS_SHADER_VERTEX`, `RACHIS_SHADER_PIXEL`, `RACHIS_SHADER_COMPUTE`, `RACHIS_SHADER_TASK`, and `RACHIS_SHADER_MESH` (or `RACHIS_SHADER_ALL` for all five). `0` or unknown bits return `RACHIS_STATUS_INVALID_ARGUMENT`. On a device without mesh shaders, a mask that also names a supported stage works; a mask of only task or mesh fails as described in [Optional shader stages](using.md#optional-shader-stages).
 - **Push constants:**
-  - `rachis_command_set_graphics_push_constants` requires graphics stage bits only (including `RACHIS_SHADER_COMPUTE` fails with `RACHIS_STATUS_INVALID_ARGUMENT`) and a bound graphics pipeline inside a render pass.
+  - `rachis_command_set_graphics_push_constants` requires graphics stage bits only (vertex, pixel, task, and mesh; including `RACHIS_SHADER_COMPUTE` fails with `RACHIS_STATUS_INVALID_ARGUMENT`) and a bound graphics pipeline inside a render pass.
   - `rachis_command_set_compute_push_constants` requires a bound compute pipeline (otherwise returns `RACHIS_STATUS_INVALID_STATE`).
   - Both require `offset` to be a multiple of `4`, `size` to be a nonzero multiple of `4`, and `offset + size <= 128`.
 
@@ -113,6 +135,24 @@ Supported C ABI surface:
 | `max_vertex_buffers`, `max_vertex_attributes` | Vertex buffer slots and vertex attributes one pipeline may use (at most `RACHIS_MAX_VERTEX_BUFFERS` and `RACHIS_MAX_VERTEX_ATTRIBUTES`) |
 | `max_vertex_buffer_stride`, `max_vertex_attribute_offset` | Largest `stride` and attribute `offset` in a vertex buffer layout |
 | `max_vertex_instance_step_rate` | Largest `instance_step_rate` (`1` on Vulkan) |
+| `indirect_dispatch`, `indirect_draws` | Nonzero when `rachis_command_dispatch_indirect` and the indirect draw calls work (always) |
+| `multi_dispatch_indirect`, `multi_draw_indirect` | Nonzero when an indirect dispatch or an indirect draw or mesh dispatch may run more than one record |
+| `dispatch_indirect_count`, `draw_indirect_count` | Nonzero when the same calls accept a `count_buffer` |
+| `indirect_draw_base_instance` | Nonzero when `first_instance` in an indirect draw record may be nonzero |
+| `shader_draw_index` | Nonzero when shaders can read the draw index (see [Draw index](#draw-index)) |
+| `conditional_execution` | Nonzero when the device supports conditional execution in the C++ API; the C ABI has no calls for it |
+| `mesh_shaders`, `task_shaders` | Nonzero when graphics pipelines accept a mesh shader, and a task shader before it |
+| `max_task_workgroup_invocations`, `max_task_payload_bytes` | Invocations in one task workgroup and bytes in its payload |
+| `max_mesh_workgroup_invocations`, `max_mesh_output_vertices`, `max_mesh_output_primitives`, `max_mesh_output_memory_bytes` | Invocations in one mesh workgroup and what it may output |
+| `max_mesh_workgroup_count`, `max_mesh_total_workgroups` | Largest group count per axis, and in total, of one mesh dispatch |
+| `partially_bound_binding_arrays`, `variable_descriptor_count_binding_arrays`, `update_after_bind_binding_arrays` | Nonzero when the matching `RACHIS_BINDING_FLAG_*` is accepted (see [Binding arrays](#binding-arrays)) |
+| `max_variable_buffer_descriptors`, `max_variable_sampler_descriptors`, `max_variable_resource_descriptors` | Largest `variable_descriptor_count` for buffer, sampler, and other (texture) entries; see [Variable-count binding arrays](platforms.md#variable-count-binding-arrays) |
+| `shader_int64` | Nonzero when shaders may use 64-bit integers |
+| `shader_int64_atomic_group_shared`, `shader_int64_atomic_typed_resource`, `shader_int64_atomic_storage_buffer` | Nonzero when shaders may use 64-bit atomics on group-shared memory, on typed resources, and on storage buffers (see [64-bit atomics](platforms.md#64-bit-atomics)) |
+| `subgroup_operations`, `subgroup_min_size`, `subgroup_max_size` | Nonzero when shaders may use subgroup (wave) operations, and the range of subgroup sizes |
+| `subgroup_required_size_stages` | `RACHIS_SHADER_COMPUTE` when compute pipelines accept `required_subgroup_size`, otherwise `0` |
+
+`reserved0` and `reserved1` are written as `0`.
 
 ## Mapped buffers
 
@@ -158,6 +198,91 @@ Each `rachis_mapped_range` is an `offset` from the start of the buffer (not of t
 - **Binding:** `rachis_command_bind_vertex_buffers` binds `binding_count` buffers created with `RACHIS_BUFFER_VERTEX` to consecutive slots from `first_slot`; if any binding is rejected, none of them changes. `rachis_command_bind_index_buffer` binds a `RACHIS_BUFFER_INDEX` buffer as `RACHIS_INDEX_FORMAT_UINT16` or `RACHIS_INDEX_FORMAT_UINT32`.
 - **Drawing:** `rachis_command_draw_indexed` reads `index_count` indices starting at index `first_index` of the bound index buffer and adds `base_vertex` to each.
 - **Indexed strips:** For a line or triangle strip drawn with an index buffer, set `strip_index_format` to the format of that index buffer. This turns on primitive restart at index `0xFFFF` or `0xFFFFFFFF`, and Metal requires it for indexed strip draws. Leave it `RACHIS_STRIP_INDEX_NONE` for list topologies, where any other value returns `RACHIS_STATUS_INVALID_ARGUMENT`.
+
+## Indirect draws and dispatches
+
+Indirect calls read their arguments from a buffer created with `RACHIS_BUFFER_INDIRECT`, so the GPU can write them:
+
+| Call | Descriptor | Record |
+| --- | --- | --- |
+| `rachis_command_draw_indirect` | `rachis_indirect_draw_desc` | `rachis_draw_indirect_arguments` (16 bytes) |
+| `rachis_command_draw_indexed_indirect` | `rachis_indirect_draw_desc` | `rachis_draw_indexed_indirect_arguments` (20 bytes) |
+| `rachis_command_dispatch_indirect` | `rachis_indirect_dispatch_desc` | `rachis_dispatch_indirect_arguments` (12 bytes) |
+| `rachis_command_dispatch_mesh_indirect` | `rachis_indirect_mesh_dispatch_desc` | `rachis_dispatch_indirect_arguments` (12 bytes) |
+
+- **Records:** `max_draw_count` (or `max_dispatch_count`) records start at `argument_offset` and are `stride` bytes apart. `argument_offset` must be a multiple of `4`. A `stride` of `0` means the record size; any other stride must be a multiple of `4` and at least the record size. Every record must lie inside the buffer. A count of `0` records nothing. A count above `1` needs `multi_draw_indirect` (or `multi_dispatch_indirect`).
+- **GPU count:** A nonzero `count_buffer` names a buffer with `RACHIS_BUFFER_INDIRECT`. When the command runs, the GPU reads a `uint32_t` at `count_offset` (a multiple of `4`) and runs the first `min(count, max_draw_count)` records. This needs `draw_indirect_count` (or `dispatch_indirect_count`). Leave `count_buffer` `0` to run every record; `count_offset` must then be `0`.
+- **Visibility:** Before an indirect call reads records or a count that earlier work wrote, record a barrier to `RACHIS_STAGE_INDIRECT` and `RACHIS_ACCESS_INDIRECT_ARGUMENT`. Records written by the CPU into a `RACHIS_MEMORY_UPLOAD` buffer need no barrier.
+- **State:** Draws and mesh dispatches need the same state as `rachis_command_draw` inside a render pass; indexed draws also need an index buffer. Dispatches need a bound compute pipeline outside a render pass. No record changes the pipeline, bindings, or push constants.
+- **Errors:** A null descriptor returns `RACHIS_STATUS_INVALID_ARGUMENT`, and a wrong `struct_size` or `abi_version` returns `RACHIS_STATUS_ABI_MISMATCH`. A buffer handle that is not a live buffer, a `draw_index_prefix` above `1`, and records, strides, offsets, or counts that break the rules above return `RACHIS_STATUS_INVALID_ARGUMENT`. A missing capability returns `RACHIS_STATUS_UNSUPPORTED`. [Indirect calls on Metal](platforms.md#indirect-calls-on-metal) and [Indirect dispatch batches on Vulkan](platforms.md#indirect-dispatch-batches-on-vulkan) describe what several records and a count cost on those backends.
+
+```c
+const rachis_draw_indirect_arguments records[3] = {{3, 1, 0, 0}, {3, 1, 3, 0}, {3, 1, 6, 0}};
+rachis_buffer_write(device, arguments, 0, records, sizeof(records), &error);
+
+rachis_indirect_draw_desc draw = {0};
+draw.struct_size = sizeof(draw);
+draw.abi_version = RACHIS_ABI_VERSION;
+draw.argument_buffer = arguments;
+draw.max_draw_count = 3;
+draw.count_buffer = visibleCount;
+rachis_command_draw_indirect(device, command, &draw, &error);
+```
+
+## Draw index
+
+The draw index tells a shader which record of an indirect draw or mesh dispatch it belongs to. [Draw index in indirect calls](using.md#draw-index-in-indirect-calls) explains how shaders read it with `Rachis/DrawIndex.hlsli`, and [Cooking manually](using.md#cooking-manually-for-c-or-custom-build-systems) how to compile such shaders. `shader_draw_index` reports support; without it, each of the settings below returns `RACHIS_STATUS_UNSUPPORTED`.
+
+- **Shader modules:** Set `draw_index` to `1` on a vertex, task, or mesh shader module that reads the draw index, and to `0` otherwise; `RachisShaderBinaryTool reflect-interface --bytecode` reports which applies. A value above `1`, `1` on another stage, or (on Direct3D 12 and Vulkan) a value that does not match the bytecode returns `RACHIS_STATUS_INVALID_ARGUMENT`.
+- **Pipeline layouts:** Set `draw_index` to `1` on the pipeline layout of a graphics pipeline whose shaders read it. Without it, `rachis_graphics_pipeline_create` returns `RACHIS_STATUS_VALIDATION_ERROR`. A value above `1` returns `RACHIS_STATUS_INVALID_ARGUMENT`.
+- **Records:** Set `draw_index_prefix` to `1` on `rachis_indirect_draw_desc` or `rachis_indirect_mesh_dispatch_desc` to put a `uint32_t` draw index before each record. Records then take 20 bytes for a draw, 24 for an indexed draw, and 16 for a mesh dispatch, and `stride` and `argument_offset` count the prefix. The draw index of a record must be its position: `0`, `1`, `2`, and so on.
+- **When it is needed:** A pipeline that reads the draw index needs `draw_index_prefix` when it runs more than one record; without it the call returns `RACHIS_STATUS_INVALID_ARGUMENT`. With one record, and in `rachis_command_draw`, `rachis_command_draw_indexed`, and `rachis_command_dispatch_mesh`, the draw index is `0`. Pipelines that do not read it skip the prefix.
+
+## Mesh and task shaders
+
+When `mesh_shaders` is nonzero, a graphics pipeline can replace the vertex stage with a mesh shader, and with a task shader before it when `task_shaders` is nonzero:
+
+- **Shader modules:** Create them with `RACHIS_SHADER_MESH` or `RACHIS_SHADER_TASK`. Like compute shaders, they need a nonzero `workgroup_x`, `workgroup_y`, and `workgroup_z` that match the shader; other stages leave them `0`.
+- **Pipelines:** Set `mesh_shader` (and optionally `task_shader`) in `rachis_graphics_pipeline_desc` and leave `vertex_shader`, `vertex_buffers`, and `strip_index_format` empty. A descriptor with neither a vertex nor a mesh shader returns `RACHIS_STATUS_INVALID_ARGUMENT`; one with both, or with a task shader but no mesh shader, fails at pipeline creation.
+- **Dispatching:** Inside a render pass with a mesh pipeline bound, `rachis_command_dispatch_mesh` launches `x * y * z` workgroups of the first stage (the task shader if there is one), each within `max_mesh_workgroup_count` and `max_mesh_total_workgroups`. `rachis_command_dispatch_mesh_indirect` reads the group counts from records (see [Indirect draws and dispatches](#indirect-draws-and-dispatches)).
+- **Barriers:** `RACHIS_STAGE_TASK_SHADER` and `RACHIS_STAGE_MESH_SHADER` name the two stages in barriers, for example after a compute pass writes the meshlet data they read.
+- **Backends:** [Mesh shaders on Metal](platforms.md#mesh-shaders-on-metal) lists the Metal requirements.
+
+## Binding arrays
+
+A binding layout entry can describe a large array that shaders index at run time, such as a table of every material texture. Set `flags` on `rachis_binding_layout_entry`:
+
+| Flag | Effect | Capability |
+| --- | --- | --- |
+| `RACHIS_BINDING_FLAG_PARTIALLY_BOUND` | Elements may stay empty, as long as shaders do not read them | `partially_bound_binding_arrays` |
+| `RACHIS_BINDING_FLAG_VARIABLE_DESCRIPTOR_COUNT` | Each set chooses the array length in `variable_descriptor_count`; the entry's `count` is `RACHIS_UNBOUNDED_BINDING_COUNT` | `variable_descriptor_count_binding_arrays` |
+| `RACHIS_BINDING_FLAG_UPDATE_AFTER_BIND` | `rachis_binding_set_update` changes elements in place, even while work that uses the set is in flight | `update_after_bind_binding_arrays` |
+
+- **Variable count:** Only the entry with the highest `binding` in a layout may use `RACHIS_BINDING_FLAG_VARIABLE_DESCRIPTOR_COUNT`. `variable_descriptor_count` in `rachis_binding_set_desc` gives its length for that set and must not exceed `max_variable_buffer_descriptors`, `max_variable_sampler_descriptors`, or `max_variable_resource_descriptors` for the entry's type. Leave it `0` for layouts without such an entry. Shader modules declare the array with `count` set to `RACHIS_UNBOUNDED_BINDING_COUNT`, for example `StructuredBuffer<uint> colors[] : register(t0, space0)`.
+- **Unknown flags and other rules:** Unknown bits in `flags` return `RACHIS_STATUS_INVALID_ARGUMENT`. [Variable-count binding arrays](using.md#variable-count-binding-arrays) and [Update-after-bind binding arrays](using.md#update-after-bind-binding-arrays) give the remaining rules, and [Platforms](platforms.md#variable-count-binding-arrays) the limits on each backend.
+- **Updating a set:** `rachis_binding_set_update` writes the buffers, texture views, and samplers in a `rachis_binding_set_update_desc` into an existing set, element by element. A write whose handle is `0` empties that element, which needs `RACHIS_BINDING_FLAG_PARTIALLY_BOUND`; a handle that is not live returns `RACHIS_STATUS_INVALID_ARGUMENT` before any element changes. Without `RACHIS_BINDING_FLAG_UPDATE_AFTER_BIND`, command buffers recorded before an update keep the old contents and later ones read the new contents. With it, a command buffer submitted after the update reads the new elements, even if it bound the set before; change only elements that no unfinished work reads.
+
+```c
+const rachis_texture_binding streamed = {1, slot, newView};
+rachis_binding_set_update_desc update = {0};
+update.struct_size = sizeof(update);
+update.abi_version = RACHIS_ABI_VERSION;
+update.texture_writes = &streamed;
+update.texture_write_count = 1;
+rachis_binding_set_update(device, materials, &update, &error);
+```
+
+## Buffer fills and storage-texture clears
+
+`rachis_command_fill_buffer` and `rachis_command_clear_storage_texture` write a constant value on the GPU in command order, for example to reset a count buffer before a culling pass writes it. Record them on a graphics or compute command buffer outside a render pass; a copy command buffer or an open render pass returns `RACHIS_STATUS_INVALID_STATE`.
+
+- **Fills:** `rachis_command_fill_buffer` writes the 32-bit `value` to every 4-byte word from `offset` to `offset + size`. `size` may be `RACHIS_WHOLE_SIZE`. The offset and size must be multiples of `4`, the size must not be `0`, the range must lie inside the buffer, and the buffer needs `RACHIS_BUFFER_STORAGE` and `RACHIS_BUFFER_COPY_DESTINATION`; otherwise the call returns `RACHIS_STATUS_INVALID_ARGUMENT`.
+- **Clears:** `rachis_command_clear_storage_texture` clears every subresource of a `RACHIS_VIEW_USAGE_STORAGE` view, which must be in `RACHIS_LAYOUT_UNORDERED_ACCESS`. `type` in `rachis_storage_texture_clear_value` picks the array that is used: `RACHIS_STORAGE_TEXTURE_CLEAR_FLOAT32` for float and normalized formats, `RACHIS_STORAGE_TEXTURE_CLEAR_UINT32` for unsigned integer formats, and `RACHIS_STORAGE_TEXTURE_CLEAR_SINT32` for signed integer formats. A null value, an unknown type, or a type that does not match the format returns `RACHIS_STATUS_INVALID_ARGUMENT`. [Buffer fills and storage-texture clears](using.md#buffer-fills-and-storage-texture-clears) gives the texture and format rules.
+- **Barriers:** Both count as an unordered-access write in the compute stage. On the side of a barrier that refers to them, use `RACHIS_STAGE_COMPUTE_SHADER` with `RACHIS_ACCESS_UNORDERED_ACCESS`; before an indirect call reads a filled count, record a barrier from there to `RACHIS_STAGE_INDIRECT` and `RACHIS_ACCESS_INDIRECT_ARGUMENT`.
+
+## Required subgroup size
+
+Set `required_subgroup_size` in `rachis_compute_pipeline_desc` to run the pipeline with full subgroups of that size; `0` lets the device choose. The size must be a power of two (`RACHIS_STATUS_INVALID_ARGUMENT`), `subgroup_required_size_stages` must contain `RACHIS_SHADER_COMPUTE`, and the size must lie from `subgroup_min_size` to `subgroup_max_size` (`RACHIS_STATUS_UNSUPPORTED`). The shader's `workgroup_x` must be a multiple of it. On Direct3D 12 the shader must also declare `[WaveSize(N)]` with the same size; see [Required subgroup size](using.md#required-subgroup-size).
 
 ## Adapters
 
@@ -229,7 +354,7 @@ if (rachis_command_submit(device, command, &timeline, &error) == RACHIS_STATUS_O
 Calls on a single `rachis_device*` are thread-safe, provided nothing else calls into the device during `rachis_device_destroy`:
 
 - **Synchronization groups:**
-  - *Exclusive operations* serialize with each other and wait for active concurrent operations: object create/destroy, lease acquire/release, timeline release, command acquire/discard/submit, swapchain acquire/cancel/resize, and pre/post-present bookkeeping.
+  - *Exclusive operations* serialize with each other and wait for active concurrent operations: object create/destroy, `rachis_binding_set_update`, lease acquire/release, timeline release, command acquire/discard/submit, swapchain acquire/cancel/resize, and pre/post-present bookkeeping.
   - *Concurrent operations* run concurrently with each other (subject to backend locks below): command recording on distinct command handles, `rachis_buffer_write`, `rachis_buffer_read`, `rachis_buffer_map`, `rachis_buffer_unmap`, flushing and invalidating mapped ranges, and queries.
   - *No call at all:* reading and writing through a pointer from `rachis_buffer_map` takes no lock and never waits for another thread's call (see [Mapped buffers](#mapped-buffers)).
   - *Fairness:* Waiters proceed in arrival order, and adjacent concurrent calls execute together—continuous recording/copying cannot starve exclusive calls, nor vice versa.
@@ -244,6 +369,6 @@ Calls on a single `rachis_device*` are thread-safe, provided nothing else calls 
 ## Device loss
 
 - Query `rachis_device_operational_state` to check whether a device is active or lost, and `rachis_device_loss_error` to read the stored cause (check `error.code`, since the function's return status only indicates whether querying succeeded). The first loss is also sent to `diagnostic_callback`.
-- Once lost, all create, record, submit, acquire, and present calls—plus `rachis_buffer_write`, `rachis_buffer_read`, `rachis_buffer_map`, `rachis_buffer_flush_mapped_ranges`, and `rachis_buffer_invalidate_mapped_ranges` (even with stale handles or out-of-bounds ranges)—return `RACHIS_STATUS_DEVICE_LOST`.
+- Once lost, all create, record, submit, acquire, and present calls—plus `rachis_binding_set_update`, `rachis_buffer_write`, `rachis_buffer_read`, `rachis_buffer_map`, `rachis_buffer_flush_mapped_ranges`, and `rachis_buffer_invalidate_mapped_ranges` (even with stale handles or out-of-bounds ranges)—return `RACHIS_STATUS_DEVICE_LOST`.
 - A pointer mapped before the loss stays valid memory until `rachis_buffer_unmap`: reading and writing through it does not fault, but the bytes read are undefined and writes reach no GPU. `rachis_buffer_unmap` still succeeds, and a mapped buffer still needs it before `rachis_buffer_destroy`.
 - Diagnostics, `destroy`, and `release` calls continue working (including `rachis_swapchain_destroy` while an image is still acquired). Create a new device to recover.
