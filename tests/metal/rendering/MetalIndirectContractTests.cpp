@@ -194,10 +194,16 @@ namespace
             CHECK(device.destroyShaderModule(vertexShader).has_value());
         }
 
-        [[nodiscard]] std::array<bool, quadrantCount> render(const std::function<void(rachis::CommandBuffer&)>& draws)
+        [[nodiscard]] std::array<bool, quadrantCount> render(
+            const std::function<void(rachis::CommandBuffer&)>& draws,
+            const std::function<void(rachis::CommandBuffer&)>& prologue = {})
         {
             auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::graphics);
             REQUIRE(command.has_value());
+            if (prologue)
+            {
+                prologue(*command);
+            }
             REQUIRE(device
                         .textureBarrier(*command,
                                         {
@@ -273,6 +279,43 @@ namespace
         std::uint32_t padding = 0xDEADBEEFU;
     };
 
+    [[nodiscard]] rachis::BufferHandle staleCountBuffer(rachis::Device& device, std::size_t countCount)
+    {
+        const std::vector<std::uint32_t> stale(countCount, 1U);
+        return uploadBuffer(device,
+                            std::span<const std::uint32_t>(stale),
+                            rachis::BufferUsage::indirect | rachis::BufferUsage::storage |
+                                rachis::BufferUsage::copyDestination,
+                            "Metal GPU-written counts");
+    }
+
+    void writeCountsOnGpu(rachis::Device& device,
+                          rachis::CommandBuffer& command,
+                          rachis::BufferHandle countBuffer,
+                          std::span<const std::uint32_t> counts)
+    {
+        for (std::size_t index = 0; index < counts.size(); ++index)
+        {
+            REQUIRE(device
+                        .fillBuffer(command,
+                                    countBuffer,
+                                    index * sizeof(std::uint32_t),
+                                    sizeof(std::uint32_t),
+                                    counts[index])
+                        .has_value());
+        }
+        REQUIRE(device
+                    .bufferBarrier(command,
+                                   {
+                                       .buffer = countBuffer,
+                                       .stagesBefore = rachis::PipelineStage::computeShader,
+                                       .stagesAfter = rachis::PipelineStage::indirect,
+                                       .accessBefore = rachis::Access::unorderedAccess,
+                                       .accessAfter = rachis::Access::indirectArgument,
+                                   })
+                    .has_value());
+    }
+
 } // namespace
 
 TEST_CASE("Metal count clamps launch enough workgroups for every record count", "[size:small][rhi][metal][indirect]")
@@ -323,8 +366,10 @@ TEST_CASE("Metal multi-draw indirect draws every record or only the GPU-written 
                      rachis::BufferUsage::indirect,
                      "Metal indexed draw records");
     const std::array<std::uint32_t, 4> counts{2, 3, 0, 9};
-    const auto countBuffer = uploadBuffer(
-        device, std::span<const std::uint32_t>(counts), rachis::BufferUsage::indirect, "Metal draw counts");
+    const auto countBuffer = staleCountBuffer(device, counts.size());
+    const auto writeCounts = [&](rachis::CommandBuffer& command) {
+        writeCountsOnGpu(device, command, countBuffer, counts);
+    };
     constexpr std::uint32_t drawStride = sizeof(PaddedRecord<rachis::DrawIndirectArguments>);
     constexpr std::uint32_t indexedStride = sizeof(PaddedRecord<rachis::DrawIndexedIndirectArguments>);
 
@@ -342,54 +387,60 @@ TEST_CASE("Metal multi-draw indirect draws every record or only the GPU-written 
 
     SECTION("A count of two draws the first two records")
     {
-        const auto lit = renderer.render([&](rachis::CommandBuffer& command) {
-            REQUIRE(device
-                        .drawIndirect(command,
-                                      {.argumentBuffer = drawArguments,
-                                       .maxDrawCount = quadrantCount,
-                                       .stride = drawStride,
-                                       .countBuffer = countBuffer})
-                        .has_value());
-        });
+        const auto lit = renderer.render(
+            [&](rachis::CommandBuffer& command) {
+                REQUIRE(device
+                            .drawIndirect(command,
+                                          {.argumentBuffer = drawArguments,
+                                           .maxDrawCount = quadrantCount,
+                                           .stride = drawStride,
+                                           .countBuffer = countBuffer})
+                            .has_value());
+            },
+            writeCounts);
         CHECK(lit == std::array{true, true, false, false});
     }
 
     SECTION("An indexed count of three draws the first three records")
     {
-        const auto lit = renderer.render([&](rachis::CommandBuffer& command) {
-            REQUIRE(device
-                        .drawIndexedIndirect(command,
-                                             {.argumentBuffer = indexedArguments,
-                                              .maxDrawCount = quadrantCount,
-                                              .stride = indexedStride,
-                                              .countBuffer = countBuffer,
-                                              .countOffset = sizeof(std::uint32_t)})
-                        .has_value());
-        });
+        const auto lit = renderer.render(
+            [&](rachis::CommandBuffer& command) {
+                REQUIRE(device
+                            .drawIndexedIndirect(command,
+                                                 {.argumentBuffer = indexedArguments,
+                                                  .maxDrawCount = quadrantCount,
+                                                  .stride = indexedStride,
+                                                  .countBuffer = countBuffer,
+                                                  .countOffset = sizeof(std::uint32_t)})
+                            .has_value());
+            },
+            writeCounts);
         CHECK(lit == std::array{true, true, true, false});
     }
 
     SECTION("A zero count draws nothing and a count above the maximum draws the maximum")
     {
-        const auto lit = renderer.render([&](rachis::CommandBuffer& command) {
-            REQUIRE(device
-                        .drawIndirect(command,
-                                      {.argumentBuffer = drawArguments,
-                                       .maxDrawCount = quadrantCount,
-                                       .stride = drawStride,
-                                       .countBuffer = countBuffer,
-                                       .countOffset = 2 * sizeof(std::uint32_t)})
-                        .has_value());
-            REQUIRE(device
-                        .drawIndexedIndirect(command,
-                                             {.argumentBuffer = indexedArguments,
-                                              .argumentOffset = indexedStride,
-                                              .maxDrawCount = 2,
-                                              .stride = indexedStride,
-                                              .countBuffer = countBuffer,
-                                              .countOffset = 3 * sizeof(std::uint32_t)})
-                        .has_value());
-        });
+        const auto lit = renderer.render(
+            [&](rachis::CommandBuffer& command) {
+                REQUIRE(device
+                            .drawIndirect(command,
+                                          {.argumentBuffer = drawArguments,
+                                           .maxDrawCount = quadrantCount,
+                                           .stride = drawStride,
+                                           .countBuffer = countBuffer,
+                                           .countOffset = 2 * sizeof(std::uint32_t)})
+                            .has_value());
+                REQUIRE(device
+                            .drawIndexedIndirect(command,
+                                                 {.argumentBuffer = indexedArguments,
+                                                  .argumentOffset = indexedStride,
+                                                  .maxDrawCount = 2,
+                                                  .stride = indexedStride,
+                                                  .countBuffer = countBuffer,
+                                                  .countOffset = 3 * sizeof(std::uint32_t)})
+                            .has_value());
+            },
+            writeCounts);
         CHECK(lit == std::array{false, true, true, false});
     }
 
@@ -462,8 +513,7 @@ TEST_CASE("Metal multi-dispatch indirect runs every record or only the GPU-writt
                                         rachis::BufferUsage::indirect,
                                         "Metal dispatch records");
     const std::array<std::uint32_t, 2> counts{3, 0};
-    const auto countBuffer = uploadBuffer(
-        device, std::span<const std::uint32_t>(counts), rachis::BufferUsage::indirect, "Metal dispatch counts");
+    const auto countBuffer = staleCountBuffer(device, counts.size());
     constexpr std::uint32_t stride = sizeof(PaddedRecord<rachis::DispatchIndirectArguments>);
 
     const auto runDispatch = [&](const rachis::IndirectDispatchDesc& desc) -> std::uint32_t {
@@ -480,6 +530,10 @@ TEST_CASE("Metal multi-dispatch indirect runs every record or only the GPU-writt
         REQUIRE(set.has_value());
         auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
         REQUIRE(command.has_value());
+        if (desc.countBuffer.isValid())
+        {
+            writeCountsOnGpu(device, *command, countBuffer, counts);
+        }
         REQUIRE(device.bindComputePipeline(*command, *pipeline).has_value());
         REQUIRE(device.bindComputeBindingSet(*command, 0, *set).has_value());
         REQUIRE(device.dispatchIndirect(*command, desc).has_value());
