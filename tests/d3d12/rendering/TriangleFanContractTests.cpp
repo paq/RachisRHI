@@ -91,8 +91,9 @@ TEST_CASE("triangle-fan pipelines are capability-gated and render both fan primi
         auto created = createAdapterDevice(adapter);
         if (!created)
         {
-            continue;
+            UNSCOPED_INFO(adapter.name << ": " << created.error().message);
         }
+        REQUIRE(created.has_value());
         if (rachis::test::requireCapabilities(*created).triangleFans)
         {
             selectedAdapter = adapter.name;

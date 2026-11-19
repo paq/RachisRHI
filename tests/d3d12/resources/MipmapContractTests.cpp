@@ -83,6 +83,17 @@ namespace
         static_cast<void>(std::fputc('\n', stderr));
     }
 
+    void skipWithoutHardwareAdapter(const rachis::Error& error)
+    {
+        const auto classification = rachis::test::classifyDeviceCreateError(error.code);
+        if (classification == rachis::test::DeviceCreateClassification::adapterNotFound ||
+            classification == rachis::test::DeviceCreateClassification::backendUnavailable)
+        {
+            SKIP("No D3D12 hardware adapter is available: " << error.message);
+        }
+        FAIL("Creating the D3D12 hardware device failed: " << error.message);
+    }
+
     [[nodiscard]] constexpr std::array<std::uint8_t, 4> baseTexel(std::uint32_t x, std::uint32_t y) noexcept
     {
         return {
@@ -1200,7 +1211,7 @@ TEST_CASE("mipmap generation waits for the render pass that wrote its base level
     auto created = createHardwareDevice();
     if (!created)
     {
-        SKIP("No D3D12 hardware device is available.");
+        skipWithoutHardwareAdapter(created.error());
     }
     auto device = std::move(*created);
     if (rachis::test::requireAdapterInfo(device).type == rachis::AdapterType::software)
@@ -1244,7 +1255,7 @@ TEST_CASE("mipmap generation finishes before a later render pass blends into its
     auto created = createHardwareDevice();
     if (!created)
     {
-        SKIP("No D3D12 hardware device is available.");
+        skipWithoutHardwareAdapter(created.error());
     }
     auto device = std::move(*created);
     if (rachis::test::requireAdapterInfo(device).type == rachis::AdapterType::software)

@@ -54,6 +54,17 @@ namespace
         static_cast<void>(std::fputc('\n', stderr));
     }
 
+    void skipWithoutHardwareAdapter(const rachis::Error& error)
+    {
+        const auto classification = rachis::test::classifyDeviceCreateError(error.code);
+        if (classification == rachis::test::DeviceCreateClassification::adapterNotFound ||
+            classification == rachis::test::DeviceCreateClassification::backendUnavailable)
+        {
+            SKIP("No D3D12 hardware adapter is available: " << error.message);
+        }
+        FAIL("Creating the D3D12 hardware device failed: " << error.message);
+    }
+
     [[nodiscard]] std::vector<std::byte> loadShader()
     {
         std::ifstream stream(RACHIS_TEST_RAY_QUERY_SHADER_PATH, std::ios::binary | std::ios::ate);
@@ -695,7 +706,7 @@ TEST_CASE("BLAS triangle vertex strides must be multiples of the vertex componen
     });
     if (!created)
     {
-        SKIP("No D3D12 hardware device is available.");
+        skipWithoutHardwareAdapter(created.error());
     }
     auto device = std::move(*created);
     requireTriangleVertexStridesAlignedToComponentSize(device);
@@ -712,7 +723,7 @@ TEST_CASE("inline ray query traverses retained BLAS and TLAS versions", "[size:m
     });
     if (!created)
     {
-        SKIP("No D3D12 hardware device is available.");
+        skipWithoutHardwareAdapter(created.error());
     }
     auto device = std::move(*created);
     const auto capabilities = *device.capabilities();
@@ -1840,7 +1851,7 @@ TEST_CASE("in-place acceleration-structure refits and serialization barriers sta
     });
     if (!created)
     {
-        SKIP("No D3D12 hardware device is available.");
+        skipWithoutHardwareAdapter(created.error());
     }
     auto device = std::move(*created);
     const auto capabilities = *device.capabilities();
@@ -2538,7 +2549,7 @@ TEST_CASE("discarded command recordings roll back unsubmitted acceleration-struc
     });
     if (!created)
     {
-        SKIP("No D3D12 hardware device is available.");
+        skipWithoutHardwareAdapter(created.error());
     }
     auto device = std::move(*created);
     const auto capabilities = *device.capabilities();
@@ -2823,7 +2834,7 @@ TEST_CASE("in-place acceleration-structure updates exclude consumers in other re
     });
     if (!created)
     {
-        SKIP("No D3D12 hardware device is available.");
+        skipWithoutHardwareAdapter(created.error());
     }
     auto device = std::move(*created);
     const auto capabilities = *device.capabilities();
@@ -3147,7 +3158,7 @@ TEST_CASE("enhanced acceleration-structure barriers order postbuild queries and 
     });
     if (!created)
     {
-        SKIP("No D3D12 hardware device is available.");
+        skipWithoutHardwareAdapter(created.error());
     }
     auto device = std::move(*created);
     const auto capabilities = rachis::test::requireCapabilities(device);
@@ -3495,7 +3506,7 @@ TEST_CASE("same-list postbuild queries of a large compactable BLAS match fenced 
     });
     if (!created)
     {
-        SKIP("No D3D12 hardware device is available.");
+        skipWithoutHardwareAdapter(created.error());
     }
     auto device = std::move(*created);
     if (!rachis::test::requireCapabilities(device).rayTracing)

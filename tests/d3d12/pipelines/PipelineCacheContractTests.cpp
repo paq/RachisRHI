@@ -17,6 +17,16 @@
 
 namespace
 {
+    void skipWithoutHardwareAdapter(const rachis::Error& error)
+    {
+        const auto classification = rachis::test::classifyDeviceCreateError(error.code);
+        if (classification == rachis::test::DeviceCreateClassification::adapterNotFound ||
+            classification == rachis::test::DeviceCreateClassification::backendUnavailable)
+        {
+            SKIP("No D3D12 hardware adapter is available: " << error.message);
+        }
+        FAIL("Creating the D3D12 hardware device failed: " << error.message);
+    }
 
     constexpr std::uint32_t valueCount = 64;
     constexpr std::uint64_t outputSize = valueCount * sizeof(std::uint32_t);
@@ -531,7 +541,7 @@ TEST_CASE("restored D3D12 pipeline caches stop reading the caller's initial data
     });
     if (!created)
     {
-        SKIP("No D3D12 hardware device is available.");
+        skipWithoutHardwareAdapter(created.error());
     }
     auto device = std::move(*created);
     const auto adapter = rachis::test::requireAdapterInfo(device);

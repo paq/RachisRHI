@@ -81,9 +81,9 @@ namespace
         auto adapters = rachis::enumerateAdapters();
         if (!adapters)
         {
-            INFO(adapters.error().message);
-            return std::nullopt;
+            UNSCOPED_INFO(adapters.error().message);
         }
+        REQUIRE(adapters.has_value());
         for (const auto& adapter : *adapters)
         {
             auto created = rachis::createDevice(rachis::DeviceDesc{
@@ -96,13 +96,14 @@ namespace
                 .enableDred = true,
                 .diagnosticCallback = &printDiagnostic,
             });
-            if (created)
+            if (!created)
             {
-                const auto capabilities = created->capabilities();
-                if (capabilities.has_value() && capabilities.value().*capability)
-                {
-                    return SelectedDevice{std::move(*created), adapter.name};
-                }
+                UNSCOPED_INFO(adapter.name << ": " << created.error().message);
+            }
+            REQUIRE(created.has_value());
+            if (rachis::test::requireCapabilities(*created).*capability)
+            {
+                return SelectedDevice{std::move(*created), adapter.name};
             }
         }
         return std::nullopt;

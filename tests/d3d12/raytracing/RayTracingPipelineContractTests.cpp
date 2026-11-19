@@ -53,6 +53,17 @@ namespace
         static_cast<void>(std::fputc('\n', stderr));
     }
 
+    void skipWithoutHardwareAdapter(const rachis::Error& error)
+    {
+        const auto classification = rachis::test::classifyDeviceCreateError(error.code);
+        if (classification == rachis::test::DeviceCreateClassification::adapterNotFound ||
+            classification == rachis::test::DeviceCreateClassification::backendUnavailable)
+        {
+            SKIP("No D3D12 hardware adapter is available: " << error.message);
+        }
+        FAIL("Creating the D3D12 hardware device failed: " << error.message);
+    }
+
     class ForceLegacyBarriers final
     {
     public:
@@ -738,7 +749,7 @@ TEST_CASE("ray-generation dispatch retains its complete direct and indirect depe
     });
     if (!created)
     {
-        SKIP("No D3D12 hardware device is available.");
+        skipWithoutHardwareAdapter(created.error());
     }
     auto device = std::move(*created);
     const auto limits = rachis::test::requireCapabilities(device).rayTracingLimits;
@@ -1230,7 +1241,7 @@ TEST_CASE("indirect ray dispatch reads compute-written arguments in every indire
     });
     if (!created)
     {
-        SKIP("No D3D12 hardware device is available.");
+        skipWithoutHardwareAdapter(created.error());
     }
     auto device = std::move(*created);
     const auto capabilities = rachis::test::requireCapabilities(device);
@@ -1583,7 +1594,7 @@ TEST_CASE("shader-record constants reject shared global constant registers of ev
     });
     if (!created)
     {
-        SKIP("No D3D12 hardware device is available.");
+        skipWithoutHardwareAdapter(created.error());
     }
     auto device = std::move(*created);
     if (!rachis::test::requireCapabilities(device).rayTracing)
@@ -1785,7 +1796,7 @@ TEST_CASE("hit groups sharing a shader across shader-record constant layouts rea
     });
     if (!created)
     {
-        SKIP("No D3D12 hardware device is available.");
+        skipWithoutHardwareAdapter(created.error());
     }
     auto device = std::move(*created);
     requireSharedHitShadersUseTheirGroupLayouts(device);
@@ -1815,7 +1826,7 @@ TEST_CASE("a record-free hit group does not inherit the record layout of a group
     });
     if (!created)
     {
-        SKIP("No D3D12 hardware device is available.");
+        skipWithoutHardwareAdapter(created.error());
     }
     auto device = std::move(*created);
     requireRecordFreeGroupHidesSharedShaderRecord(device);

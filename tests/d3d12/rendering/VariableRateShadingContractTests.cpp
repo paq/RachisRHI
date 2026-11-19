@@ -27,6 +27,17 @@ namespace
         static_cast<void>(std::fputc('\n', stderr));
     }
 
+    void skipWithoutHardwareAdapter(const rachis::Error& error)
+    {
+        const auto classification = rachis::test::classifyDeviceCreateError(error.code);
+        if (classification == rachis::test::DeviceCreateClassification::adapterNotFound ||
+            classification == rachis::test::DeviceCreateClassification::backendUnavailable)
+        {
+            SKIP("No D3D12 hardware adapter is available: " << error.message);
+        }
+        FAIL("Creating the D3D12 hardware device failed: " << error.message);
+    }
+
     [[nodiscard]] std::vector<std::byte> loadShader(const char* path)
     {
         std::ifstream stream(path, std::ios::binary | std::ios::ate);
@@ -194,7 +205,7 @@ TEST_CASE("Tier 2 primitive and image rates reduce measured fragment invocations
     });
     if (!created)
     {
-        SKIP("No hardware D3D12 device is available.");
+        skipWithoutHardwareAdapter(created.error());
     }
     auto device = std::move(*created);
     const auto capabilities = *device.capabilities();
@@ -455,7 +466,7 @@ TEST_CASE("coarse per-draw shading reduces measured fragment invocations",
     });
     if (!created)
     {
-        SKIP("No hardware D3D12 device is available.");
+        skipWithoutHardwareAdapter(created.error());
     }
     auto device = std::move(*created);
     if (!rachis::test::requireCapabilities(device).variableRateShading)
