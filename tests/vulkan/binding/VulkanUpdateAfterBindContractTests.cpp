@@ -368,6 +368,48 @@ namespace
         CHECK(diagnostics.corruptions == 0);
     }
 
+    [[nodiscard]] bool largeArraySupported(rachis::Device& device, rachis::BindingFlag arrayFlags)
+    {
+        const auto capabilities = rachis::test::requireCapabilities(device);
+        if (capabilities.limits.maxBindingPoolResourceDescriptors < 3 * inputCount + 4)
+        {
+            return false;
+        }
+        const std::array entries{
+            rachis::BindingLayoutEntry{0, rachis::BindingType::storageBuffer, rachis::ShaderStage::compute, 1},
+            rachis::BindingLayoutEntry{
+                1, rachis::BindingType::readOnlyStorageBuffer, rachis::ShaderStage::compute, inputCount, arrayFlags},
+        };
+        auto layout = device.createBindingLayout({.entries = entries});
+        if (!layout)
+        {
+            return false;
+        }
+        const std::array layouts{*layout};
+        const std::array ranges{rachis::PushConstantRange{rachis::ShaderStage::compute, 0, sizeof(Selection)}};
+        auto pipelineLayout = device.createPipelineLayout({.bindingLayouts = layouts, .pushConstantRanges = ranges});
+        const bool supported = pipelineLayout.has_value();
+        if (pipelineLayout)
+        {
+            REQUIRE(device.destroyPipelineLayout(*pipelineLayout).has_value());
+        }
+        REQUIRE(device.destroyBindingLayout(*layout).has_value());
+        return supported;
+    }
+
+    [[nodiscard]] bool skipWithoutLargeArray(rachis::Device& device, rachis::BindingFlag arrayFlags)
+    {
+        return rachis::test::skipUnlessReferenceDesktopAdvertises(
+            largeArraySupported(device, arrayFlags),
+            "descriptor limits for a 100,000-element storage-buffer array and a pool three times that size");
+    }
+
+    [[nodiscard]] bool skipWithoutUpdateAfterBind(rachis::Device& device)
+    {
+        return rachis::test::skipUnlessReferenceDesktopAdvertises(
+            rachis::test::requireCapabilities(device).updateAfterBindBindingArrays, "updateAfterBindBindingArrays");
+    }
+
     [[nodiscard]] std::uint64_t allocationCount(const rachis::Device& device)
     {
         const auto budgets = device.queryMemoryBudgets();
@@ -392,12 +434,14 @@ TEST_CASE("Vulkan binding set updates republish a large array in full on every u
         return;
     }
     auto device = std::move(*created);
+    if (skipWithoutLargeArray(device, rachis::BindingFlag::partiallyBound))
+    {
+        return;
+    }
     LargeArrayFixture fixture(device, rachis::BindingFlag::partiallyBound);
 
     const std::array firstSelections{Selection{.element = 0, .slot = 0}};
     auto first = fixture.record(firstSelections);
-    auto firstSubmitted = device.submit(std::move(first));
-    REQUIRE(firstSubmitted.has_value());
 
     const auto beforeInFlight = device.bindingUpdateStatistics();
     REQUIRE(update(device, fixture.set(), 1, 1, slice(fixture.values(), 2)).has_value());
@@ -405,6 +449,8 @@ TEST_CASE("Vulkan binding set updates republish a large array in full on every u
     CHECK(inFlight.prepared == 1);
     CHECK(inFlight.tablePublishes == 1);
     CHECK(inFlight.published == inputCount + 1);
+    auto firstSubmitted = device.submit(std::move(first));
+    REQUIRE(firstSubmitted.has_value());
 
     const std::array secondSelections{Selection{.element = 1, .slot = 1}};
     auto second = fixture.record(secondSelections);
@@ -437,20 +483,15 @@ TEST_CASE("Vulkan update-after-bind entries of a large array change in place whi
         return;
     }
     auto device = std::move(*created);
-#ifdef _WIN32
-    REQUIRE(rachis::test::requireCapabilities(device).updateAfterBindBindingArrays);
-#else
-    if (!rachis::test::requireCapabilities(device).updateAfterBindBindingArrays)
+    constexpr auto arrayFlags = rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind;
+    if (skipWithoutUpdateAfterBind(device) || skipWithoutLargeArray(device, arrayFlags))
     {
-        SKIP("The Vulkan device lacks the update-after-bind descriptor-indexing features.");
+        return;
     }
-#endif
-    LargeArrayFixture fixture(device, rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind);
+    LargeArrayFixture fixture(device, arrayFlags);
 
     const std::array firstSelections{Selection{.element = 0, .slot = 0}};
     auto first = fixture.record(firstSelections);
-    auto firstSubmitted = device.submit(std::move(first));
-    REQUIRE(firstSubmitted.has_value());
     const std::array secondSelections{Selection{.element = 1, .slot = 1}};
     auto second = fixture.record(secondSelections);
 
@@ -463,6 +504,8 @@ TEST_CASE("Vulkan update-after-bind entries of a large array change in place whi
 
     const std::array thirdSelections{Selection{.element = 1, .slot = 2}};
     auto third = fixture.record(thirdSelections);
+    auto firstSubmitted = device.submit(std::move(first));
+    REQUIRE(firstSubmitted.has_value());
     auto secondSubmitted = device.submit(std::move(second));
     REQUIRE(secondSubmitted.has_value());
     auto thirdSubmitted = device.submit(std::move(third));
@@ -516,15 +559,12 @@ TEST_CASE("Vulkan update-after-bind elements written in place stay alive for wor
         return;
     }
     auto device = std::move(*created);
-#ifdef _WIN32
-    REQUIRE(rachis::test::requireCapabilities(device).updateAfterBindBindingArrays);
-#else
-    if (!rachis::test::requireCapabilities(device).updateAfterBindBindingArrays)
+    constexpr auto arrayFlags = rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind;
+    if (skipWithoutUpdateAfterBind(device) || skipWithoutLargeArray(device, arrayFlags))
     {
-        SKIP("The Vulkan device lacks the update-after-bind descriptor-indexing features.");
+        return;
     }
-#endif
-    LargeArrayFixture fixture(device, rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind);
+    LargeArrayFixture fixture(device, arrayFlags);
     const auto replacement = fixture.createValueBuffer(replacementValues, "Vulkan update-after-bind replacement");
 
     const std::array selections{Selection{.element = 1, .slot = 1}};
@@ -559,15 +599,12 @@ TEST_CASE("Vulkan unretained command pools do not keep update-after-bind element
         return;
     }
     auto device = std::move(*created);
-#ifdef _WIN32
-    REQUIRE(rachis::test::requireCapabilities(device).updateAfterBindBindingArrays);
-#else
-    if (!rachis::test::requireCapabilities(device).updateAfterBindBindingArrays)
+    constexpr auto arrayFlags = rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind;
+    if (skipWithoutUpdateAfterBind(device) || skipWithoutLargeArray(device, arrayFlags))
     {
-        SKIP("The Vulkan device lacks the update-after-bind descriptor-indexing features.");
+        return;
     }
-#endif
-    LargeArrayFixture fixture(device, rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind);
+    LargeArrayFixture fixture(device, arrayFlags);
     const auto replacement = fixture.createValueBuffer(replacementValues, "Vulkan update-after-bind replacement");
     auto pool = device.createCommandPool({
         .queueType = rachis::QueueType::compute,
