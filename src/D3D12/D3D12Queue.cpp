@@ -27,6 +27,7 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <shared_mutex>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -1256,13 +1257,13 @@ namespace rachis::d3d12
                 std::vector<std::shared_ptr<ResidencyRecord>> residencies;
                 for (const auto& reference : entry.inPlaceResidencies)
                 {
-                    reference.log->visitSince(reference.sequence,
-                                              [&](const std::shared_ptr<ResidencyRecord>& residency) {
-                                                  if (residency != nullptr)
-                                                  {
-                                                      residencies.push_back(residency);
-                                                  }
-                                              });
+                    reference.publication->residencies.visitSince(
+                        reference.sequence, [&](const std::shared_ptr<ResidencyRecord>& residency) {
+                            if (residency != nullptr)
+                            {
+                                residencies.push_back(residency);
+                            }
+                        });
                 }
                 return appendResidencyLeases(staged, residencies);
             }
@@ -2231,9 +2232,26 @@ namespace rachis::d3d12
             });
         }
 
+        std::vector<std::shared_lock<std::shared_mutex>> publicationLocks;
         std::vector<std::vector<ResidencyLease>> inPlaceLeases;
         try
         {
+            std::vector<const InPlaceDescriptorPublication*> publications;
+            for (const auto* native : nativeCommands)
+            {
+                for (const auto& reference : native->entry()->inPlaceResidencies)
+                {
+                    publications.push_back(reference.publication.get());
+                }
+            }
+            std::ranges::sort(publications);
+            const auto duplicates = std::ranges::unique(publications);
+            publications.erase(duplicates.begin(), duplicates.end());
+            publicationLocks.reserve(publications.size());
+            for (const auto* publication : publications)
+            {
+                publicationLocks.emplace_back(publication->mutex);
+            }
             inPlaceLeases.resize(nativeCommands.size());
         }
         catch (const std::bad_alloc&)
@@ -2266,6 +2284,14 @@ namespace rachis::d3d12
             if (!validInPlace)
             {
                 return std::unexpected(std::move(validInPlace.error()));
+            }
+        }
+        if (!publicationLocks.empty())
+        {
+            if (const auto observer = test::inPlaceSubmissionObserver().load(std::memory_order_acquire);
+                observer != nullptr)
+            {
+                observer();
             }
         }
 
@@ -2907,7 +2933,7 @@ namespace rachis::d3d12
             for (const auto& reference : inPlaceResidencies)
             {
                 const bool repeated = !entry.inPlaceResidencies.empty() &&
-                                      entry.inPlaceResidencies.back().log == reference.log &&
+                                      entry.inPlaceResidencies.back().publication == reference.publication &&
                                       entry.inPlaceResidencies.back().sequence <= reference.sequence;
                 if (!repeated)
                 {

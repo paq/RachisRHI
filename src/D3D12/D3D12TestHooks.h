@@ -47,6 +47,20 @@ namespace rachis::d3d12::test
         return s_value;
     }
 
+    using InPlaceSubmissionObserver = void (*)() noexcept;
+
+    [[nodiscard]] inline std::atomic<InPlaceSubmissionObserver>& inPlaceSubmissionObserver() noexcept
+    {
+        static std::atomic<InPlaceSubmissionObserver> s_value = nullptr;
+        return s_value;
+    }
+
+    [[nodiscard]] inline std::atomic_uint64_t& bindingSetVersionCopyCount() noexcept
+    {
+        static std::atomic_uint64_t s_value = 0;
+        return s_value;
+    }
+
     [[nodiscard]] inline std::atomic_bool& forceLegacyBarriers() noexcept
     {
         static std::atomic_bool s_value = false;

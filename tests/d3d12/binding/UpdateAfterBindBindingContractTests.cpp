@@ -1,15 +1,23 @@
+#include "D3D12/D3D12TestHooks.h"
 #include "Rachis/Device.h"
 #include "RhiTestSupport.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include <d3d12.h>
+#include <dxgi1_6.h>
+#include <wrl/client.h>
 
+#include <Windows.h>
 #include <algorithm>
 #include <array>
+#include <bit>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <future>
 #include <optional>
 #include <span>
 #include <string>
@@ -412,6 +420,63 @@ namespace
         CHECK_FALSE(entry->logicalAlive);
     }
 
+    class QueueBlocker final
+    {
+    public:
+        explicit QueueBlocker(rachis::Device& device)
+        {
+            REQUIRE(rachis::test::requireCapabilities(device).sharedTimelineHandles);
+            Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
+            REQUIRE(SUCCEEDED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory))));
+            Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
+            REQUIRE(SUCCEEDED(factory->EnumWarpAdapter(IID_PPV_ARGS(&adapter))));
+            Microsoft::WRL::ComPtr<ID3D12Device> native;
+            REQUIRE(SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&native))));
+            REQUIRE(SUCCEEDED(native->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&fence_))));
+            REQUIRE(SUCCEEDED(native->CreateSharedHandle(fence_.Get(), nullptr, GENERIC_ALL, nullptr, &handle_)));
+            const rachis::SharedTimelinePointView point{
+                .handle =
+                    rachis::SharedHandleView{
+                        .type = rachis::SharedHandleType::windowsNt,
+                        .value = std::bit_cast<std::uintptr_t>(handle_),
+                    },
+                .value = 1,
+            };
+            auto waited = device.enqueueSharedTimelineWait(rachis::QueueType::compute, point);
+            if (!waited)
+            {
+                UNSCOPED_INFO(waited.error().message);
+            }
+            REQUIRE(waited.has_value());
+        }
+
+        ~QueueBlocker()
+        {
+            release();
+            if (handle_ != nullptr)
+            {
+                static_cast<void>(CloseHandle(handle_));
+            }
+        }
+
+        QueueBlocker(const QueueBlocker&) = delete;
+        QueueBlocker& operator=(const QueueBlocker&) = delete;
+        QueueBlocker(QueueBlocker&&) = delete;
+        QueueBlocker& operator=(QueueBlocker&&) = delete;
+
+        void release() noexcept
+        {
+            if (fence_ != nullptr && fence_->GetCompletedValue() < 1)
+            {
+                static_cast<void>(fence_->Signal(1));
+            }
+        }
+
+    private:
+        Microsoft::WRL::ComPtr<ID3D12Fence> fence_;
+        HANDLE handle_ = nullptr;
+    };
+
 } // namespace
 
 TEST_CASE("binding set updates republish a large array in full while work in flight may read the set",
@@ -419,9 +484,11 @@ TEST_CASE("binding set updates republish a large array in full while work in fli
 {
     auto device = createWarpDevice();
     LargeArrayFixture fixture(device, rachis::BindingFlag::partiallyBound);
+    QueueBlocker blocker(device);
 
-    const std::array firstSelections{Selection{.element = 0, .slot = 0}};
-    auto first = fixture.record(firstSelections);
+    const std::array firstSelections{Selection{.element = 1, .slot = 0}};
+    auto firstSubmitted = device.submit(fixture.record(firstSelections));
+    REQUIRE(firstSubmitted.has_value());
 
     const auto beforeInFlight = device.bindingUpdateStatistics();
     REQUIRE(update(device, fixture.set(), 1, 1, slice(fixture.values(), 2)).has_value());
@@ -429,18 +496,17 @@ TEST_CASE("binding set updates republish a large array in full while work in fli
     CHECK(inFlight.prepared == 1);
     CHECK(inFlight.tablePublishes == 1);
     CHECK(inFlight.published == inputCount + 1);
-    auto firstSubmitted = device.submit(std::move(first));
-    REQUIRE(firstSubmitted.has_value());
 
     const std::array secondSelections{Selection{.element = 1, .slot = 1}};
     auto second = fixture.record(secondSelections);
     fixture.recordReadback(second);
     auto secondSubmitted = device.submit(std::move(second));
     REQUIRE(secondSubmitted.has_value());
+    blocker.release();
     REQUIRE(device.wait(*secondSubmitted).has_value());
     REQUIRE(device.wait(*firstSubmitted).has_value());
     device.collectGarbage();
-    CHECK(fixture.result(0) == sliceValues[0]);
+    CHECK(fixture.result(0) == sliceValues[1]);
     CHECK(fixture.result(sizeof(std::uint32_t)) == sliceValues[2]);
 
     const auto beforeIdle = device.bindingUpdateStatistics();
@@ -459,22 +525,24 @@ TEST_CASE("update-after-bind entries of a large array change in place while work
     auto device = createWarpDevice();
     REQUIRE(rachis::test::requireCapabilities(device).updateAfterBindBindingArrays);
     LargeArrayFixture fixture(device, rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind);
+    QueueBlocker blocker(device);
 
     const std::array firstSelections{Selection{.element = 0, .slot = 0}};
-    auto first = fixture.record(firstSelections);
-    auto firstSubmitted = device.submit(std::move(first));
+    auto firstSubmitted = device.submit(fixture.record(firstSelections));
     REQUIRE(firstSubmitted.has_value());
     const std::array secondSelections{Selection{.element = 1, .slot = 1}};
     auto second = fixture.record(secondSelections);
 
+    const auto copiesBefore = rachis::d3d12::test::bindingSetVersionCopyCount().load(std::memory_order_relaxed);
     const auto beforeInPlace = device.bindingUpdateStatistics();
     REQUIRE(update(device, fixture.set(), 1, 1, slice(fixture.values(), 2)).has_value());
     const auto inPlace = resourceDelta(beforeInPlace, device.bindingUpdateStatistics());
     CHECK(inPlace.prepared == 1);
     CHECK(inPlace.tablePublishes == 1);
     CHECK(inPlace.published == 1);
+    CHECK(rachis::d3d12::test::bindingSetVersionCopyCount().load(std::memory_order_relaxed) == copiesBefore);
 
-    const std::array thirdSelections{Selection{.element = 1, .slot = 2}};
+    const std::array thirdSelections{Selection{.element = 1, .slot = 2}, Selection{.element = 2, .slot = 3}};
     auto third = fixture.record(thirdSelections);
     auto secondSubmitted = device.submit(std::move(second));
     REQUIRE(secondSubmitted.has_value());
@@ -490,8 +558,7 @@ TEST_CASE("update-after-bind entries of a large array change in place while work
     CHECK(versioned.prepared == 1);
     CHECK(versioned.tablePublishes == 1);
     CHECK(versioned.published == inputCount + 1);
-    auto thirdSubmitted = device.submit(std::move(third));
-    REQUIRE(thirdSubmitted.has_value());
+    CHECK(rachis::d3d12::test::bindingSetVersionCopyCount().load(std::memory_order_relaxed) == copiesBefore + 1);
 
     const auto beforeNewVersion = device.bindingUpdateStatistics();
     REQUIRE(update(device, fixture.set(), 1, 2, slice(fixture.values(), 3)).has_value());
@@ -499,12 +566,15 @@ TEST_CASE("update-after-bind entries of a large array change in place while work
     CHECK(newVersion.prepared == 1);
     CHECK(newVersion.tablePublishes == 1);
     CHECK(newVersion.published == 1);
+    auto thirdSubmitted = device.submit(std::move(third));
+    REQUIRE(thirdSubmitted.has_value());
 
     const std::array fourthSelections{Selection{.element = 2, .slot = 0}, Selection{.element = 1, .slot = 1}};
     auto fourth = fixture.record(fourthSelections);
     fixture.recordReadback(fourth);
     auto fourthSubmitted = device.submit(std::move(fourth));
     REQUIRE(fourthSubmitted.has_value());
+    blocker.release();
     for (const auto point : {*firstSubmitted, *secondSubmitted, *thirdSubmitted, *fourthSubmitted})
     {
         REQUIRE(device.wait(point).has_value());
@@ -513,8 +583,45 @@ TEST_CASE("update-after-bind entries of a large array change in place while work
     CHECK(fixture.result(0) == sliceValues[0]);
     CHECK(fixture.result(sizeof(std::uint32_t)) == sliceValues[2]);
     CHECK(fixture.result(2 * sizeof(std::uint32_t)) == sliceValues[2]);
+    CHECK(fixture.result(3 * sizeof(std::uint32_t)) == 0);
     CHECK(fixture.result(resultRangeSize) == sliceValues[3]);
     CHECK(fixture.result(resultRangeSize + sizeof(std::uint32_t)) == sliceValues[2]);
+
+    checkCleanDiagnostics(device);
+}
+
+TEST_CASE("update-after-bind writes in place share one binding set version across the work that binds it",
+          "[size:medium][rhi][binding][compute][warp]")
+{
+    auto device = createWarpDevice();
+    REQUIRE(rachis::test::requireCapabilities(device).updateAfterBindBindingArrays);
+    LargeArrayFixture fixture(device, rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind);
+
+    constexpr std::uint32_t editCount = 16;
+    const auto copiesBefore = rachis::d3d12::test::bindingSetVersionCopyCount().load(std::memory_order_relaxed);
+    const auto before = device.bindingUpdateStatistics();
+    std::vector<rachis::CommandBuffer> commands;
+    for (std::uint32_t edit = 0; edit < editCount; ++edit)
+    {
+        const std::array selections{Selection{.element = 1, .slot = 0}};
+        commands.push_back(fixture.record(selections));
+        REQUIRE(
+            update(device, fixture.set(), 1, 2 + edit, slice(fixture.values(), edit % sliceValues.size())).has_value());
+    }
+    const auto delta = resourceDelta(before, device.bindingUpdateStatistics());
+    CHECK(delta.prepared == editCount);
+    CHECK(delta.tablePublishes == editCount);
+    CHECK(delta.published == editCount);
+    CHECK(rachis::d3d12::test::bindingSetVersionCopyCount().load(std::memory_order_relaxed) == copiesBefore);
+
+    auto last = std::move(commands.back());
+    commands.pop_back();
+    fixture.recordReadback(last);
+    commands.clear();
+    auto submitted = device.submit(std::move(last));
+    REQUIRE(submitted.has_value());
+    REQUIRE(device.wait(*submitted).has_value());
+    CHECK(fixture.result(0) == sliceValues[1]);
 
     checkCleanDiagnostics(device);
 }
@@ -547,6 +654,34 @@ TEST_CASE("an update-after-bind element written in place stays alive for work th
     CHECK_FALSE(memoryEntry(device, replacementLabel).has_value());
     CHECK_FALSE(memoryEntry(device, valuesLabel).has_value());
     CHECK(fixture.result(sizeof(std::uint32_t)) == replacementValues[0]);
+
+    checkCleanDiagnostics(device);
+}
+
+TEST_CASE("an update-after-bind element written in place stays alive for submitted work after it is replaced",
+          "[size:medium][rhi][binding][compute][warp]")
+{
+    auto device = createWarpDevice();
+    REQUIRE(rachis::test::requireCapabilities(device).updateAfterBindBindingArrays);
+    LargeArrayFixture fixture(device, rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind);
+    const auto replacement = fixture.createValueBuffer(replacementValues, replacementLabel);
+    QueueBlocker blocker(device);
+
+    const std::array selections{Selection{.element = 0, .slot = 0}};
+    auto command = fixture.record(selections);
+    fixture.recordReadback(command);
+    REQUIRE(update(device, fixture.set(), 1, 2, slice(replacement, 0)).has_value());
+    auto submitted = device.submit(std::move(command));
+    REQUIRE(submitted.has_value());
+
+    REQUIRE(device.destroyBuffer(replacement).has_value());
+    REQUIRE(update(device, fixture.set(), 1, 2, slice(fixture.values(), 3)).has_value());
+    checkRetainedAfterDestruction(device, replacementLabel);
+
+    blocker.release();
+    REQUIRE(device.wait(*submitted).has_value());
+    CHECK_FALSE(memoryEntry(device, replacementLabel).has_value());
+    CHECK(fixture.result(0) == sliceValues[0]);
 
     checkCleanDiagnostics(device);
 }
@@ -631,6 +766,66 @@ TEST_CASE("a refused submission keeps no residency of update-after-bind elements
     checkCleanDiagnostics(device);
 }
 
+namespace
+{
+
+    struct ConcurrentInPlaceUpdate final
+    {
+        rachis::Device* device = nullptr;
+        rachis::BindingSetHandle set = {};
+        rachis::BufferHandle buffer = {};
+        std::future<rachis::Status> result;
+        bool finishedDuringSubmission = false;
+    };
+
+    ConcurrentInPlaceUpdate* g_concurrentUpdate = nullptr;
+
+    void startUpdateDuringSubmission() noexcept
+    {
+        auto& state = *g_concurrentUpdate;
+        state.result = std::async(std::launch::async,
+                                  [&state] { return update(*state.device, state.set, 1, 1, slice(state.buffer, 0)); });
+        state.finishedDuringSubmission =
+            state.result.wait_for(std::chrono::milliseconds(200)) == std::future_status::ready;
+    }
+
+} // namespace
+
+TEST_CASE("an update-after-bind write in place waits for a submission that is reading the set's residency",
+          "[size:medium][rhi][binding][compute][residency][warp]")
+{
+    auto device = createWarpDevice();
+    REQUIRE(rachis::test::requireCapabilities(device).updateAfterBindBindingArrays);
+    REQUIRE(rachis::test::requireCapabilities(device).manualResidency);
+    LargeArrayFixture fixture(device, rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind);
+    const auto evictedBuffer = fixture.createValueBuffer(
+        replacementValues, "Evicted update-after-bind element", rachis::ResourceAllocationFlag::manualResidency);
+    const std::array evictedBuffers{evictedBuffer};
+    REQUIRE(device.evict({.buffers = evictedBuffers}).has_value());
+
+    const std::array selections{Selection{.element = 0, .slot = 0}};
+    auto command = fixture.record(selections);
+    fixture.recordReadback(command);
+
+    ConcurrentInPlaceUpdate concurrent{.device = &device, .set = fixture.set(), .buffer = evictedBuffer};
+    g_concurrentUpdate = &concurrent;
+    rachis::d3d12::test::inPlaceSubmissionObserver().store(&startUpdateDuringSubmission, std::memory_order_release);
+    auto submitted = device.submit(std::move(command));
+    rachis::d3d12::test::inPlaceSubmissionObserver().store(nullptr, std::memory_order_release);
+    g_concurrentUpdate = nullptr;
+    REQUIRE(submitted.has_value());
+    REQUIRE(concurrent.result.valid());
+    CHECK(concurrent.result.get().has_value());
+    CHECK_FALSE(concurrent.finishedDuringSubmission);
+
+    REQUIRE(device.wait(*submitted).has_value());
+    CHECK(fixture.result(0) == sliceValues[0]);
+
+    fixture.destroySet();
+    REQUIRE(device.destroyBuffer(evictedBuffer).has_value());
+    checkCleanDiagnostics(device);
+}
+
 TEST_CASE("unretained command pools do not keep update-after-bind elements written in place alive",
           "[size:medium][rhi][binding][compute][warp]")
 {
@@ -660,7 +855,8 @@ TEST_CASE("unretained command pools do not keep update-after-bind elements writt
     REQUIRE(device.destroyCommandPool(*pool).has_value());
     checkCleanDiagnostics(device);
 }
-TEST_CASE("update-after-bind writes in place cannot name a sparse buffer on Direct3D 12",
+
+TEST_CASE("update-after-bind writes cannot name a sparse buffer on Direct3D 12",
           "[size:medium][rhi][binding][sparse][warp]")
 {
     auto device = createWarpDevice();
@@ -683,6 +879,14 @@ TEST_CASE("update-after-bind writes in place cannot name a sparse buffer on Dire
     const auto rejected = update(device, fixture.set(), 1, 1, slice(*sparse, 0));
     REQUIRE_FALSE(rejected.has_value());
     CHECK(rejected.error().code == rachis::ErrorCode::unsupported);
+
+    const std::array mixed{
+        rachis::BindingWrite{0, 0, rachis::BufferBinding{fixture.results(), 0, resultRangeSize, sizeof(std::uint32_t)}},
+        rachis::BindingWrite{1, 1, slice(*sparse, 0)},
+    };
+    const auto mixedRejected = device.updateBindingSet(fixture.set(), mixed);
+    REQUIRE_FALSE(mixedRejected.has_value());
+    CHECK(mixedRejected.error().code == rachis::ErrorCode::unsupported);
     const auto unchanged = resourceDelta(before, device.bindingUpdateStatistics());
     CHECK(unchanged.published == 0);
 

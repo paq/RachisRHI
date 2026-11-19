@@ -223,7 +223,7 @@ namespace rachis::d3d12
             std::size_t inPlaceResidencyCount = 0;
             for (const auto& set : prepared->activeSets())
             {
-                if (set.inPlaceResidencies.log != nullptr)
+                if (set.inPlaceResidencies.publication != nullptr)
                 {
                     inPlaceResidencies[inPlaceResidencyCount++] = set.inPlaceResidencies;
                 }

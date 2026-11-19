@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <span>
 #include <vector>
 
@@ -61,9 +62,15 @@ namespace rachis::d3d12
 
     using InPlaceResidencyLog = detail::InPlaceBindingRetention<std::shared_ptr<ResidencyRecord>>;
 
+    struct InPlaceDescriptorPublication final
+    {
+        mutable std::shared_mutex mutex;
+        InPlaceResidencyLog residencies;
+    };
+
     struct InPlaceResidencyReference final
     {
-        std::shared_ptr<const InPlaceResidencyLog> log;
+        std::shared_ptr<const InPlaceDescriptorPublication> publication;
         std::uint64_t sequence = 0;
     };
 

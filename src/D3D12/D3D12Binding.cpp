@@ -2,6 +2,7 @@
 
 #include "Common/HandleTable.h"
 #include "D3D12/D3D12RuntimePolicies.h"
+#include "D3D12/D3D12TestHooks.h"
 #include "Internal/PortableValidation.h"
 
 #include <wrl/client.h>
@@ -16,7 +17,9 @@
 #include <mutex>
 #include <optional>
 #include <ranges>
+#include <shared_mutex>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -102,13 +105,46 @@ namespace rachis::d3d12
             std::vector<std::shared_ptr<void>> samplerOwners;
         };
 
-        using InPlaceDescriptorSources = detail::InPlaceBindingRetention<ResourceDescriptorSource>;
+        struct ReplacedDescriptorSources final
+        {
+            ReplacedDescriptorSources() = default;
+            ReplacedDescriptorSources(const ReplacedDescriptorSources&) = delete;
+            ReplacedDescriptorSources& operator=(const ReplacedDescriptorSources&) = delete;
+            ReplacedDescriptorSources(ReplacedDescriptorSources&&) = delete;
+            ReplacedDescriptorSources& operator=(ReplacedDescriptorSources&&) = delete;
+
+            ~ReplacedDescriptorSources()
+            {
+                auto pending = std::move(newer);
+                while (pending != nullptr && pending.use_count() == 1)
+                {
+                    auto following = std::move(pending->newer);
+                    pending.reset();
+                    pending = std::move(following);
+                }
+            }
+
+            std::vector<ResourceDescriptorSource> sources;
+            std::shared_ptr<ReplacedDescriptorSources> newer;
+        };
 
         struct InPlaceDescriptorRetention final
         {
-            InPlaceDescriptorSources sources;
-            std::shared_ptr<InPlaceResidencyLog> residencies = std::make_shared<InPlaceResidencyLog>();
+            std::shared_ptr<InPlaceDescriptorPublication> publication =
+                std::make_shared<InPlaceDescriptorPublication>();
+            std::shared_ptr<ReplacedDescriptorSources> replaced = std::make_shared<ReplacedDescriptorSources>();
+            std::uint64_t writeGeneration = 0;
         };
+
+        using DescriptorResidencies = std::vector<std::shared_ptr<ResidencyRecord>>;
+
+        struct DescriptorResidencyUse final
+        {
+            std::shared_ptr<ResidencyRecord> record;
+            std::uint32_t count = 0;
+        };
+
+        using DescriptorResidencyUses = std::unordered_map<const ResidencyRecord*, DescriptorResidencyUse>;
 
         struct BindingSetRecord final
         {
@@ -118,18 +154,19 @@ namespace rachis::d3d12
             BindingDescriptorCounts descriptorCounts{};
             std::shared_ptr<GpuDescriptorLease> resources;
             std::shared_ptr<InPlaceDescriptorRetention> inPlace;
-            std::uint64_t inPlaceResidencySequence = 0;
             std::shared_ptr<SharedSamplerTable> samplers;
 
             std::vector<std::shared_ptr<CpuDescriptorLease>> resourceStagingDescriptors;
             std::vector<std::shared_ptr<CpuDescriptorLease>> samplerStagingDescriptors;
             std::vector<ResourceDescriptorSource> resourceSources;
             std::vector<SamplerDescriptorSourceVariant> samplerSources;
-            std::vector<std::shared_ptr<ResidencyRecord>> residencies;
+            std::shared_ptr<const DescriptorResidencies> residencies;
+            DescriptorResidencyUses residencyUses;
             std::array<std::uint32_t, maxDynamicBufferOffsetsPerBindingSet> dynamicResourceIndices{};
             std::uint32_t dynamicResourceCount = 0;
             std::uint32_t variableDescriptorCount = 0;
             bool hasSpecialResourceCaptures = false;
+            bool hasSamplerFeedback = false;
             std::string label;
         };
 
@@ -1075,45 +1112,45 @@ namespace rachis::d3d12
             SamplerManager& samplers;
         };
 
+        template<typename Source>
+        [[nodiscard]] Result<ResourceDescriptorSource> asResourceDescriptorSource(Result<Source>&& source)
+        {
+            if (!source)
+            {
+                return std::unexpected(std::move(source.error()));
+            }
+            return ResourceDescriptorSource{std::move(*source)};
+        }
+
+        [[nodiscard]] Result<ResourceDescriptorSource> resolveResourceDescriptorSource(
+            const BindingSourceManagers& managers, BindingType type, const BindingResource& resource)
+        {
+            if (isBuffer(type))
+            {
+                return asResourceDescriptorSource(resolveBufferDescriptorSource(managers.resources, type, resource));
+            }
+            if (type == BindingType::sampledTexture || type == BindingType::storageTexture)
+            {
+                return asResourceDescriptorSource(resolveTextureDescriptorSource(managers.views, type, resource));
+            }
+            if (type == BindingType::accelerationStructure)
+            {
+                return asResourceDescriptorSource(
+                    resolveAccelerationStructureDescriptorSource(managers.resources, resource));
+            }
+            return asResourceDescriptorSource(
+                resolveSamplerFeedbackDescriptorSource(managers.resources, type, resource));
+        }
+
         [[nodiscard]] Status storeDescriptorSource(const BindingSourceManagers& managers,
                                                    BindingType type,
                                                    const BindingResource& resource,
                                                    std::uint32_t descriptorOffset,
                                                    BindingSetRecord& record)
         {
-            if (isBuffer(type))
+            if (type != BindingType::sampler)
             {
-                auto source = resolveBufferDescriptorSource(managers.resources, type, resource);
-                if (!source)
-                {
-                    return std::unexpected(std::move(source.error()));
-                }
-                record.resourceSources[descriptorOffset] = std::move(*source);
-                return {};
-            }
-            if (type == BindingType::sampledTexture || type == BindingType::storageTexture)
-            {
-                auto source = resolveTextureDescriptorSource(managers.views, type, resource);
-                if (!source)
-                {
-                    return std::unexpected(std::move(source.error()));
-                }
-                record.resourceSources[descriptorOffset] = std::move(*source);
-                return {};
-            }
-            if (type == BindingType::accelerationStructure)
-            {
-                auto source = resolveAccelerationStructureDescriptorSource(managers.resources, resource);
-                if (!source)
-                {
-                    return std::unexpected(std::move(source.error()));
-                }
-                record.resourceSources[descriptorOffset] = std::move(*source);
-                return {};
-            }
-            if (isSamplerFeedback(type))
-            {
-                auto source = resolveSamplerFeedbackDescriptorSource(managers.resources, type, resource);
+                auto source = resolveResourceDescriptorSource(managers, type, resource);
                 if (!source)
                 {
                     return std::unexpected(std::move(source.error()));
@@ -1423,10 +1460,10 @@ namespace rachis::d3d12
             return {};
         }
 
-        [[nodiscard]] std::vector<std::shared_ptr<ResidencyRecord>> collectUniqueDescriptorResidencies(
+        [[nodiscard]] DescriptorResidencies collectUniqueDescriptorResidencies(
             const std::vector<ResourceDescriptorSource>& sources)
         {
-            std::vector<std::shared_ptr<ResidencyRecord>> residencies;
+            DescriptorResidencies residencies;
             residencies.reserve(sources.size());
             for (const auto& source : sources)
             {
@@ -1434,6 +1471,29 @@ namespace rachis::d3d12
             }
             deduplicateSharedPointers(residencies);
             return residencies;
+        }
+
+        [[nodiscard]] ResidencyRecord* manualResidency(const ResourceDescriptorSource& source) noexcept
+        {
+            const auto* residency = descriptorResidency(source);
+            return residency != nullptr ? residency->get() : nullptr;
+        }
+
+        [[nodiscard]] DescriptorResidencyUses countDescriptorResidencyUses(
+            const std::vector<ResourceDescriptorSource>& sources)
+        {
+            DescriptorResidencyUses uses;
+            for (const auto& source : sources)
+            {
+                const auto* residency = descriptorResidency(source);
+                if (residency != nullptr && *residency != nullptr)
+                {
+                    auto& use = uses[residency->get()];
+                    use.record = *residency;
+                    ++use.count;
+                }
+            }
+            return uses;
         }
 
         struct StagedDescriptorHandles final
@@ -1822,7 +1882,25 @@ namespace rachis::d3d12
                 return std::unexpected(std::move(stagingTablesReady.error()));
             }
 
-            auto residencies = collectUniqueDescriptorResidencies(record.resourceSources);
+            std::shared_ptr<const DescriptorResidencies> residencies;
+            DescriptorResidencyUses residencyUses;
+            try
+            {
+                residencies = std::make_shared<const DescriptorResidencies>(
+                    collectUniqueDescriptorResidencies(record.resourceSources));
+                if (record.inPlace != nullptr)
+                {
+                    residencyUses = countDescriptorResidencyUses(record.resourceSources);
+                }
+            }
+            catch (const std::bad_alloc&)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::outOfMemory,
+                    0,
+                    "Failed to collect the residency of binding set descriptors.",
+                });
+            }
             auto resourceHandles = stageResourceDescriptorHandles(device, resourceStagingHeap, record, preparation);
             if (!resourceHandles)
             {
@@ -1845,7 +1923,12 @@ namespace rachis::d3d12
             indexDynamicBufferSources(record);
             record.hasSpecialResourceCaptures =
                 std::ranges::any_of(record.resourceSources, needsSpecialResourceCapture);
+            record.hasSamplerFeedback =
+                std::ranges::any_of(record.resourceSources, [](const ResourceDescriptorSource& source) {
+                    return std::holds_alternative<SamplerFeedbackDescriptorSource>(source);
+                });
             record.residencies = std::move(residencies);
+            record.residencyUses = std::move(residencyUses);
             return staged;
         }
 
@@ -2227,38 +2310,210 @@ namespace rachis::d3d12
             });
         }
 
-        [[nodiscard]] bool rewritesLiveResourceTable(const BindingSetRecord& current,
-                                                     const StagedBindingSetDescriptors& staged) noexcept
+        [[nodiscard]] Error specialResourceInPlaceWriteError()
         {
-            return current.resources != nullptr && staged.resources.has_value() && !staged.samplers.has_value() &&
-                   current.resources->count() == staged.resources->handles.size();
+            return Error{
+                ErrorCode::unsupported,
+                0,
+                "On Direct3D 12, updateBindingSet cannot write a sparse resource or a swapchain texture to an "
+                "update-after-bind entry; name it in createBindingSet instead.",
+            };
         }
 
-        [[nodiscard]] Status retainInPlaceWrites(BindingSetRecord& record, std::span<const std::uint32_t> indices)
+        [[nodiscard]] Status validateUpdateAfterBindSources(const BindingLayoutRecord& layout,
+                                                            std::span<const BindingWrite> writes,
+                                                            const BindingSetRecord& record)
         {
-            if (record.inPlace == nullptr)
+            for (const auto& write : writes)
             {
-                return {};
+                const auto* entry = findEntry(layout, write.binding);
+                if (entry == nullptr || !hasAny(entry->entry.flags, BindingFlag::updateAfterBind) ||
+                    entry->entry.type == BindingType::sampler)
+                {
+                    continue;
+                }
+                if (needsSpecialResourceCapture(record.resourceSources[entry->descriptorOffset + write.arrayElement]))
+                {
+                    return std::unexpected(specialResourceInPlaceWriteError());
+                }
             }
-            auto& inPlace = *record.inPlace;
-            std::vector<InPlaceDescriptorSources::Write> sources;
-            std::vector<InPlaceResidencyLog::Write> residencies;
+            return {};
+        }
+
+        struct InPlaceWrite final
+        {
+            std::uint32_t offset = 0;
+            ResourceDescriptorSource source;
+            std::shared_ptr<CpuDescriptorLease> staging;
+            D3D12_CPU_DESCRIPTOR_HANDLE handle{};
+        };
+
+        [[nodiscard]] Result<InPlaceWrite> prepareInPlaceWrite(const BindingSourceManagers& managers,
+                                                               ID3D12Device& device,
+                                                               CpuDescriptorPool& stagingHeap,
+                                                               const BindingLayoutRecord& layout,
+                                                               const BindingSetRecord& record,
+                                                               const BindingWrite& write)
+        {
+            const auto* entry = findEntry(layout, write.binding);
+            if (entry == nullptr || write.arrayElement >= entryLogicalCount(*entry, record))
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidArgument,
+                    0,
+                    "A binding write references an unknown binding or out-of-range array element.",
+                });
+            }
+            InPlaceWrite prepared{.offset = entry->descriptorOffset + write.arrayElement};
+            if (std::holds_alternative<std::monostate>(write.resource))
+            {
+                if (!hasAny(entry->entry.flags, BindingFlag::partiallyBound))
+                {
+                    return std::unexpected(Error{
+                        ErrorCode::invalidArgument,
+                        0,
+                        "Only a partially-bound layout entry may be cleared.",
+                    });
+                }
+                prepared.source = NullResourceDescriptorSource{.type = entry->entry.type};
+            }
+            else
+            {
+                auto source = resolveResourceDescriptorSource(managers, entry->entry.type, write.resource);
+                if (!source)
+                {
+                    return std::unexpected(std::move(source.error()));
+                }
+                prepared.source = std::move(*source);
+            }
+            if (needsSpecialResourceCapture(prepared.source))
+            {
+                return std::unexpected(specialResourceInPlaceWriteError());
+            }
+            auto handle = resourceDescriptorHandle(device, stagingHeap, prepared.source, prepared.staging, true);
+            if (!handle)
+            {
+                return std::unexpected(std::move(handle.error()));
+            }
+            prepared.handle = *handle;
+            return prepared;
+        }
+
+        [[nodiscard]] Result<std::vector<InPlaceWrite>> prepareInPlaceWrites(const BindingSourceManagers& managers,
+                                                                             ID3D12Device& device,
+                                                                             CpuDescriptorPool& stagingHeap,
+                                                                             const BindingSetRecord& record,
+                                                                             std::span<const BindingWrite> writes)
+        {
             try
             {
-                sources.reserve(indices.size());
-                for (const auto index : indices)
+                std::vector<InPlaceWrite> prepared;
+                prepared.reserve(writes.size());
+                for (const auto& write : writes)
                 {
-                    const auto& source = record.resourceSources[index];
-                    sources.push_back(InPlaceDescriptorSources::Write{.index = index, .element = source});
-                    const auto* residency = descriptorResidency(source);
-                    const bool manualResidency = residency != nullptr && *residency != nullptr;
-                    if (manualResidency || inPlace.residencies->contains(index))
+                    auto staged = prepareInPlaceWrite(managers, device, stagingHeap, *record.layout, record, write);
+                    if (!staged)
                     {
-                        residencies.push_back(InPlaceResidencyLog::Write{
-                            .index = index,
-                            .element = manualResidency ? *residency : std::shared_ptr<ResidencyRecord>{},
+                        return std::unexpected(std::move(staged.error()));
+                    }
+                    prepared.push_back(std::move(*staged));
+                }
+                std::ranges::sort(prepared, {}, &InPlaceWrite::offset);
+                if (std::ranges::adjacent_find(prepared, {}, &InPlaceWrite::offset) != prepared.end())
+                {
+                    return std::unexpected(Error{
+                        ErrorCode::invalidArgument,
+                        0,
+                        "A binding update cannot write the same descriptor element more than once.",
+                    });
+                }
+                return prepared;
+            }
+            catch (const std::bad_alloc&)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::outOfMemory,
+                    0,
+                    "Failed to prepare update-after-bind descriptor writes.",
+                });
+            }
+        }
+
+        struct StagedInPlaceRetention final
+        {
+            std::shared_ptr<const DescriptorResidencies> residencies;
+            DescriptorResidencyUses residencyUses;
+            std::vector<InPlaceResidencyLog::Write> residencyWrites;
+            std::shared_ptr<ReplacedDescriptorSources> nextReplaced;
+        };
+
+        [[nodiscard]] bool changesDescriptorResidencies(const BindingSetRecord& record,
+                                                        std::span<const InPlaceWrite> writes) noexcept
+        {
+            return std::ranges::any_of(writes, [&](const InPlaceWrite& write) {
+                return manualResidency(record.resourceSources[write.offset]) != manualResidency(write.source);
+            });
+        }
+
+        void stageDescriptorResidencyChanges(const BindingSetRecord& record,
+                                             std::span<const InPlaceWrite> writes,
+                                             StagedInPlaceRetention& staged)
+        {
+            auto uses = record.residencyUses;
+            for (const auto& write : writes)
+            {
+                if (const auto* before = manualResidency(record.resourceSources[write.offset]); before != nullptr)
+                {
+                    const auto found = uses.find(before);
+                    if (found != uses.end() && --found->second.count == 0)
+                    {
+                        uses.erase(found);
+                    }
+                }
+                if (const auto* after = descriptorResidency(write.source); after != nullptr && *after != nullptr)
+                {
+                    auto& use = uses[after->get()];
+                    use.record = *after;
+                    ++use.count;
+                }
+            }
+            DescriptorResidencies residencies;
+            residencies.reserve(uses.size());
+            for (const auto& [key, use] : uses)
+            {
+                residencies.push_back(use.record);
+            }
+            staged.residencies = std::make_shared<const DescriptorResidencies>(std::move(residencies));
+            staged.residencyUses = std::move(uses);
+        }
+
+        [[nodiscard]] Result<StagedInPlaceRetention> stageInPlaceRetention(const BindingSetRecord& record,
+                                                                           std::span<const InPlaceWrite> writes)
+        {
+            auto& inPlace = *record.inPlace;
+            StagedInPlaceRetention staged;
+            try
+            {
+                for (const auto& write : writes)
+                {
+                    const auto* residency = descriptorResidency(write.source);
+                    const bool manual = residency != nullptr && *residency != nullptr;
+                    if (manual || inPlace.publication->residencies.contains(write.offset))
+                    {
+                        staged.residencyWrites.push_back(InPlaceResidencyLog::Write{
+                            .index = write.offset,
+                            .element = manual ? *residency : std::shared_ptr<ResidencyRecord>{},
                         });
                     }
+                }
+                if (changesDescriptorResidencies(record, writes))
+                {
+                    stageDescriptorResidencyChanges(record, writes, staged);
+                }
+                if (inPlace.replaced.use_count() > 1)
+                {
+                    inPlace.replaced->sources.reserve(inPlace.replaced->sources.size() + writes.size());
+                    staged.nextReplaced = std::make_shared<ReplacedDescriptorSources>();
                 }
             }
             catch (const std::bad_alloc&)
@@ -2269,17 +2524,46 @@ namespace rachis::d3d12
                     "Failed to prepare update-after-bind binding retention.",
                 });
             }
-            if (auto reserved = inPlace.sources.reserve(sources); !reserved)
+            if (auto reserved = inPlace.publication->residencies.reserve(staged.residencyWrites); !reserved)
             {
-                return reserved;
+                return std::unexpected(std::move(reserved.error()));
             }
-            if (auto reserved = inPlace.residencies->reserve(residencies); !reserved)
+            return staged;
+        }
+
+        void swapInPlaceSources(BindingSetRecord& record, std::span<InPlaceWrite> writes) noexcept
+        {
+            for (auto& write : writes)
             {
-                return reserved;
+                std::swap(record.resourceSources[write.offset], write.source);
             }
-            inPlace.sources.record(sources);
-            record.inPlaceResidencySequence = inPlace.residencies->record(residencies);
-            return {};
+        }
+
+        void commitInPlaceRetention(BindingSetRecord& record,
+                                    std::span<InPlaceWrite> writes,
+                                    StagedInPlaceRetention& staged) noexcept
+        {
+            auto& inPlace = *record.inPlace;
+            for (auto& write : writes)
+            {
+                record.resourceStagingDescriptors[write.offset] = std::move(write.staging);
+            }
+            if (staged.residencies != nullptr)
+            {
+                record.residencies = std::move(staged.residencies);
+                record.residencyUses = std::move(staged.residencyUses);
+            }
+            static_cast<void>(inPlace.publication->residencies.record(staged.residencyWrites));
+            ++inPlace.writeGeneration;
+            if (staged.nextReplaced != nullptr)
+            {
+                for (auto& write : writes)
+                {
+                    inPlace.replaced->sources.push_back(std::move(write.source));
+                }
+                inPlace.replaced->newer = staged.nextReplaced;
+                inPlace.replaced = std::move(staged.nextReplaced);
+            }
         }
 
     } // namespace
@@ -2425,46 +2709,61 @@ namespace rachis::d3d12
             if (nextInPlace != nullptr && (idle || candidate->resources != current->resources))
             {
                 candidate->inPlace = std::move(nextInPlace);
-                candidate->inPlaceResidencySequence = 0;
             }
             retired = std::exchange(*stored, std::move(candidate));
             return {};
         }
 
-        [[nodiscard]] Status publishInPlaceUpdate(BindingSetHandle handle,
+        [[nodiscard]] Status publishInPlaceWrites(BindingSetHandle handle,
                                                   const std::shared_ptr<BindingSetRecord>& current,
-                                                  std::shared_ptr<BindingSetRecord>&& candidate,
-                                                  const StagedBindingSetDescriptors& staged)
+                                                  std::vector<InPlaceWrite>& writes)
         {
-            std::shared_ptr<BindingSetRecord> retired;
-            const std::scoped_lock lock(mutex);
-            auto* stored = sets.find(handle);
-            if (stored == nullptr)
+            const std::unique_lock publicationLock(current->inPlace->publication->mutex);
             {
-                return std::unexpected(Error{
-                    ErrorCode::invalidArgument,
-                    0,
-                    "The binding set was destroyed while an update was being prepared.",
-                });
+                const std::scoped_lock lock(mutex);
+                const auto* stored = sets.find(handle);
+                if (stored == nullptr)
+                {
+                    return std::unexpected(Error{
+                        ErrorCode::invalidArgument,
+                        0,
+                        "The binding set was destroyed while an update was being prepared.",
+                    });
+                }
+                if (*stored != current)
+                {
+                    return std::unexpected(Error{
+                        ErrorCode::invalidState,
+                        0,
+                        "A concurrent binding set update published a newer version.",
+                    });
+                }
             }
-            if (*stored != current)
+            auto staged = stageInPlaceRetention(*current, writes);
+            if (!staged)
             {
-                return std::unexpected(Error{
-                    ErrorCode::invalidState,
-                    0,
-                    "A concurrent binding set update published a newer version.",
-                });
+                return std::unexpected(std::move(staged.error()));
             }
-            if (auto retainedWrites = retainInPlaceWrites(*candidate, staged.resources->preparedIndices);
-                !retainedWrites)
+            swapInPlaceSources(*current, writes);
+            if (current->hasSamplerFeedback)
             {
-                return retainedWrites;
+                if (auto paired = validateSamplerFeedbackPairing(*current); !paired)
+                {
+                    swapInPlaceSources(*current, writes);
+                    return paired;
+                }
             }
-            copyPreparedDescriptors(
-                *device, *current->resources, *staged.resources, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-            countResourceTablePublish(counters, *staged.resources, staged.resources->preparedIndices.size());
-            candidate->poolVersion = current->poolVersion;
-            retired = std::exchange(*stored, std::move(candidate));
+            for (const auto& write : writes)
+            {
+                device->CopyDescriptorsSimple(1,
+                                              current->resources->cpuHandle(write.offset),
+                                              write.handle,
+                                              D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            }
+            commitInPlaceRetention(*current, writes, *staged);
+            counters.resourceDescriptorsPrepared.fetch_add(writes.size(), std::memory_order_relaxed);
+            counters.resourceTablePublishCount.fetch_add(1, std::memory_order_relaxed);
+            counters.resourceDescriptorsPublished.fetch_add(writes.size(), std::memory_order_relaxed);
             return {};
         }
 
@@ -2897,18 +3196,46 @@ namespace rachis::d3d12
         {
             return poolAlive;
         }
+        const BindingSourceManagers sourceManagers{.resources = resources, .views = views, .samplers = samplers};
 
+        if (current->inPlace != nullptr && current->resources != nullptr &&
+            writesOnlyUpdateAfterBindEntries(*current->layout, writes))
+        {
+            auto prepared =
+                prepareInPlaceWrites(sourceManagers, *impl_->device, impl_->resourceStagingHeap, *current, writes);
+            if (!prepared)
+            {
+                return std::unexpected(std::move(prepared.error()));
+            }
+            return impl_->publishInPlaceWrites(set, current, *prepared);
+        }
+
+        std::shared_lock<std::shared_mutex> copyLock;
+        std::uint64_t copiedGeneration = 0;
+        if (current->inPlace != nullptr)
+        {
+            copyLock = std::shared_lock(current->inPlace->publication->mutex);
+            copiedGeneration = current->inPlace->writeGeneration;
+        }
         auto candidate = std::make_shared<BindingSetRecord>(*current);
+        test::bindingSetVersionCopyCount().fetch_add(1, std::memory_order_relaxed);
+        if (copyLock.owns_lock())
+        {
+            copyLock.unlock();
+        }
         candidate->poolVersion.reset();
         DescriptorPreparationMask preparation{
             .resources = std::vector<std::uint8_t>(candidate->resourceSources.size()),
             .samplers = std::vector<std::uint8_t>(candidate->samplerSources.size()),
         };
-        const BindingSourceManagers sourceManagers{.resources = resources, .views = views, .samplers = samplers};
         auto applied = applyBindingWrites(sourceManagers, *current->layout, writes, *candidate, &preparation);
         if (!applied)
         {
             return applied;
+        }
+        if (auto validSources = validateUpdateAfterBindSources(*current->layout, writes, *candidate); !validSources)
+        {
+            return validSources;
         }
         auto validPairing = validateSamplerFeedbackPairing(*candidate);
         if (!validPairing)
@@ -2920,22 +3247,6 @@ namespace rachis::d3d12
         {
             return std::unexpected(std::move(staged.error()));
         }
-        if (writesOnlyUpdateAfterBindEntries(*current->layout, writes) && rewritesLiveResourceTable(*current, *staged))
-        {
-            for (std::size_t index = 0; index < preparation.resources.size(); ++index)
-            {
-                if (preparation.resources[index] != 0 && needsSpecialResourceCapture(candidate->resourceSources[index]))
-                {
-                    return std::unexpected(Error{
-                        ErrorCode::unsupported,
-                        0,
-                        "An update-after-bind write in place cannot name a sparse resource or a swapchain texture on "
-                        "Direct3D 12.",
-                    });
-                }
-            }
-            return impl_->publishInPlaceUpdate(set, current, std::move(candidate), *staged);
-        }
 
         std::shared_ptr<BindingPoolVersionLease> nextPoolVersion;
         if (current->poolSet != nullptr)
@@ -2944,9 +3255,19 @@ namespace rachis::d3d12
                 current->poolSet->state, current->poolSet, candidate->descriptorCounts);
         }
         std::shared_ptr<InPlaceDescriptorRetention> nextInPlace;
+        std::unique_lock<std::shared_mutex> publicationLock;
         if (current->inPlace != nullptr)
         {
             nextInPlace = std::make_shared<InPlaceDescriptorRetention>();
+            publicationLock = std::unique_lock(current->inPlace->publication->mutex);
+            if (current->inPlace->writeGeneration != copiedGeneration)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidState,
+                    0,
+                    "A concurrent binding set update published a newer version.",
+                });
+            }
         }
 
         return impl_->publishBindingSetVersion(
@@ -3015,6 +3336,19 @@ namespace rachis::d3d12
                 return std::unexpected(std::move(retained.error()));
             }
             const auto& found = retained->record;
+            std::shared_lock<std::shared_mutex> publicationLock;
+            InPlaceResidencyReference inPlaceResidencies;
+            std::shared_ptr<const void> replacedSources;
+            if (found->inPlace != nullptr)
+            {
+                publicationLock = std::shared_lock(found->inPlace->publication->mutex);
+                inPlaceResidencies = InPlaceResidencyReference{
+                    .publication = found->inPlace->publication,
+                    .sequence = found->inPlace->publication->residencies.sequence(),
+                };
+                replacedSources = found->inPlace->replaced;
+            }
+            const auto staticResidencies = found->residencies;
 
             DynamicBufferResolution dynamicBuffers{.offsets = dynamicOffsets, .slotPlan = slotPlan};
             DynamicTableDescriptors dynamicTable;
@@ -3068,14 +3402,13 @@ namespace rachis::d3d12
                 .bindingPoolRetention = std::move(retained->commandRetention),
                 .resourceDescriptorOwner = found->resources,
                 .samplerDescriptorOwner = std::move(samplerDescriptors),
-                .staticResidencies = found->residencies,
+                .staticResidencies = staticResidencies != nullptr
+                                         ? std::span<const std::shared_ptr<ResidencyRecord>>(*staticResidencies)
+                                         : std::span<const std::shared_ptr<ResidencyRecord>>{},
+                .staticResidencyOwner = staticResidencies,
                 .extraResidencies = std::move(captures.extraResidencies),
-                .inPlaceResidencies =
-                    InPlaceResidencyReference{
-                        .log = found->inPlace != nullptr ? found->inPlace->residencies
-                                                         : std::shared_ptr<InPlaceResidencyLog>{},
-                        .sequence = found->inPlaceResidencySequence,
-                    },
+                .inPlaceResidencies = std::move(inPlaceResidencies),
+                .inPlaceReplacedSources = std::move(replacedSources),
                 .swapchainImageLeases = std::move(captures.swapchainImageLeases),
                 .sparseMappingOwners = std::move(captures.sparseMappingOwners),
                 .sparseMappingDependencies = std::move(captures.sparseMappingDependencies),
