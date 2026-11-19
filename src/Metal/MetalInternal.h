@@ -1599,6 +1599,7 @@ namespace rachis::metal
         std::atomic<std::uint64_t> teardownQueueDrainCount{0};
         std::atomic<std::uint64_t> renderTimestampVertexStageCount{0};
         std::atomic<std::uint64_t> renderTimestampFragmentStageCount{0};
+        std::atomic<std::uint64_t> indirectClampEncodeCount{0};
         std::shared_ptr<MetalCommitFeedbackGate> nextCommandPoolResetGate;
         std::shared_ptr<MetalCommitFeedbackGate> nextSubmitFoldGate;
         std::shared_ptr<MetalCommitFeedbackGate> nextDrawableAcquireGate;
@@ -1618,6 +1619,7 @@ namespace rachis::metal
     void recordMetalPushConstantSliceSuballocate() noexcept;
     void recordMetalTeardownQueueDrain() noexcept;
     void recordMetalRenderTimestampStage(MTLRenderStages stage) noexcept;
+    void recordMetalIndirectClampEncode() noexcept;
     void holdMetalCommandPoolResetForTesting() noexcept;
     [[nodiscard]] bool consumeInjectedMetalDrawIndexTableGrowthFailure() noexcept;
     [[nodiscard]] bool consumeInjectedMetalPushConstantSliceFailure() noexcept;

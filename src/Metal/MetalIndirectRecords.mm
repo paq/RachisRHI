@@ -244,6 +244,9 @@ struct RachisClampVertex
         [entry.computeEncoder barrierAfterEncoderStages:MTLStageDispatch
                                     beforeEncoderStages:MTLStageDispatch
                                       visibilityOptions:MTL4VisibilityOptionDevice];
+#ifdef RACHIS_TESTING
+        recordMetalIndirectClampEncode();
+#endif
         entry.activeComputePipeline = nullptr;
         entry.activeComputeTable = nil;
         entry.computeTableDirty = true;
@@ -270,6 +273,9 @@ struct RachisClampVertex
         [entry.renderEncoder barrierAfterEncoderStages:MTLStageObject
                                    beforeEncoderStages:kMetalRenderEncoderStages
                                      visibilityOptions:MTL4VisibilityOptionDevice];
+#ifdef RACHIS_TESTING
+        recordMetalIndirectClampEncode();
+#endif
         entry.activeGraphicsPipeline = nullptr;
         entry.vertexTableDirty = true;
         return {};

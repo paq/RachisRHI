@@ -452,6 +452,11 @@ namespace rachis::metal
         metalTestingState().residencyCommitCount.fetch_add(1, std::memory_order_relaxed);
     }
 
+    void recordMetalIndirectClampEncode() noexcept
+    {
+        metalTestingState().indirectClampEncodeCount.fetch_add(1, std::memory_order_relaxed);
+    }
+
     void recordMetalArgumentTableCreate() noexcept
     {
         metalTestingState().argumentTableCreateCount.fetch_add(1, std::memory_order_relaxed);
@@ -1882,6 +1887,7 @@ void rachis::metal::resetRecordingTelemetry() noexcept
     state.pushConstantSliceSuballocateCount.store(0, std::memory_order_relaxed);
     state.renderTimestampVertexStageCount.store(0, std::memory_order_relaxed);
     state.renderTimestampFragmentStageCount.store(0, std::memory_order_relaxed);
+    state.indirectClampEncodeCount.store(0, std::memory_order_relaxed);
 }
 
 rachis::metal::MetalRecordingTelemetry rachis::metal::recordingTelemetry() noexcept
@@ -1898,6 +1904,7 @@ rachis::metal::MetalRecordingTelemetry rachis::metal::recordingTelemetry() noexc
         .pushConstantSuballocateCount = state.pushConstantSliceSuballocateCount.load(std::memory_order_relaxed),
         .renderTimestampVertexStageCount = state.renderTimestampVertexStageCount.load(std::memory_order_relaxed),
         .renderTimestampFragmentStageCount = state.renderTimestampFragmentStageCount.load(std::memory_order_relaxed),
+        .indirectClampEncodeCount = state.indirectClampEncodeCount.load(std::memory_order_relaxed),
     };
 }
 

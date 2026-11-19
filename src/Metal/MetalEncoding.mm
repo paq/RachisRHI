@@ -1905,12 +1905,19 @@ namespace rachis::metal
         {
             return prepared;
         }
+        const auto& pipeline = *entry->boundComputePipeline;
+        if (records.count != nil)
+        {
+            if (auto prepared = metalApplyComputeDispatchState(device, *entry, pipeline); !prepared)
+            {
+                return prepared;
+            }
+        }
         auto span = metalClampComputeRecords(device, *entry, *pipelines, layout, records);
         if (!span)
         {
             return std::unexpected(std::move(span.error()));
         }
-        const auto& pipeline = *entry->boundComputePipeline;
         if (auto applied = metalApplyComputeDispatchState(device, *entry, pipeline); !applied)
         {
             return applied;
@@ -3532,6 +3539,13 @@ namespace rachis::metal
         {
             return reserved;
         }
+        if (inputs->records.count != nil)
+        {
+            if (auto prepared = metalApplyGraphicsDrawState(inputs->device, *entry, *pipeline); !prepared)
+            {
+                return prepared;
+            }
+        }
         auto span = metalClampRenderRecords(inputs->device, *entry, inputs->pipelines, layout, inputs->records, 1, 1);
         if (!span)
         {
@@ -3612,6 +3626,13 @@ namespace rachis::metal
         if (auto reserved = metalReserveDrawIndices(inputs->device, *entry, *pipeline, layout.maxRecords); !reserved)
         {
             return reserved;
+        }
+        if (inputs->records.count != nil)
+        {
+            if (auto prepared = metalApplyGraphicsDrawState(inputs->device, *entry, *pipeline); !prepared)
+            {
+                return prepared;
+            }
         }
         auto span = metalClampRenderRecords(inputs->device, *entry, inputs->pipelines, layout, inputs->records, 1, 1);
         if (!span)
@@ -3816,6 +3837,13 @@ namespace rachis::metal
         if (auto reserved = metalReserveDrawIndices(inputs->device, *entry, *pipeline, layout.maxRecords); !reserved)
         {
             return reserved;
+        }
+        if (inputs->records.count != nil)
+        {
+            if (auto prepared = metalApplyGraphicsDrawState(inputs->device, *entry, *pipeline); !prepared)
+            {
+                return prepared;
+            }
         }
         auto span = metalClampRenderRecords(inputs->device,
                                             *entry,

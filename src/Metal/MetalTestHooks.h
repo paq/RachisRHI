@@ -280,6 +280,7 @@ namespace rachis::metal
         std::uint64_t pushConstantSuballocateCount = 0;
         std::uint64_t renderTimestampVertexStageCount = 0;
         std::uint64_t renderTimestampFragmentStageCount = 0;
+        std::uint64_t indirectClampEncodeCount = 0;
     };
 
     enum class MetalTestErrorDomain : std::uint8_t

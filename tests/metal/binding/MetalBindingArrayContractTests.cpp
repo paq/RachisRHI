@@ -604,7 +604,14 @@ TEST_CASE("Metal rejects a bound binding array larger than the shader's compiled
             .resource = rachis::BufferBinding{.buffer = source, .structureByteStride = sizeof(std::uint32_t)},
         },
     };
-    const auto dispatchWith = [&](std::uint32_t count) {
+    const std::array<rachis::DispatchIndirectArguments, 1> dispatchArguments{
+        rachis::DispatchIndirectArguments{.groupCountX = 1, .groupCountY = 1, .groupCountZ = 1}};
+    const auto argumentBuffer =
+        createFilledBuffer(device, std::as_bytes(std::span(dispatchArguments)), rachis::BufferUsage::indirect);
+    const std::array<std::uint32_t, 1> dispatchCount{1};
+    const auto countBuffer =
+        createFilledBuffer(device, std::as_bytes(std::span(dispatchCount)), rachis::BufferUsage::indirect);
+    const auto dispatchWith = [&](std::uint32_t count, bool counted = false) {
         auto set = rachis::test::createBindingSet(
             device, {.layout = *layout, .writes = writes, .variableDescriptorCount = count});
         REQUIRE(set.has_value());
@@ -614,7 +621,13 @@ TEST_CASE("Metal rejects a bound binding array larger than the shader's compiled
         REQUIRE(device.bindComputeBindingSet(*command, 0, *set).has_value());
         const std::array<std::uint32_t, 2> read{0, 0};
         REQUIRE(device.setComputePushConstants(*command, 0, std::as_bytes(std::span(read))).has_value());
-        auto dispatched = device.dispatch(*command, 1);
+        auto dispatched = counted ? device.dispatchIndirect(*command,
+                                                            {
+                                                                .argumentBuffer = argumentBuffer,
+                                                                .maxDispatchCount = 1,
+                                                                .countBuffer = countBuffer,
+                                                            })
+                                  : device.dispatch(*command, 1);
         auto submitted = device.submit(std::move(*command));
         REQUIRE(submitted.has_value());
         REQUIRE(device.wait(*submitted).has_value());
@@ -633,9 +646,19 @@ TEST_CASE("Metal rejects a bound binding array larger than the shader's compiled
     REQUIRE(device.unmapBuffer(results).has_value());
     CHECK(observed == 42);
 
+    rachis::metal::resetRecordingTelemetry();
+    const auto oversizedCounted = dispatchWith(compiledCapacity * 2, true);
+    REQUIRE_FALSE(oversizedCounted.has_value());
+    CHECK(oversizedCounted.error().code == rachis::ErrorCode::invalidArgument);
+    CHECK(rachis::metal::recordingTelemetry().indirectClampEncodeCount == 0);
+    REQUIRE(dispatchWith(compiledCapacity, true).has_value());
+    CHECK(rachis::metal::recordingTelemetry().indirectClampEncodeCount == 1);
+
     REQUIRE(device.destroyPipeline(*pipeline).has_value());
     REQUIRE(device.destroyPipelineLayout(*pipelineLayout).has_value());
     REQUIRE(device.destroyBindingLayout(*layout).has_value());
+    REQUIRE(device.destroyBuffer(countBuffer).has_value());
+    REQUIRE(device.destroyBuffer(argumentBuffer).has_value());
     REQUIRE(device.destroyBuffer(results).has_value());
     REQUIRE(device.destroyBuffer(source).has_value());
     REQUIRE(device.destroyShaderModule(*shader).has_value());
