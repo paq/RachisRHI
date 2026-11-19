@@ -246,6 +246,12 @@ namespace rachis::d3d12::dxil
 
     } // namespace signature_detail
 
+    [[nodiscard]] inline bool isContainer(std::span<const std::byte> bytes) noexcept
+    {
+        return bytes.size() >= sizeof(std::uint32_t) &&
+               signature_detail::readU32(bytes, 0) == signature_detail::fourCC('D', 'X', 'B', 'C');
+    }
+
     namespace signature_detail
     {
 
@@ -348,6 +354,10 @@ namespace rachis::d3d12::dxil
                                                         const std::optional<ThreadGroupSize>& interfaceWorkgroup,
                                                         WaveLaneCountRange device)
     {
+        if (requiredSize == 0 && !isContainer(container))
+        {
+            return {};
+        }
         auto declared = readExpectedWaveLaneCounts(container);
         if (!declared)
         {
@@ -602,6 +612,10 @@ namespace rachis::d3d12::dxil
                                                              std::uint32_t registerSpace,
                                                              bool declared)
     {
+        if (!declared && !isContainer(container))
+        {
+            return {};
+        }
         auto binds = bindsConstantBuffer(container, shaderRegister, registerSpace);
         if (!binds)
         {

@@ -347,7 +347,10 @@ TEST_CASE("Direct3D 12 draw-index declarations need a readable PSV0 resource tab
     REQUIRE_FALSE(unverifiable.has_value());
     CHECK(unverifiable.error().code == rachis::ErrorCode::invalidArgument);
 
-    CHECK_FALSE(validateDrawIndexDeclaration(std::vector<std::byte>(8), 0, 5, false).has_value());
+    CHECK(validateDrawIndexDeclaration(std::vector<std::byte>(8), 0, 5, false).has_value());
+    CHECK_FALSE(validateDrawIndexDeclaration(std::vector<std::byte>(8), 0, 5, true).has_value());
+    auto headerOnly = std::vector<std::byte>(binding.begin(), binding.begin() + 8);
+    CHECK_FALSE(validateDrawIndexDeclaration(headerOnly, 0, 5, false).has_value());
 }
 
 namespace
@@ -423,6 +426,8 @@ TEST_CASE("Direct3D 12 accepts a [WaveSize] range that overlaps the device range
     auto truncated = computeContainer(16, 64, threads);
     writeU32(truncated, runtimeInfoSizeOffset, 4096);
     CHECK(waveSizeError(truncated, 0, std::nullopt, wave32) == rachis::ErrorCode::invalidArgument);
+    CHECK(validateComputeWaveSize(std::vector<std::byte>(8), 0, std::nullopt, wave32).has_value());
+    CHECK(waveSizeError(std::vector<std::byte>(8), 32, std::nullopt, wave32) == rachis::ErrorCode::invalidArgument);
 }
 
 TEST_CASE("Direct3D 12 checks a required subgroup size against the DXIL [numthreads] size",
