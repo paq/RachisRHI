@@ -2308,46 +2308,52 @@ namespace rachis::shader_tool
             return std::string(parameterName.substr(0, underscore));
         }
 
-        [[nodiscard]] inline std::optional<std::uint32_t> highestMetalBufferIndex(std::string_view source)
+        using MetalBufferSlots = std::array<bool, metalArgumentTableBufferSlots>;
+
+        inline void occupyMetalBufferSlots(MetalBufferSlots& slots, std::uint64_t first, std::uint64_t count) noexcept
         {
-            constexpr std::string_view attribute = "[[buffer(";
-            std::optional<std::uint32_t> highest;
-            for (std::size_t found = source.find(attribute); found != std::string_view::npos;
-                 found = source.find(attribute, found + attribute.size()))
+            for (std::uint64_t slot = first; slot < first + count && slot < slots.size(); ++slot)
             {
-                std::uint32_t value = 0;
-                std::size_t digit = found + attribute.size();
-                bool any = false;
-                while (digit < source.size() && source[digit] >= '0' && source[digit] <= '9')
-                {
-                    value = value * 10U + static_cast<std::uint32_t>(source[digit] - '0');
-                    any = true;
-                    ++digit;
-                }
-                if (any)
-                {
-                    highest = highest.has_value() ? std::max(*highest, value) : value;
-                }
+                slots[static_cast<std::size_t>(slot)] = true;
             }
-            return highest;
         }
 
-        [[nodiscard]] inline const JsonValue* findRootParameter(const JsonValue& root, std::string_view name)
+        [[nodiscard]] inline MetalBufferSlots occupiedMetalBufferSlots(std::string_view source,
+                                                                       const JsonValue& metalRoot,
+                                                                       std::string_view entryPoint,
+                                                                       const JsonArray* entryBindings)
         {
-            const auto* parameters = root.find("parameters");
-            if (parameters == nullptr || parameters->asArray() == nullptr)
+            MetalBufferSlots occupied{};
+            constexpr std::string_view attribute = "[[buffer(";
+            for (const auto& range : metalEntryParameterLists(source))
             {
-                return nullptr;
-            }
-            for (const auto& parameter : *parameters->asArray())
-            {
-                if (const auto* parameterName = findString(parameter, "name");
-                    parameterName != nullptr && *parameterName == name)
+                const auto parameters = source.substr(range.begin, range.end - range.begin);
+                for (std::size_t found = parameters.find(attribute); found != std::string_view::npos;
+                     found = parameters.find(attribute, found + attribute.size()))
                 {
-                    return &parameter;
+                    std::uint64_t value = 0;
+                    std::size_t digit = found + attribute.size();
+                    const std::size_t first = digit;
+                    while (digit < parameters.size() && parameters[digit] >= '0' && parameters[digit] <= '9' &&
+                           value < occupied.size())
+                    {
+                        value = value * 10U + static_cast<std::uint64_t>(parameters[digit] - '0');
+                        ++digit;
+                    }
+                    if (digit != first)
+                    {
+                        occupyMetalBufferSlots(occupied, value, 1);
+                    }
                 }
             }
-            return nullptr;
+            for (const auto& parameter : collectUsedMetalParameters(metalRoot, entryPoint, entryBindings))
+            {
+                if (parameter.kindClass == metalBufferKindClass)
+                {
+                    occupyMetalBufferSlots(occupied, parameter.unshiftedMetalIndex, parameter.count);
+                }
+            }
+            return occupied;
         }
 
         [[nodiscard]] inline std::optional<std::string_view> metalArgumentBufferResourceType(const JsonValue& parameter)
@@ -2397,9 +2403,8 @@ namespace rachis::shader_tool
 
         [[nodiscard]] inline std::optional<MetalLogicalSlot> spirvDescriptorSlot(const JsonValue& parameter)
         {
-            const auto* binding = parameter.find("binding");
-            if (binding == nullptr || findString(*binding, "kind") == nullptr ||
-                *findString(*binding, "kind") != "descriptorTableSlot")
+            const auto* binding = findBindingOfKind(parameter, "descriptorTableSlot");
+            if (binding == nullptr)
             {
                 return std::nullopt;
             }
@@ -2443,7 +2448,8 @@ namespace rachis::shader_tool
     [[nodiscard]] inline std::expected<std::vector<MetalArgumentBufferArray>, std::string>
     planMetalArgumentBufferArrays(std::string_view metalSource,
                                   std::string_view spirvReflectionJson,
-                                  std::string_view metalReflectionJson)
+                                  std::string_view metalReflectionJson,
+                                  std::string_view entryPoint = {})
     {
         const auto parameters = collectMetalUnboundedArrayParameters(metalSource);
         std::vector<MetalArgumentBufferArray> arrays;
@@ -2457,12 +2463,20 @@ namespace rachis::shader_tool
         {
             return std::unexpected("Metal argument-buffer planning could not parse the reflection JSON.");
         }
-        const auto highest = detail::highestMetalBufferIndex(metalSource);
-        std::uint32_t nextIndex = highest.has_value() ? *highest + 1U : 0U;
+        const auto entryBindings = detail::findSelectedEntryPointBindings(*metalRoot, entryPoint);
+        if (!entryBindings.has_value())
+        {
+            return std::unexpected(entryBindings.error());
+        }
+        auto occupied = detail::occupiedMetalBufferSlots(metalSource, *metalRoot, entryPoint, *entryBindings);
+        std::vector<const detail::JsonValue*> metalParameters;
+        std::vector<const detail::JsonValue*> spirvParameters;
+        detail::collectParameterNodes(*metalRoot, entryPoint, metalParameters);
+        detail::collectParameterNodes(*spirvRoot, entryPoint, spirvParameters);
         for (const auto& parameter : parameters)
         {
-            const auto* metalParameter = detail::findRootParameter(*metalRoot, parameter.baseName);
-            const auto* spirvParameter = detail::findRootParameter(*spirvRoot, parameter.baseName);
+            const auto* metalParameter = detail::findParameterNamed(metalParameters, parameter.baseName);
+            const auto* spirvParameter = detail::findParameterNamed(spirvParameters, parameter.baseName);
             if (metalParameter == nullptr || spirvParameter == nullptr)
             {
                 return std::unexpected("The unbounded Metal resource array '" + parameter.baseName +
@@ -2475,10 +2489,14 @@ namespace rachis::shader_tool
                 return std::unexpected("The unbounded Metal resource array '" + parameter.baseName +
                                        "' has an unsupported element type or binding.");
             }
-            if (nextIndex >= metalArgumentTableBufferSlots)
+            const auto free = std::ranges::find(occupied, false);
+            if (free == occupied.end())
             {
-                return std::unexpected("Unbounded resource arrays exceed Metal's 31 buffer argument slots.");
+                return std::unexpected("Unbounded resource arrays exceed Metal's 31 buffer argument slots: the entry "
+                                       "point has no free buffer slot for '" +
+                                       parameter.baseName + "'.");
             }
+            *free = true;
             arrays.push_back(MetalArgumentBufferArray{
                 .name = parameter.baseName,
                 .parameterName = parameter.parameterName,
@@ -2486,7 +2504,7 @@ namespace rachis::shader_tool
                 .resourceType = *resourceType,
                 .set = slot->set,
                 .binding = slot->binding,
-                .metalIndex = nextIndex++,
+                .metalIndex = static_cast<std::uint32_t>(std::distance(occupied.begin(), free)),
                 .capacity =
                     *resourceType == "sampler" ? metalArgumentBufferSamplerLimit : metalArgumentBufferResourceLimit,
             });
@@ -2517,73 +2535,12 @@ namespace rachis::shader_tool
             }
             return std::nullopt;
         };
-        const auto entries = detail::metalEntryParameterLists(source);
-        std::string rewritten;
-        rewritten.reserve(source.size() + 1024);
-        std::size_t copied = 0;
-        for (const auto& declaration : detail::metalUnboundedDeclarations(source))
+        struct SourceEdit final
         {
-            const auto capacity = capacityOf(declaration.type);
-            if (!capacity.has_value())
-            {
-                return std::unexpected("Generated Metal source declares an unbounded array of '" + declaration.type +
-                                       "' that the argument-buffer plan does not cover.");
-            }
-            const auto parameter =
-                std::ranges::find(arrays, declaration.name, &MetalArgumentBufferArray::parameterName);
-            const bool inEntry = std::ranges::any_of(entries, [&](const detail::MetalSourceRange& range) {
-                return declaration.nameBegin > range.begin && declaration.end <= range.end;
-            });
-            rewritten.append(source.substr(copied, declaration.typeBegin - copied));
-            const auto templateArguments = declaration.type + ", " + std::to_string(*capacity);
-            if (inEntry && parameter != arrays.end())
-            {
-                rewritten += "constant RachisArgumentStorage<" + templateArguments + ">& " + declaration.name +
-                             " [[buffer(" + std::to_string(parameter->metalIndex) + ")]]";
-            }
-            else
-            {
-                rewritten += "RachisArgumentArray<" + templateArguments + "> " + declaration.name;
-            }
-            copied = declaration.end;
-        }
-        rewritten.append(source.substr(copied));
-
-        std::string assigned;
-        assigned.reserve(rewritten.size());
-        std::size_t lineBegin = 0;
-        while (lineBegin < rewritten.size())
-        {
-            auto lineEnd = rewritten.find('\n', lineBegin);
-            if (lineEnd == std::string::npos)
-            {
-                lineEnd = rewritten.size();
-            }
-            std::string_view line(rewritten.data() + lineBegin, lineEnd - lineBegin);
-            bool replaced = false;
-            for (const auto& array : arrays)
-            {
-                const auto suffix = " = " + array.parameterName + ";";
-                if (line.ends_with(suffix) && line.size() > suffix.size())
-                {
-                    const auto target = line.substr(0, line.size() - suffix.size());
-                    assigned.append(target);
-                    assigned += ".items = &" + array.parameterName + ";";
-                    replaced = true;
-                    break;
-                }
-            }
-            if (!replaced)
-            {
-                assigned.append(line);
-            }
-            if (lineEnd < rewritten.size())
-            {
-                assigned.push_back('\n');
-            }
-            lineBegin = lineEnd + 1;
-        }
-
+            std::size_t begin = 0;
+            std::size_t end = 0;
+            std::string text;
+        };
         constexpr std::string_view helpers = "template<typename T, uint N>\n"
                                              "struct RachisArgumentStorage\n"
                                              "{\n"
@@ -2602,9 +2559,63 @@ namespace rachis::shader_tool
                                              "        return items->items[index];\n"
                                              "    }\n"
                                              "};\n";
-        const auto helperAt = assigned.find(usingNamespace);
-        assigned.insert(helperAt + usingNamespace.size(), helpers);
-        return assigned;
+        const auto helperAt = insertAt + usingNamespace.size();
+        std::vector<SourceEdit> edits{SourceEdit{.begin = helperAt, .end = helperAt, .text = std::string(helpers)}};
+        const auto entries = detail::metalEntryParameterLists(source);
+        for (const auto& declaration : detail::metalUnboundedDeclarations(source))
+        {
+            const auto capacity = capacityOf(declaration.type);
+            if (!capacity.has_value())
+            {
+                return std::unexpected("Generated Metal source declares an unbounded array of '" + declaration.type +
+                                       "' that the argument-buffer plan does not cover.");
+            }
+            const auto wrapper = "RachisArgumentArray<" + declaration.type + ", " + std::to_string(*capacity) + ">";
+            const auto entry = std::ranges::find_if(entries, [&](const detail::MetalSourceRange& range) {
+                return declaration.nameBegin > range.begin && declaration.end <= range.end;
+            });
+            if (entry == entries.end())
+            {
+                edits.push_back(SourceEdit{
+                    .begin = declaration.typeBegin,
+                    .end = declaration.end,
+                    .text = wrapper + " " + declaration.name,
+                });
+                continue;
+            }
+            const auto parameter =
+                std::ranges::find(arrays, declaration.name, &MetalArgumentBufferArray::parameterName);
+            const auto body = source.find('{', entry->end);
+            if (parameter == arrays.end() || body == std::string_view::npos)
+            {
+                return std::unexpected("The entry point parameter '" + declaration.name +
+                                       "' is an unbounded array that the argument-buffer plan does not cover.");
+            }
+            const auto storage = detail::unusedMetalIdentifier(source, declaration.name + "_storage");
+            edits.push_back(SourceEdit{
+                .begin = declaration.typeBegin,
+                .end = declaration.end,
+                .text = "constant RachisArgumentStorage<" + declaration.type + ", " + std::to_string(*capacity) +
+                        ">& " + storage + " [[buffer(" + std::to_string(parameter->metalIndex) + ")]]",
+            });
+            edits.push_back(SourceEdit{
+                .begin = body + 1,
+                .end = body + 1,
+                .text = "\n    " + wrapper + " " + declaration.name + " = {&" + storage + "};",
+            });
+        }
+        std::ranges::stable_sort(edits, {}, &SourceEdit::begin);
+        std::string rewritten;
+        rewritten.reserve(source.size() + helpers.size() + edits.size() * 96U);
+        std::size_t copied = 0;
+        for (const auto& edit : edits)
+        {
+            rewritten.append(source.substr(copied, edit.begin - copied));
+            rewritten.append(edit.text);
+            copied = edit.end;
+        }
+        rewritten.append(source.substr(copied));
+        return rewritten;
     }
 
 } // namespace rachis::shader_tool

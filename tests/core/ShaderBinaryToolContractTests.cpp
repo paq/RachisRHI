@@ -1664,6 +1664,31 @@ TEST_CASE("ShaderBinaryTool leaves the stage interface of Metal task and mesh en
 #endif
 }
 
+namespace
+{
+#ifdef __APPLE__
+    void checkMetalSourceCompiles(std::string_view source)
+    {
+        if (std::system("xcrun -sdk macosx --find metal > /dev/null 2>&1") != 0)
+        {
+            WARN("xcrun cannot find the Metal compiler, so the rewritten Metal source is not compiled.");
+            return;
+        }
+        ScopedTempDirectory const temp;
+        const auto sourcePath = temp.path / "rewritten.metal";
+        writeBinaryFile(sourcePath, asBytes(source));
+        const auto command = "xcrun -sdk macosx metal -std=metal3.1 -c \"" + sourcePath.string() + "\" -o \"" +
+                             (temp.path / "rewritten.air").string() + "\"";
+        INFO(source);
+        CHECK(std::system(command.c_str()) == 0);
+    }
+#else
+    void checkMetalSourceCompiles(std::string_view)
+    {
+    }
+#endif
+} // namespace
+
 TEST_CASE("ShaderBinaryTool moves unbounded Metal resource arrays into argument buffers",
           "[size:small][rhi][shader][tooling]")
 {
@@ -1711,27 +1736,32 @@ float4 fetch_0(uint index_0, KernelContext_0 thread* kernelContext_0)
     CHECK((*planned)[0].resourceType == "sampledTexture");
     CHECK((*planned)[0].set == 1);
     CHECK((*planned)[0].binding == 0);
-    CHECK((*planned)[0].metalIndex == 3);
+    CHECK((*planned)[0].metalIndex == 0);
     CHECK((*planned)[1].resourceType == "readOnlyStorageBuffer");
     CHECK((*planned)[1].set == 2);
     CHECK((*planned)[1].binding == 3);
-    CHECK((*planned)[1].metalIndex == 4);
+    CHECK((*planned)[1].metalIndex == 1);
 
     const auto rewritten = rachis::shader_tool::rewriteMetalArgumentBufferArrays(source, *planned);
     REQUIRE(rewritten.has_value());
     CHECK(rewritten->contains("struct RachisArgumentStorage"));
-    CHECK(rewritten->contains(
-        "constant RachisArgumentStorage<texture2d<float, access::sample>, 500000>& textures_1 [[buffer(3)]]"));
-    CHECK(rewritten->contains("constant RachisArgumentStorage<uint device*, 500000>& buffers_1 [[buffer(4)]]"));
+    CHECK(rewritten->contains("constant RachisArgumentStorage<texture2d<float, access::sample>, 500000>& "
+                              "textures_1_storage [[buffer(0)]]"));
+    CHECK(rewritten->contains("constant RachisArgumentStorage<uint device*, 500000>& buffers_1_storage [[buffer(1)]]"));
+    CHECK(rewritten->contains("{\n    RachisArgumentArray<texture2d<float, access::sample>, 500000> textures_1 = "
+                              "{&textures_1_storage};\n    RachisArgumentArray<uint device*, 500000> buffers_1 = "
+                              "{&buffers_1_storage};\n    thread KernelContext_0 kernelContext_1;"));
     CHECK(rewritten->contains("    RachisArgumentArray<texture2d<float, access::sample>, 500000> textures_0;"));
     CHECK(rewritten->contains(
         "    RachisArgumentArray<texture2d<float, access::sample>, 500000> _S1 = kernelContext_0->textures_0;"));
-    CHECK(rewritten->contains("    (&kernelContext_1)->textures_0.items = &textures_1;"));
-    CHECK(rewritten->contains("    (&kernelContext_1)->buffers_0.items = &buffers_1;"));
-    CHECK_FALSE(rewritten->contains("textures_1[]"));
-    CHECK_FALSE(rewritten->contains("buffers_0[]"));
-    CHECK_FALSE(rewritten->contains("_S1[]"));
+    CHECK(rewritten->contains("    (&kernelContext_1)->textures_0 = textures_1;"));
+    CHECK(rewritten->contains("    (&kernelContext_1)->buffers_0 = buffers_1;"));
+    for (const auto* unbounded : {"textures_0[]", "buffers_0[]", "_S1[]", "textures_1[]", "buffers_1[]"})
+    {
+        CHECK_FALSE(rewritten->contains(unbounded));
+    }
     CHECK(rewritten->contains("    T operator[](uint index) const constant\n"));
+    checkMetalSourceCompiles(*rewritten);
 
     constexpr std::string_view direct = R"msl(#include <metal_stdlib>
 using namespace metal;
@@ -1753,8 +1783,11 @@ using namespace metal;
     REQUIRE(directPlan->size() == 1);
     const auto directRewritten = rachis::shader_tool::rewriteMetalArgumentBufferArrays(direct, *directPlan);
     REQUIRE(directRewritten.has_value());
-    CHECK(directRewritten->contains("constant RachisArgumentStorage<uint device*, 500000>& colors_0 [[buffer("));
+    CHECK(directRewritten->contains(
+        "constant RachisArgumentStorage<uint device*, 500000>& colors_0_storage [[buffer(0)]])\n{\n"
+        "    RachisArgumentArray<uint device*, 500000> colors_0 = {&colors_0_storage};\n"));
     CHECK(directRewritten->contains("    return float4(float(colors_0[1U][int(0)]));"));
+    checkMetalSourceCompiles(*directRewritten);
 
     const auto enriched = rachis::shader_tool::enrichMetalReflectionJson(
         R"({"parameters": [], "entryPoints": [{"name": "arraysMain", "stage": "compute", "parameters": []}]})",
@@ -1763,7 +1796,7 @@ using namespace metal;
         *planned);
     REQUIRE(enriched.has_value());
     CHECK(enriched->contains(R"("rachisArgumentBuffers": [{"name": "textures", "type": "sampledTexture", "set": 1, )"
-                             R"("binding": 0, "index": 3, "capacity": 500000}, )"));
+                             R"("binding": 0, "index": 0, "capacity": 500000}, )"));
 
     CHECK(rachis::shader_tool::collectMetalUnboundedArrayParameters("using namespace metal;\n").empty());
     const auto unplanned = rachis::shader_tool::rewriteMetalArgumentBufferArrays(source, std::span(*planned).first(1));
@@ -1812,4 +1845,96 @@ TEST_CASE("ShaderBinaryTool marks only a one-uint constant buffer at b0, space5 
         REQUIRE_FALSE(result.has_value());
         CHECK(result.error().find("register space 5") != std::string::npos);
     }
+}
+
+TEST_CASE("ShaderBinaryTool rewrites copies of an argument-buffer array and arrays passed to helpers",
+          "[size:small][rhi][shader][tooling]")
+{
+    constexpr std::string_view source = R"msl(#include <metal_stdlib>
+using namespace metal;
+float4 sample_0(texture2d<float, access::sample>  values_0[], uint index_0)
+{
+    return values_0[index_0].read(uint2(0U, 0U));
+}
+[[kernel]] void forwardMain(uint3 id_0 [[thread_position_in_grid]], float4 device* output_0 [[buffer(0)]], texture2d<float, access::sample>  textures_1[])
+{
+    texture2d<float, access::sample>  local_0[] = textures_1;
+    output_0[id_0.x] = sample_0(textures_1, id_0.x) + sample_0(local_0, id_0.y);
+}
+)msl";
+    constexpr std::string_view spirvJson = R"({"parameters": [],
+        "entryPoints": [{"name": "forwardMain", "parameters": [
+            {"name": "textures", "bindings": [{"kind": "descriptorTableSlot", "space": 1, "index": 2}]}
+        ]}]})";
+    constexpr std::string_view metalJson = R"({"parameters": [],
+        "entryPoints": [{"name": "forwardMain", "stage": "compute", "parameters": [
+            {"name": "textures", "type": {"kind": "array", "elementCount": 0,
+                "elementType": {"kind": "resource", "baseShape": "texture2D"}}}
+        ]}]})";
+    const auto planned =
+        rachis::shader_tool::planMetalArgumentBufferArrays(source, spirvJson, metalJson, "forwardMain");
+    REQUIRE(planned.has_value());
+    REQUIRE(planned->size() == 1);
+    CHECK((*planned)[0].set == 1);
+    CHECK((*planned)[0].binding == 2);
+    CHECK((*planned)[0].metalIndex == 1);
+
+    const auto rewritten = rachis::shader_tool::rewriteMetalArgumentBufferArrays(source, *planned);
+    REQUIRE(rewritten.has_value());
+    constexpr std::string_view wrapper = "RachisArgumentArray<texture2d<float, access::sample>, 500000>";
+    CHECK(rewritten->contains("float4 sample_0(" + std::string(wrapper) + " values_0, uint index_0)"));
+    CHECK(rewritten->contains("constant RachisArgumentStorage<texture2d<float, access::sample>, 500000>& "
+                              "textures_1_storage [[buffer(1)]])\n{\n    " +
+                              std::string(wrapper) + " textures_1 = {&textures_1_storage};\n"));
+    CHECK(rewritten->contains("    " + std::string(wrapper) + " local_0 = textures_1;\n"));
+    CHECK(rewritten->contains("sample_0(textures_1, id_0.x) + sample_0(local_0, id_0.y)"));
+    for (const auto* unbounded : {"values_0[]", "textures_1[]", "local_0[]"})
+    {
+        CHECK_FALSE(rewritten->contains(unbounded));
+    }
+    CHECK_FALSE(rewritten->contains(".items = &"));
+    checkMetalSourceCompiles(*rewritten);
+}
+
+TEST_CASE("ShaderBinaryTool places argument buffers in the free buffer slots of the entry point",
+          "[size:small][rhi][shader][tooling]")
+{
+    constexpr std::string_view source = R"msl(#include <metal_stdlib>
+using namespace metal;
+[[kernel]] void slotsMain(uint3 id_0 [[thread_position_in_grid]], float device* output_0 [[buffer(30)]], float device* fixed_0 [[buffer(1)]], texture2d<float, access::read>  textures_0[], texture2d<float, access::read>  more_0[])
+{
+    output_0[id_0.x] = textures_0[0].read(uint2(0U, 0U)).x + more_0[0].read(uint2(0U, 0U)).x + fixed_0[0];
+}
+)msl";
+    constexpr std::string_view spirvJson = R"({"parameters": [
+        {"name": "textures", "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 0}},
+        {"name": "more", "binding": {"kind": "descriptorTableSlot", "space": 2, "index": 0}}
+    ]})";
+    constexpr std::string_view metalJson = R"({"parameters": [
+        {"name": "output", "binding": {"kind": "constantBuffer", "index": 30},
+            "type": {"kind": "resource", "baseShape": "structuredBuffer", "access": "readWrite"}},
+        {"name": "fixed", "binding": {"kind": "constantBuffer", "index": 1},
+            "type": {"kind": "array", "elementCount": 3,
+                "elementType": {"kind": "resource", "baseShape": "structuredBuffer"}}},
+        {"name": "textures", "type": {"kind": "array", "elementCount": 0,
+            "elementType": {"kind": "resource", "baseShape": "texture2D"}}},
+        {"name": "more", "type": {"kind": "array", "elementCount": 0,
+            "elementType": {"kind": "resource", "baseShape": "texture2D"}}}
+    ]})";
+    const auto planned = rachis::shader_tool::planMetalArgumentBufferArrays(source, spirvJson, metalJson);
+    REQUIRE(planned.has_value());
+    REQUIRE(planned->size() == 2);
+    CHECK((*planned)[0].metalIndex == 0);
+    CHECK((*planned)[1].metalIndex == 4);
+
+    std::string crowded(source);
+    std::string occupied;
+    for (std::uint32_t slot = 2; slot < 30; ++slot)
+    {
+        occupied += ", float device* extra" + std::to_string(slot) + "_0 [[buffer(" + std::to_string(slot) + ")]]";
+    }
+    crowded.insert(crowded.find(", texture2d"), occupied);
+    const auto onlyOne = rachis::shader_tool::planMetalArgumentBufferArrays(crowded, spirvJson, metalJson);
+    REQUIRE_FALSE(onlyOne.has_value());
+    CHECK(onlyOne.error().find("'more'") != std::string::npos);
 }

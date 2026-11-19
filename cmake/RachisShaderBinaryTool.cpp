@@ -1163,7 +1163,7 @@ namespace
             return 1;
         }
         auto planned = rachis::shader_tool::planMetalArgumentBufferArrays(
-            rebasedSource, viewAsText(*spirvReflection), viewAsText(*metalReflection));
+            rebasedSource, viewAsText(*spirvReflection), viewAsText(*metalReflection), options.entryPoint);
         if (!planned.has_value())
         {
             std::cerr << planned.error() << '\n';
