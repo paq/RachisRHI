@@ -66,7 +66,7 @@ void meshNoTask(out vertices MeshVertex vertices[3], out indices uint3 triangles
         MeshVertex vertex;
         vertex.position =
             float4(trianglePositions[index] * pushConstants.meshControl.x + pushConstants.meshControl.yz, 0.0F, 1.0F);
-        vertex.color = float4(0.0F, 1.0F, 0.0F, 1.0F);
+        vertex.color = float4(0.0F, pushConstants.meshControl.w, 0.0F, 1.0F);
         vertices[index] = vertex;
     }
     triangles[0] = uint3(0, 1, 2);
