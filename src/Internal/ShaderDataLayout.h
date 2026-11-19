@@ -765,6 +765,7 @@ namespace rachis::shader_tool
             static constexpr std::uint32_t opCopyMemorySized = 64;
             static constexpr std::uint32_t opAccessChain = 65;
             static constexpr std::uint32_t opInBoundsAccessChain = 66;
+            static constexpr std::uint32_t opCopyObject = 83;
             static constexpr std::uint32_t opDecorate = 71;
             static constexpr std::uint32_t opMemberDecorate = 72;
             static constexpr std::uint32_t opExecutionModeId = 331;
@@ -1218,6 +1219,12 @@ namespace rachis::shader_tool
                     if (operands.size() >= 2)
                     {
                         function.readPointers.push_back(operands[1]);
+                    }
+                    break;
+                case opCopyObject:
+                    if (operands.size() >= 3)
+                    {
+                        accessChains_[operands[1]] = AccessChain{.base = operands[2]};
                     }
                     break;
                 case opAccessChain:

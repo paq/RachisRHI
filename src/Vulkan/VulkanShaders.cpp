@@ -409,6 +409,7 @@ namespace rachis::vulkan
         constexpr std::uint32_t spirvOpVectorShuffle = 79;
         constexpr std::uint32_t spirvOpCompositeExtract = 81;
         constexpr std::uint32_t spirvOpCompositeInsert = 82;
+        constexpr std::uint32_t spirvOpCopyObject = 83;
         constexpr std::uint32_t spirvOpImageSampleImplicitLod = 87;
         constexpr std::uint32_t spirvOpImageSampleExplicitLod = 88;
         constexpr std::uint32_t spirvOpImageSampleDrefImplicitLod = 89;
@@ -2302,6 +2303,12 @@ namespace rachis::vulkan
                         .base = words[3],
                         .firstIndex = wordCount >= 5 ? std::optional<std::uint32_t>{words[4]} : std::nullopt,
                     };
+                }
+                return;
+            case spirvOpCopyObject:
+                if (wordCount >= 4)
+                {
+                    accessChains[words[2]] = SpirvAccessChain{.base = words[3]};
                 }
                 return;
             default:

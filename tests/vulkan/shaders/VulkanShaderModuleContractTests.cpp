@@ -155,6 +155,7 @@ namespace
     constexpr std::uint32_t spirvOpStore = 62;
     constexpr std::uint32_t spirvOpCopyMemory = 63;
     constexpr std::uint32_t spirvOpAccessChain = 65;
+    constexpr std::uint32_t spirvOpCopyObject = 83;
     constexpr std::uint32_t spirvOpDecorate = 71;
     constexpr std::uint32_t spirvOpMemberDecorate = 72;
     constexpr std::uint32_t spirvOpConvertFToU = 109;
@@ -1035,10 +1036,18 @@ namespace
     {
         none,
         directVariable,
+        copiedPointer,
         blockMember,
+        copiedMemberPointer,
         otherBlockMember,
         wholeBlock,
     };
+
+    [[nodiscard]] constexpr bool readsThroughBlock(DrawIndexRead read) noexcept
+    {
+        return read == DrawIndexRead::blockMember || read == DrawIndexRead::copiedMemberPointer ||
+               read == DrawIndexRead::otherBlockMember || read == DrawIndexRead::wholeBlock;
+    }
 
     [[nodiscard]] std::vector<std::byte> vertexModuleReadingDrawIndex(DrawIndexRead read)
     {
@@ -1048,37 +1057,82 @@ namespace
         constexpr std::uint32_t labelId = 4;
         constexpr std::uint32_t uintTypeId = 5;
         constexpr std::uint32_t uintInputTypeId = 6;
-        constexpr std::uint32_t drawIndexId = 7;
+        constexpr std::uint32_t inputId = 7;
         constexpr std::uint32_t blockTypeId = 8;
         constexpr std::uint32_t blockInputTypeId = 9;
-        constexpr std::uint32_t blockId = 10;
-        constexpr std::uint32_t memberZeroId = 11;
-        constexpr std::uint32_t memberOneId = 12;
-        constexpr std::uint32_t memberPointerId = 13;
+        constexpr std::uint32_t memberZeroId = 10;
+        constexpr std::uint32_t memberOneId = 11;
+        constexpr std::uint32_t pointerId = 12;
+        constexpr std::uint32_t copyId = 13;
         constexpr std::uint32_t loadedId = 14;
         constexpr std::uint32_t idBound = 15;
-        const std::vector<std::uint32_t> header{spirvMagicNumber, spirvVersion1_0, 0U, idBound, 0U};
+        const std::vector<std::uint32_t> header{spirvMagicNumber, spirvVersion1_3, 0U, idBound, 0U};
+        const bool block = readsThroughBlock(read);
+        std::vector<std::uint32_t> declarations;
+        if (block)
+        {
+            declarations = joinSpirvWords({
+                spirvInstruction(spirvOpMemberDecorate,
+                                 {blockTypeId, 0U, spirvDecorationBuiltIn, spirvBuiltInVertexIndex}),
+                spirvInstruction(spirvOpMemberDecorate,
+                                 {blockTypeId, 1U, spirvDecorationBuiltIn, spirvBuiltInDrawIndex}),
+                spirvInstruction(spirvOpDecorate, {blockTypeId, spirvDecorationBlock}),
+                spirvInstruction(spirvOpTypeVoid, {voidTypeId}),
+                spirvInstruction(spirvOpTypeFunction, {functionTypeId, voidTypeId}),
+                spirvInstruction(spirvOpTypeInt, {uintTypeId, 32U, 0U}),
+                spirvInstruction(spirvOpTypePointer, {uintInputTypeId, spirvStorageClassInput, uintTypeId}),
+                spirvInstruction(spirvOpTypeStruct, {blockTypeId, uintTypeId, uintTypeId}),
+                spirvInstruction(spirvOpTypePointer, {blockInputTypeId, spirvStorageClassInput, blockTypeId}),
+                spirvInstruction(spirvOpVariable, {blockInputTypeId, inputId, spirvStorageClassInput}),
+                spirvInstruction(spirvOpConstant, {uintTypeId, memberZeroId, 0U}),
+                spirvInstruction(spirvOpConstant, {uintTypeId, memberOneId, 1U}),
+            });
+        }
+        else
+        {
+            declarations = joinSpirvWords({
+                spirvInstruction(spirvOpDecorate, {inputId, spirvDecorationBuiltIn, spirvBuiltInDrawIndex}),
+                spirvInstruction(spirvOpTypeVoid, {voidTypeId}),
+                spirvInstruction(spirvOpTypeFunction, {functionTypeId, voidTypeId}),
+                spirvInstruction(spirvOpTypeInt, {uintTypeId, 32U, 0U}),
+                spirvInstruction(spirvOpTypePointer, {uintInputTypeId, spirvStorageClassInput, uintTypeId}),
+                spirvInstruction(spirvOpVariable, {uintInputTypeId, inputId, spirvStorageClassInput}),
+            });
+        }
         std::vector<std::uint32_t> body;
         switch (read)
         {
         case DrawIndexRead::none:
             break;
         case DrawIndexRead::directVariable:
-            body = spirvInstruction(spirvOpLoad, {uintTypeId, loadedId, drawIndexId});
+            body = spirvInstruction(spirvOpLoad, {uintTypeId, loadedId, inputId});
+            break;
+        case DrawIndexRead::copiedPointer:
+            body = joinSpirvWords({
+                spirvInstruction(spirvOpCopyObject, {uintInputTypeId, copyId, inputId}),
+                spirvInstruction(spirvOpLoad, {uintTypeId, loadedId, copyId}),
+            });
             break;
         case DrawIndexRead::blockMember:
         case DrawIndexRead::otherBlockMember:
             body = joinSpirvWords({
                 spirvInstruction(spirvOpAccessChain,
                                  {uintInputTypeId,
-                                  memberPointerId,
-                                  blockId,
+                                  pointerId,
+                                  inputId,
                                   read == DrawIndexRead::blockMember ? memberOneId : memberZeroId}),
-                spirvInstruction(spirvOpLoad, {uintTypeId, loadedId, memberPointerId}),
+                spirvInstruction(spirvOpLoad, {uintTypeId, loadedId, pointerId}),
+            });
+            break;
+        case DrawIndexRead::copiedMemberPointer:
+            body = joinSpirvWords({
+                spirvInstruction(spirvOpAccessChain, {uintInputTypeId, pointerId, inputId, memberOneId}),
+                spirvInstruction(spirvOpCopyObject, {uintInputTypeId, copyId, pointerId}),
+                spirvInstruction(spirvOpLoad, {uintTypeId, loadedId, copyId}),
             });
             break;
         case DrawIndexRead::wholeBlock:
-            body = spirvInstruction(spirvOpLoad, {blockTypeId, loadedId, blockId});
+            body = spirvInstruction(spirvOpLoad, {blockTypeId, loadedId, inputId});
             break;
         }
         return joinSpirvBytes({
@@ -1086,21 +1140,8 @@ namespace
             spirvInstruction(spirvOpCapability, {spirvCapabilityShader}),
             spirvInstruction(spirvOpCapability, {spirvCapabilityDrawParameters}),
             spirvInstruction(spirvOpMemoryModel, {spirvAddressingLogical, spirvMemoryModelGlsl450}),
-            vertexEntryPoint(mainId, {drawIndexId, blockId}),
-            spirvInstruction(spirvOpDecorate, {drawIndexId, spirvDecorationBuiltIn, spirvBuiltInDrawIndex}),
-            spirvInstruction(spirvOpMemberDecorate, {blockTypeId, 0U, spirvDecorationBuiltIn, spirvBuiltInVertexIndex}),
-            spirvInstruction(spirvOpMemberDecorate, {blockTypeId, 1U, spirvDecorationBuiltIn, spirvBuiltInDrawIndex}),
-            spirvInstruction(spirvOpDecorate, {blockTypeId, spirvDecorationBlock}),
-            spirvInstruction(spirvOpTypeVoid, {voidTypeId}),
-            spirvInstruction(spirvOpTypeFunction, {functionTypeId, voidTypeId}),
-            spirvInstruction(spirvOpTypeInt, {uintTypeId, 32U, 0U}),
-            spirvInstruction(spirvOpTypePointer, {uintInputTypeId, spirvStorageClassInput, uintTypeId}),
-            spirvInstruction(spirvOpVariable, {uintInputTypeId, drawIndexId, spirvStorageClassInput}),
-            spirvInstruction(spirvOpTypeStruct, {blockTypeId, uintTypeId, uintTypeId}),
-            spirvInstruction(spirvOpTypePointer, {blockInputTypeId, spirvStorageClassInput, blockTypeId}),
-            spirvInstruction(spirvOpVariable, {blockInputTypeId, blockId, spirvStorageClassInput}),
-            spirvInstruction(spirvOpConstant, {uintTypeId, memberZeroId, 0U}),
-            spirvInstruction(spirvOpConstant, {uintTypeId, memberOneId, 1U}),
+            vertexEntryPoint(mainId, {inputId}),
+            declarations,
             spirvInstruction(spirvOpFunction, {voidTypeId, mainId, spirvFunctionControlNone, functionTypeId}),
             spirvInstruction(spirvOpLabel, {labelId}),
             body,
@@ -3319,7 +3360,9 @@ TEST_CASE(
     for (const auto& [name, read, reads] : std::array{
              Case{"listed but never loaded", DrawIndexRead::none, false},
              Case{"loaded variable", DrawIndexRead::directVariable, true},
+             Case{"load through a copied pointer", DrawIndexRead::copiedPointer, true},
              Case{"loaded block member", DrawIndexRead::blockMember, true},
+             Case{"load through a copied member pointer", DrawIndexRead::copiedMemberPointer, true},
              Case{"another member of the block", DrawIndexRead::otherBlockMember, false},
              Case{"whole block load", DrawIndexRead::wholeBlock, true},
          })
