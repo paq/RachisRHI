@@ -1602,6 +1602,8 @@ namespace rachis::metal
         std::atomic<std::uint64_t> indirectClampEncodeCount{0};
         std::shared_ptr<MetalCommitFeedbackGate> nextCommandPoolResetGate;
         std::shared_ptr<MetalCommitFeedbackGate> nextSubmitFoldGate;
+        bool holdNextSubmitOnGpu = false;
+        __strong id<MTLSharedEvent> heldSubmitEvent = nil;
         std::shared_ptr<MetalCommitFeedbackGate> nextDrawableAcquireGate;
     };
 
@@ -1626,6 +1628,7 @@ namespace rachis::metal
     [[nodiscard]] bool consumeInjectedMetalBindingResidencyReserveFailure() noexcept;
     [[nodiscard]] bool consumeInjectedMetalLayoutStagingFailure() noexcept;
     void waitAtMetalSubmitAfterResidencyFold() noexcept;
+    void encodeHeldMetalSubmitGpuWait(id<MTLDevice> device, id<MTL4CommandQueue> queue) noexcept;
 #endif
 
     [[nodiscard]] FormatProperties probeFormat(id<MTLDevice> device, Format format) noexcept;

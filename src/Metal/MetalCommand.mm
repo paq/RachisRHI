@@ -1957,6 +1957,9 @@ namespace rachis::metal
             MTL4CommitOptions* const commitOptions = [MTL4CommitOptions new];
             addMetalSubmissionFeedbackHandler(commitOptions, native_, state.type, submittedValue);
             encodeMetalQueueWaits(*native_, waits, drawableWaits);
+#ifdef RACHIS_TESTING
+            encodeHeldMetalSubmitGpuWait(native_->device, native_->commandQueue);
+#endif
             [native_->commandQueue commit:batch.nativeBuffers.data()
                                     count:batch.nativeBuffers.size()
                                   options:commitOptions];

@@ -1789,6 +1789,46 @@ void rachis::metal::waitAtMetalSubmitAfterResidencyFold() noexcept
     }
 }
 
+void rachis::metal::holdNextSubmitOnGpu() noexcept
+{
+    const std::scoped_lock lock(metalTestingState().mutex);
+    metalTestingState().holdNextSubmitOnGpu = true;
+}
+
+void rachis::metal::releaseSubmitHeldOnGpu() noexcept
+{
+    id<MTLSharedEvent> event = nil;
+    {
+        const std::scoped_lock lock(metalTestingState().mutex);
+        metalTestingState().holdNextSubmitOnGpu = false;
+        event = metalTestingState().heldSubmitEvent;
+        metalTestingState().heldSubmitEvent = nil;
+    }
+    if (event != nil)
+    {
+        event.signaledValue = 1;
+    }
+}
+
+void rachis::metal::encodeHeldMetalSubmitGpuWait(id<MTLDevice> device, id<MTL4CommandQueue> queue) noexcept
+{
+    id<MTLSharedEvent> event = nil;
+    {
+        const std::scoped_lock lock(metalTestingState().mutex);
+        if (!metalTestingState().holdNextSubmitOnGpu)
+        {
+            return;
+        }
+        metalTestingState().holdNextSubmitOnGpu = false;
+        event = [device newSharedEvent];
+        metalTestingState().heldSubmitEvent = event;
+    }
+    if (event != nil)
+    {
+        [queue waitForEvent:event value:1];
+    }
+}
+
 void rachis::metal::holdNextCommandPoolReset(std::shared_ptr<rachis::metal::MetalCommitFeedbackGate> gate)
 {
     const std::scoped_lock lock(metalTestingState().mutex);

@@ -304,6 +304,8 @@ namespace rachis::metal
     void holdNextCommandPoolReset(std::shared_ptr<MetalCommitFeedbackGate> gate);
     void holdNextDrawableAcquire(std::shared_ptr<MetalCommitFeedbackGate> gate);
     void holdNextSubmitAfterResidencyFold(std::shared_ptr<MetalCommitFeedbackGate> gate);
+    void holdNextSubmitOnGpu() noexcept;
+    void releaseSubmitHeldOnGpu() noexcept;
     [[nodiscard]] std::weak_ptr<void> boundBufferOwnerObserver(BufferHandle buffer);
     [[nodiscard]] Result<std::size_t> boundAllocationTelemetryCount();
     [[nodiscard]] Status injectMetalDeviceLoss(DeviceFaultStatus status = DeviceFaultStatus::removed);

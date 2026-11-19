@@ -231,8 +231,21 @@ TEST_CASE("Metal update-after-bind array elements change in place while other el
         return std::move(*command);
     };
 
-    const ScopedGateRelease heldFeedback{std::make_shared<rachis::metal::MetalCommitFeedbackGate>()};
-    rachis::metal::holdNextCommitFeedback(heldFeedback.gate);
+    struct ScopedGpuHold final
+    {
+        ScopedGpuHold() noexcept
+        {
+            rachis::metal::holdNextSubmitOnGpu();
+        }
+        ~ScopedGpuHold()
+        {
+            rachis::metal::releaseSubmitHeldOnGpu();
+        }
+        ScopedGpuHold(const ScopedGpuHold&) = delete;
+        ScopedGpuHold& operator=(const ScopedGpuHold&) = delete;
+    };
+    std::optional<ScopedGpuHold> heldGpu;
+    heldGpu.emplace();
     auto inFlight = device.submit(record(0, 0));
     REQUIRE(inFlight.has_value());
     auto recordedBefore = record(1, 1);
@@ -255,7 +268,7 @@ TEST_CASE("Metal update-after-bind array elements change in place while other el
     const auto storageAfter = rachis::metal::boundBindingSetStorage(*set);
     CHECK(storageAfter.version == storageBefore.version);
     CHECK(storageAfter.elements == storageBefore.elements);
-    heldFeedback.gate->release();
+    heldGpu.reset();
 
     auto submittedAfter = device.submit(std::move(recordedBefore));
     REQUIRE(submittedAfter.has_value());
