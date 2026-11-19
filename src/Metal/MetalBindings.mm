@@ -1383,6 +1383,50 @@ namespace rachis::metal
                 writes, [&](const BindingWrite& write) { return write.binding == *layout.variableBinding; });
         }
 
+        [[nodiscard]] Status metalReserveArgumentContents(MetalBindingSetVersion& version,
+                                                          std::span<const std::size_t> written)
+        {
+            auto& contents = *version.argumentContents;
+            std::vector<std::size_t> placedElements;
+            std::vector<const void*> placedAllocations;
+            try
+            {
+                placedElements.reserve(written.size());
+                placedAllocations.reserve(written.size());
+                for (const auto index : written)
+                {
+                    if (contents.writtenInPlace.try_emplace(index).second)
+                    {
+                        placedElements.push_back(index);
+                    }
+                    id<MTLAllocation> const allocation = metalArgumentElementAllocation(version.slots[index]);
+                    if (allocation == nil)
+                    {
+                        continue;
+                    }
+                    const auto* const key = (__bridge const void*)allocation;
+                    if (contents.residentElements.try_emplace(key, 0U).second)
+                    {
+                        placedAllocations.push_back(key);
+                    }
+                }
+            }
+            catch (const std::bad_alloc&)
+            {
+                for (const auto index : placedElements)
+                {
+                    contents.writtenInPlace.erase(index);
+                }
+                for (const auto* const key : placedAllocations)
+                {
+                    contents.residentElements.erase(key);
+                }
+                return std::unexpected(metalSelectionError(
+                    ErrorCode::outOfMemory, "Metal could not record the binding-array elements an update writes."));
+            }
+            return {};
+        }
+
         void metalWriteArgumentBufferElement(MetalBindingSetVersion& version,
                                              std::size_t slotIndex,
                                              const MetalBindingSlot& previous)
@@ -1498,6 +1542,10 @@ namespace rachis::metal
             std::ranges::sort(written);
             const auto duplicates = std::ranges::unique(written);
             written.erase(duplicates.begin(), duplicates.end());
+            if (auto reserved = metalReserveArgumentContents(*version, written); !reserved)
+            {
+                return reserved;
+            }
             for (const auto index : written)
             {
                 metalWriteArgumentBufferElement(*version, index, previousVersion->slots[index]);
