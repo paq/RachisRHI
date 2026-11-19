@@ -253,6 +253,57 @@ TEST_CASE("Metal pipeline creation rejects malformed state and unsupported stage
           (capabilities->meshShaders ? rachis::ErrorCode::invalidArgument : rachis::ErrorCode::unsupported));
 }
 
+TEST_CASE("Metal pipeline layouts charge the draw index and only the stages the device has",
+          "[size:large][rhi][metal][pipeline]")
+{
+    auto created = rachis::createDevice(metalDesc());
+    REQUIRE(created);
+    auto device = std::move(*created);
+    const auto capabilities = rachis::test::requireCapabilities(device);
+
+    const auto bufferLayout = [&](std::uint32_t count, rachis::ShaderStage visibility) {
+        const std::array entries{
+            rachis::BindingLayoutEntry{0, rachis::BindingType::uniformBuffer, visibility, count},
+        };
+        auto layout = device.createBindingLayout({.entries = entries});
+        REQUIRE(layout.has_value());
+        return *layout;
+    };
+
+    const auto fullVertex = bufferLayout(31, rachis::ShaderStage::vertex);
+    const auto almostFullVertex = bufferLayout(30, rachis::ShaderStage::vertex);
+    const std::array full{fullVertex};
+    const std::array almostFull{almostFullVertex};
+    auto withoutDrawIndex = device.createPipelineLayout({.bindingLayouts = full});
+    REQUIRE(withoutDrawIndex.has_value());
+    auto overfull = device.createPipelineLayout({.bindingLayouts = full, .drawIndex = true});
+    REQUIRE_FALSE(overfull.has_value());
+    CHECK(overfull.error().code == rachis::ErrorCode::invalidArgument);
+    auto fitting = device.createPipelineLayout({.bindingLayouts = almostFull, .drawIndex = true});
+    REQUIRE(fitting.has_value());
+
+    const auto vertexAndMesh = bufferLayout(16, rachis::ShaderStage::vertex | rachis::ShaderStage::mesh);
+    const auto pixelAndMesh = bufferLayout(16, rachis::ShaderStage::pixel | rachis::ShaderStage::mesh);
+    const std::array mixed{vertexAndMesh, pixelAndMesh};
+    auto mixedLayout = device.createPipelineLayout({.bindingLayouts = mixed});
+    CHECK(mixedLayout.has_value() == !capabilities.meshShaders);
+    if (mixedLayout.has_value())
+    {
+        REQUIRE(device.destroyPipelineLayout(*mixedLayout).has_value());
+    }
+    else
+    {
+        CHECK(mixedLayout.error().code == rachis::ErrorCode::invalidArgument);
+    }
+
+    REQUIRE(device.destroyPipelineLayout(*fitting).has_value());
+    REQUIRE(device.destroyPipelineLayout(*withoutDrawIndex).has_value());
+    for (const auto layout : {pixelAndMesh, vertexAndMesh, almostFullVertex, fullVertex})
+    {
+        REQUIRE(device.destroyBindingLayout(layout).has_value());
+    }
+}
+
 TEST_CASE("Metal shader modules check declared vertex inputs against the vertex function",
           "[size:large][rhi][metal][pipeline][vertex-input][regression]")
 {

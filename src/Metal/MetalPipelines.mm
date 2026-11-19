@@ -1776,9 +1776,15 @@ namespace rachis::metal
             std::array<std::uint64_t, 3> slots{};
         };
 
+        [[nodiscard]] constexpr bool metalStageReadsDrawIndex(ShaderStage stage) noexcept
+        {
+            return stage == ShaderStage::vertex || stage == ShaderStage::task || stage == ShaderStage::mesh;
+        }
+
         [[nodiscard]] Result<MetalStageArgumentUsage> metalCountStageArguments(
             ShaderStage stage,
             std::span<const PushConstantRange> pushConstantRanges,
+            bool drawIndex,
             const std::vector<std::shared_ptr<MetalBindingLayoutRecord>>& sets)
         {
             constexpr std::array<std::uint64_t, 3> argumentLimits{
@@ -1790,6 +1796,10 @@ namespace rachis::metal
             auto& stageSlots = usage.slots;
             if (std::ranges::any_of(pushConstantRanges,
                                     [&](const PushConstantRange& range) { return hasAny(range.visibility, stage); }))
+            {
+                stageSlots[0] += 1;
+            }
+            if (drawIndex && metalStageReadsDrawIndex(stage))
             {
                 stageSlots[0] += 1;
             }
@@ -1819,6 +1829,7 @@ namespace rachis::metal
         }
 
         [[nodiscard]] Status metalValidateStageArgumentCapacity(std::span<const PushConstantRange> pushConstantRanges,
+                                                                const DeviceCapabilities& capabilities,
                                                                 MetalPipelineLayoutRecord& record)
         {
             constexpr std::array<ShaderStage, 5> checkedStages{
@@ -1830,7 +1841,12 @@ namespace rachis::metal
             };
             for (const ShaderStage stage : checkedStages)
             {
-                auto usage = metalCountStageArguments(stage, pushConstantRanges, record.sets);
+                if ((stage == ShaderStage::task && !capabilities.taskShaders) ||
+                    (stage == ShaderStage::mesh && !capabilities.meshShaders))
+                {
+                    continue;
+                }
+                auto usage = metalCountStageArguments(stage, pushConstantRanges, record.drawIndex, record.sets);
                 if (!usage)
                 {
                     return std::unexpected(std::move(usage.error()));
@@ -1904,7 +1920,8 @@ namespace rachis::metal
         {
             return std::unexpected(std::move(sets.error()));
         }
-        if (auto capacity = metalValidateStageArgumentCapacity(desc.pushConstantRanges, *record); !capacity)
+        if (auto capacity = metalValidateStageArgumentCapacity(desc.pushConstantRanges, capabilities_, *record);
+            !capacity)
         {
             return std::unexpected(std::move(capacity.error()));
         }
