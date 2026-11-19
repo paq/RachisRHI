@@ -101,6 +101,8 @@ namespace rachis::d3d12
         return (state & ~queueStates) == 0;
     }
 
+    inline constexpr auto externallyUnknownTextureLayout = static_cast<TextureLayout>(0xFFU);
+
     class LegacyTextureStateTracker final
     {
     public:
@@ -158,12 +160,8 @@ namespace rachis::d3d12
 
         void markLayoutUnknown() noexcept
         {
-            layoutUnknown_ = true;
-        }
-
-        [[nodiscard]] bool layoutUnknown() const noexcept
-        {
-            return layoutUnknown_;
+            initialLayout_ = externallyUnknownTextureLayout;
+            std::ranges::fill(layouts_, externallyUnknownTextureLayout);
         }
 
         [[nodiscard]] TextureLayout layoutLocked(std::uint32_t subresource) const noexcept
@@ -194,7 +192,6 @@ namespace rachis::d3d12
         std::vector<D3D12_RESOURCE_STATES> states_;
         std::vector<TextureLayout> layouts_;
         TextureLayout initialLayout_ = TextureLayout::common;
-        bool layoutUnknown_ = false;
     };
 
     class LegacyTextureStateIndex final
@@ -487,11 +484,11 @@ namespace rachis::d3d12
                 const std::scoped_lock lock(use.tracker->mutex());
                 for (std::uint32_t subresource = 0; subresource < use.tracker->subresourceCount(); ++subresource)
                 {
-                    if (use.layoutEntryRequired[subresource] != 0 && !use.tracker->layoutUnknown())
+                    if (use.layoutEntryRequired[subresource] != 0)
                     {
                         const auto current = state.touched[subresource] != 0 ? state.layouts[subresource]
                                                                              : use.tracker->layoutLocked(subresource);
-                        if (current != use.layoutEntry[subresource])
+                        if (current != externallyUnknownTextureLayout && current != use.layoutEntry[subresource])
                         {
                             return std::unexpected(textureLayoutMismatch(use.layoutEntry[subresource],
                                                                          current,

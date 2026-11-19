@@ -230,7 +230,7 @@ Shared buffers and textures move between two devices using the release/acquire b
 | Backend | Ownership transfer behavior |
 | --- | --- |
 | **Vulkan** | Each RachisRHI device owns a separate `VkInstance`, so external queues map to `VK_QUEUE_FAMILY_EXTERNAL`. Release transfers from the recording queue's family to `VK_QUEUE_FAMILY_EXTERNAL` and acquire transfers back, both with `oldLayout = newLayout = VK_IMAGE_LAYOUT_GENERAL` (`VK_QUEUE_FAMILY_IGNORED` instead of the recording family when `VK_SHARING_MODE_CONCURRENT` is used). Transfers are required in both sharing modes; omitting them risks stale or compressed contents on drivers that track compression across transfers. A shared texture's layout is unknown until a barrier on it is submitted, so `submit` does not check the `layoutBefore` of that first barrier; later command buffers are checked against the layout it left. |
-| **Direct3D 12** | No ownership transfer is needed; barriers record as ordinary `common` -> `common` transitions with the specified stages and accesses. |
+| **Direct3D 12** | No ownership transfer is needed; barriers record as ordinary `common` -> `common` transitions with the specified stages and accesses. A shared texture's layout is unknown in each subresource until a command buffer that sets it is submitted, so `submit` does not check the `layoutBefore` of that first barrier; later command buffers are checked against the layout it left. |
 | **Metal** | Shared resources are not supported; every ownership transfer fails with `ErrorCode::invalidArgument`. |
 
 ## 1D textures on Metal

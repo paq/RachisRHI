@@ -283,35 +283,121 @@ TEST_CASE("D3D12 texture barriers must name the current layout of every subresou
 
     if (!legacy)
     {
-        SECTION("a shared texture's layout on entry is unknown, so only the record-time check applies")
-        {
+        const auto createShared = [&](const char* label) {
             auto shared = device.createSharedTexture({
                 .width = 8,
                 .height = 8,
+                .mipLevels = 2,
                 .format = rachis::Format::rgba8Unorm,
                 .usage = rachis::TextureUsage::copySource | rachis::TextureUsage::copyDestination |
-                         rachis::TextureUsage::sampled,
-                .label = "D3D12 shared layoutBefore texture",
+                         rachis::TextureUsage::sampled | rachis::TextureUsage::storage,
+                .label = label,
             });
             REQUIRE(shared.has_value());
-            auto entry = acquire(device);
-            REQUIRE(
-                device
-                    .textureBarrier(
-                        entry, layoutBarrier(*shared, TextureLayout::copyDestination, TextureLayout::shaderResource))
-                    .has_value());
-            submitAndWait(device, std::move(entry));
+            return *shared;
+        };
 
-            auto inside = acquire(device);
+        SECTION("a shared texture's entry layout is unknown until a submitted barrier establishes it")
+        {
+            const auto shared = createShared("D3D12 shared layoutBefore texture");
+            auto entry = acquire(device);
             REQUIRE(device
                         .textureBarrier(
-                            inside, layoutBarrier(*shared, TextureLayout::copySource, TextureLayout::copyDestination))
+                            entry, layoutBarrier(shared, TextureLayout::copyDestination, TextureLayout::shaderResource))
+                        .has_value());
+            submitAndWait(device, std::move(entry));
+
+            std::array inside{acquire(device)};
+            REQUIRE(device
+                        .textureBarrier(
+                            inside[0], layoutBarrier(shared, TextureLayout::copySource, TextureLayout::copyDestination))
                         .has_value());
             const auto wrong = device.textureBarrier(
-                inside, layoutBarrier(*shared, TextureLayout::shaderResource, TextureLayout::copySource));
+                inside[0], layoutBarrier(shared, TextureLayout::shaderResource, TextureLayout::copySource));
             REQUIRE_FALSE(wrong.has_value());
             CHECK(wrong.error().code == rachis::ErrorCode::invalidState);
-            submitAndWait(device, std::move(inside));
+            const auto rejected = device.submit(inside);
+            REQUIRE_FALSE(rejected.has_value());
+            CHECK(rejected.error().code == rachis::ErrorCode::invalidState);
+            CHECK(rejected.error().message.find("leaves it in shaderResource") != std::string::npos);
+
+            auto known = acquire(device);
+            REQUIRE(device
+                        .textureBarrier(known,
+                                        layoutBarrier(shared, TextureLayout::shaderResource, TextureLayout::copySource))
+                        .has_value());
+            submitAndWait(device, std::move(known));
+        }
+
+        SECTION("a shared texture keeps the entry layout its first submitted barrier established, per subresource")
+        {
+            const auto shared = createShared("D3D12 shared established texture");
+            auto entry = acquire(device);
+            REQUIRE(device
+                        .textureBarrier(entry,
+                                        layoutBarrier(shared,
+                                                      TextureLayout::undefined,
+                                                      TextureLayout::common,
+                                                      {.firstMipLevel = 0, .mipLevelCount = 1}))
+                        .has_value());
+            submitAndWait(device, std::move(entry));
+
+            std::array wrongEntry{acquire(device)};
+            REQUIRE(device
+                        .textureBarrier(wrongEntry[0],
+                                        layoutBarrier(shared,
+                                                      TextureLayout::shaderResource,
+                                                      TextureLayout::copySource,
+                                                      {.firstMipLevel = 0, .mipLevelCount = 1}))
+                        .has_value());
+            const auto rejected = device.submit(wrongEntry);
+            REQUIRE_FALSE(rejected.has_value());
+            CHECK(rejected.error().code == rachis::ErrorCode::invalidState);
+            CHECK(rejected.error().message.find("leaves it in common") != std::string::npos);
+
+            auto untouched = acquire(device);
+            REQUIRE(device
+                        .textureBarrier(untouched,
+                                        layoutBarrier(shared,
+                                                      TextureLayout::shaderResource,
+                                                      TextureLayout::copySource,
+                                                      {.firstMipLevel = 1, .mipLevelCount = 1}))
+                        .has_value());
+            submitAndWait(device, std::move(untouched));
+        }
+
+        SECTION("a storage clear checks a shared texture's entry layout once a submitted barrier set it")
+        {
+            const auto shared = createShared("D3D12 shared cleared texture");
+            auto view = device.createTextureView({
+                .texture = shared,
+                .usage = rachis::TextureViewUsage::storage,
+                .dimension = rachis::TextureViewDimension::texture2D,
+                .mipLevelCount = 1,
+            });
+            REQUIRE(view.has_value());
+            const rachis::StorageTextureClearValue value{
+                .type = rachis::StorageTextureClearType::float32,
+                .float32 = {0.25F, 0.5F, 0.75F, 1.0F},
+            };
+
+            auto established = acquire(device);
+            REQUIRE(device
+                        .textureBarrier(established,
+                                        layoutBarrier(shared,
+                                                      TextureLayout::undefined,
+                                                      TextureLayout::copySource,
+                                                      {.firstMipLevel = 0, .mipLevelCount = 1}))
+                        .has_value());
+            submitAndWait(device, std::move(established));
+
+            std::array wrong{acquire(device)};
+            REQUIRE(device.clearStorageTexture(wrong[0], *view, value).has_value());
+            const auto rejected = device.submit(wrong);
+            REQUIRE_FALSE(rejected.has_value());
+            CHECK(rejected.error().code == rachis::ErrorCode::invalidState);
+            CHECK(rejected.error().message.find("leaves it in copySource") != std::string::npos);
+            REQUIRE(device.destroyTextureView(*view).has_value());
         }
     }
 
