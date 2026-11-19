@@ -1795,6 +1795,25 @@ void* rachis::metal::boundNativeMetalDeviceHandle() noexcept
     return device != nullptr ? device->nativeMetalDeviceHandle() : nullptr;
 }
 
+std::uint32_t rachis::metal::boundAppleGpuFamily() noexcept
+{
+    void* const handle = boundNativeMetalDeviceHandle();
+    if (handle == nullptr)
+    {
+        return 0;
+    }
+    id<MTLDevice> const device = (__bridge id<MTLDevice>)handle;
+    if ([device supportsFamily:MTLGPUFamilyApple9])
+    {
+        return 9;
+    }
+    if ([device supportsFamily:MTLGPUFamilyApple8])
+    {
+        return 8;
+    }
+    return [device supportsFamily:MTLGPUFamilyApple7] ? 7U : 0U;
+}
+
 std::uint64_t rachis::metal::boundSamplerGpuResourceId(rachis::SamplerHandle sampler) noexcept
 {
     const auto* device = boundMetalTestDevice();

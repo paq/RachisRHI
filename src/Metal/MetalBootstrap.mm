@@ -241,7 +241,7 @@ namespace rachis::metal
             capabilities.limits.maxPushConstantBytes = rachis::maxPushConstantBytes;
             capabilities.limits.maxVariableResourceDescriptors = metalMaxArgumentBufferResources;
             capabilities.limits.maxVariableBufferDescriptors = metalMaxArgumentBufferResources;
-            capabilities.limits.maxVariableSamplerDescriptors = metalMaxArgumentBufferSamplers;
+            capabilities.limits.maxVariableSamplerDescriptors = metalArgumentBufferSamplerLimit(device);
             capabilities.vertexInput.supportedFormats = (std::uint64_t{1} << rachis::vertexFormatCount) - 1U;
             capabilities.vertexInput.maxBufferStride = 2048;
             capabilities.vertexInput.maxAttributeOffset = 2048;

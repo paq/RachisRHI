@@ -1398,10 +1398,19 @@ namespace rachis::metal
 
     inline constexpr std::uint32_t metalMaxArgumentBufferResources = 500'000;
     inline constexpr std::uint32_t metalMaxArgumentBufferSamplers = 1024;
+    inline constexpr std::uint32_t metalMaxArgumentBufferSamplersBeforeApple9 = 996;
 
-    [[nodiscard]] constexpr std::uint32_t metalArgumentBufferLimit(BindingType type) noexcept
+    [[nodiscard]] inline std::uint32_t metalArgumentBufferSamplerLimit(id<MTLDevice> device) noexcept
     {
-        return type == BindingType::sampler ? metalMaxArgumentBufferSamplers : metalMaxArgumentBufferResources;
+        return device != nil && [device supportsFamily:MTLGPUFamilyApple9]
+                   ? metalMaxArgumentBufferSamplers
+                   : metalMaxArgumentBufferSamplersBeforeApple9;
+    }
+
+    [[nodiscard]] constexpr std::uint32_t metalArgumentBufferLimit(BindingType type,
+                                                                   std::uint32_t samplerLimit) noexcept
+    {
+        return type == BindingType::sampler ? samplerLimit : metalMaxArgumentBufferResources;
     }
 
     [[nodiscard]] constexpr bool metalIsArgumentBufferSlot(const MetalBindingSetVersion& version,

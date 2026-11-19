@@ -143,10 +143,12 @@ namespace rachis::metal
         }
 
         [[nodiscard]] Status metalMeasureResourceSlots(
+            id<MTLDevice> device,
             MetalArgumentTableCapacity& capacity,
             const MetalResolvedStageBindings& stageBindings,
             std::span<const std::shared_ptr<MetalBindingSetVersion>> versions)
         {
+            std::uint64_t argumentSamplers = 0;
             for (const auto& res : stageBindings.resources)
             {
                 if (res.set >= versions.size() || versions[res.set] == nullptr)
@@ -156,11 +158,22 @@ namespace rachis::metal
                 }
                 if (res.argumentBuffer)
                 {
-                    if (versions[res.set]->argumentBuffer == nil)
+                    const auto& version = *versions[res.set];
+                    if (version.argumentBuffer == nil)
                     {
                         return std::unexpected(metalSelectionError(
                             ErrorCode::invalidState,
                             "The bound Metal binding set has no binding array for an unbounded shader array."));
+                    }
+                    if (version.variableDescriptorCount > res.argumentCapacity)
+                    {
+                        return std::unexpected(metalSelectionError(
+                            ErrorCode::invalidArgument,
+                            "The bound binding array has more elements than the shader's argument array holds."));
+                    }
+                    if (res.type == ShaderResourceType::sampler)
+                    {
+                        argumentSamplers += version.variableDescriptorCount;
                     }
                     metalIncludeBindingSlot(capacity, BindingType::storageBuffer, res.metalIndex + 1U);
                     continue;
@@ -179,6 +192,13 @@ namespace rachis::metal
                     }
                     metalIncludeBindingSlot(capacity, slot.type, targetIndex + 1U);
                 }
+            }
+            if (argumentSamplers != 0 && argumentSamplers > metalArgumentBufferSamplerLimit(device))
+            {
+                return std::unexpected(
+                    metalSelectionError(ErrorCode::invalidArgument,
+                                        "The binding arrays of samplers bound to one shader stage exceed "
+                                        "maxVariableSamplerDescriptors."));
             }
             return {};
         }
@@ -265,7 +285,7 @@ namespace rachis::metal
             {
                 return std::unexpected(std::move(measured.error()));
             }
-            if (auto measured = metalMeasureResourceSlots(capacity, stageBindings, versions); !measured)
+            if (auto measured = metalMeasureResourceSlots(device, capacity, stageBindings, versions); !measured)
             {
                 return std::unexpected(std::move(measured.error()));
             }

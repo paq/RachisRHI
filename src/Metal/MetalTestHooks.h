@@ -305,6 +305,7 @@ namespace rachis::metal
     [[nodiscard]] Status injectMetalDeviceLoss(DeviceFaultStatus status = DeviceFaultStatus::removed);
     [[nodiscard]] Status notifySurfaceHostClose(SurfaceHandle surface);
     [[nodiscard]] void* boundNativeMetalDeviceHandle() noexcept;
+    [[nodiscard]] std::uint32_t boundAppleGpuFamily() noexcept;
     [[nodiscard]] std::uint64_t boundSamplerGpuResourceId(SamplerHandle sampler) noexcept;
     [[nodiscard]] Status loadCookedMetallib(std::span<const std::byte> bytecode, std::string_view entryPoint = {});
     [[nodiscard]] Result<std::array<std::uint32_t, 8>> readLayoutFixtureSentinels(std::span<const std::byte> bytecode);

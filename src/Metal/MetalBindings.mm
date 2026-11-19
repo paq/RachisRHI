@@ -1156,7 +1156,8 @@ namespace rachis::metal
         }
 
         [[nodiscard]] Status metalValidateBindingSetRanges(const MetalBindingLayoutRecord& layout,
-                                                           std::uint32_t variableDescriptorCount)
+                                                           std::uint32_t variableDescriptorCount,
+                                                           std::uint32_t samplerLimit)
         {
             if (!layout.variableBinding.has_value() && variableDescriptorCount != 0)
             {
@@ -1169,7 +1170,7 @@ namespace rachis::metal
                 const auto count = metalLogicalDescriptorCount(entry, variableDescriptorCount);
                 if (hasAny(entry.flags, BindingFlag::variableDescriptorCount))
                 {
-                    if (count > metalArgumentBufferLimit(entry.type))
+                    if (count > metalArgumentBufferLimit(entry.type, samplerLimit))
                     {
                         return std::unexpected(metalSelectionError(
                             ErrorCode::invalidArgument, "The binding array exceeds Metal's argument-buffer capacity."));
@@ -1269,7 +1270,9 @@ namespace rachis::metal
             pool = std::move(sources->pool);
         }
 
-        if (auto ranges = metalValidateBindingSetRanges(*layout, desc.variableDescriptorCount); !ranges)
+        if (auto ranges = metalValidateBindingSetRanges(
+                *layout, desc.variableDescriptorCount, capabilities_.limits.maxVariableSamplerDescriptors);
+            !ranges)
         {
             return std::unexpected(std::move(ranges.error()));
         }
