@@ -120,25 +120,44 @@ TEST_CASE("D3D12 acceleration-structure execution leases decouple GPU execution 
         CHECK(blasTracker->canUpdateInPlace(recordingB));
     }
 
-    SECTION("consumer leases block even same-command-buffer in-place updates until reset or abandoned")
+    SECTION("consumer leases block in-place updates from other recordings until reset or abandoned")
     {
         const auto recordingA = recordings.next();
+        const auto recordingB = recordings.next();
         auto buildLease = AccelerationStructureExecutionLease::tryAcquireProducer(blasTracker, recordingA);
         REQUIRE(buildLease.has_value());
         CHECK(blasTracker->canUpdateInPlace(recordingA));
+        buildLease->reset();
 
         auto acquiredConsumer = AccelerationStructureExecutionLease::tryAcquireConsumer(blasTracker, recordingA);
         REQUIRE(acquiredConsumer.has_value());
         auto consumerLease = std::move(*acquiredConsumer);
         CHECK(consumerLease.active());
         CHECK(blasTracker->activeConsumerCount() == 1);
+        CHECK(blasTracker->canUpdateInPlace(recordingA));
+        CHECK_FALSE(blasTracker->canUpdateInPlace(recordingB));
+        CHECK_FALSE(AccelerationStructureExecutionLease::tryAcquireProducer(
+                        blasTracker, recordingB, {}, AccelerationStructureWrite::updateInPlace)
+                        .has_value());
+        auto sameRecordingRefit = AccelerationStructureExecutionLease::tryAcquireProducer(
+            blasTracker, recordingA, {}, AccelerationStructureWrite::updateInPlace);
+        REQUIRE(sameRecordingRefit.has_value());
+        sameRecordingRefit->reset();
+
+        auto acquiredForeign = AccelerationStructureExecutionLease::tryAcquireConsumer(blasTracker, recordingB);
+        REQUIRE(acquiredForeign.has_value());
+        auto foreignLease = std::move(*acquiredForeign);
+        CHECK(blasTracker->activeConsumerCount() == 2);
         CHECK_FALSE(blasTracker->canUpdateInPlace(recordingA));
-        CHECK_FALSE(AccelerationStructureExecutionLease::tryAcquireProducer(blasTracker, recordingA).has_value());
+        foreignLease.reset();
+        CHECK(blasTracker->activeConsumerCount() == 1);
+        CHECK(blasTracker->canUpdateInPlace(recordingA));
 
         consumerLease.reset();
         CHECK_FALSE(consumerLease.active());
         CHECK(blasTracker->activeConsumerCount() == 0);
         CHECK(blasTracker->canUpdateInPlace(recordingA));
+        CHECK(blasTracker->canUpdateInPlace(recordingB));
     }
 
     SECTION("in-place producers exclude consumers in other recordings until they are released")
