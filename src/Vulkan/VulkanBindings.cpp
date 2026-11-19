@@ -751,8 +751,12 @@ namespace rachis::vulkan
             std::uint64_t storageBuffersDynamic = 0;
         };
 
-        void addDescriptors(DescriptorTotals& totals, const BindingLayoutEntry& entry, std::uint32_t count) noexcept
+        void addDescriptors(DescriptorTotals& totals,
+                            const BindingLayoutEntry& entry,
+                            std::uint32_t count,
+                            ShaderStage enabledStages) noexcept
         {
+            const auto visibility = entry.visibility & enabledStages;
             const auto limitClass = descriptorLimitClass(entry.type);
             if (!limitClass.has_value())
             {
@@ -770,7 +774,7 @@ namespace rachis::vulkan
             }
             for (std::size_t stage = 0; stage < shaderStageBitCount; ++stage)
             {
-                if (!visibleToStage(entry.visibility, stage))
+                if (!visibleToStage(visibility, stage))
                 {
                     continue;
                 }
@@ -813,7 +817,8 @@ namespace rachis::vulkan
         [[nodiscard]] std::uint32_t variableDescriptorCapacity(const std::vector<BindingLayoutEntry>& entries,
                                                                const BindingLayoutEntry& variable,
                                                                std::uint32_t classCapacity,
-                                                               const VulkanDescriptorLimits& limits) noexcept
+                                                               const VulkanDescriptorLimits& limits,
+                                                               ShaderStage enabledStages) noexcept
         {
             const auto limitClass = descriptorLimitClass(variable.type);
             if (!limitClass.has_value())
@@ -825,7 +830,7 @@ namespace rachis::vulkan
             {
                 if (!hasAny(entry.flags, BindingFlag::variableDescriptorCount))
                 {
-                    addDescriptors(fixed, entry, entry.count);
+                    addDescriptors(fixed, entry, entry.count, enabledStages);
                 }
             }
             const auto classIndex = static_cast<std::size_t>(*limitClass);
@@ -835,7 +840,7 @@ namespace rachis::vulkan
                                            fixed.pipeline[classIndex]));
             for (std::size_t stage = 0; stage < shaderStageBitCount; ++stage)
             {
-                if (!visibleToStage(variable.visibility, stage))
+                if (!visibleToStage(variable.visibility & enabledStages, stage))
                 {
                     continue;
                 }
@@ -991,7 +996,8 @@ namespace rachis::vulkan
                 variableDescriptorCapacity(record->entries,
                                            *variable,
                                            classCapacity,
-                                           record->updateAfterBind ? updateAfterBindLimits_ : descriptorLimits_);
+                                           record->updateAfterBind ? updateAfterBindLimits_ : descriptorLimits_,
+                                           enabledShaderStages_);
         }
 
         if (table_ == nullptr || table_->vkCreateDescriptorSetLayout == nullptr || device_ == VK_NULL_HANDLE)
@@ -2621,10 +2627,10 @@ namespace rachis::vulkan
                 const auto count = hasAny(entry.flags, BindingFlag::variableDescriptorCount)
                                        ? set->variableDescriptorCapacity
                                        : entry.count;
-                addDescriptors(totals, entry, count);
+                addDescriptors(totals, entry, count, enabledShaderStages_);
                 if (!set->updateAfterBind)
                 {
-                    addDescriptors(withoutUpdateAfterBind, entry, count);
+                    addDescriptors(withoutUpdateAfterBind, entry, count, enabledShaderStages_);
                 }
             }
         }

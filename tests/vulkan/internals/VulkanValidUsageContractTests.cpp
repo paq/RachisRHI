@@ -4313,6 +4313,42 @@ TEST_CASE("Vulkan variable-count arrays and pipeline layouts stay within per-cla
     gDescriptorMock = nullptr;
 }
 
+TEST_CASE("Vulkan descriptor quotas count only the shader stages the device enables",
+          "[size:small][rhi][vulkan][vuid][bindings-mock]")
+{
+    using rachis::ShaderStage;
+    MockDescriptorDispatch mock;
+    gDescriptorMock = &mock;
+    const auto table = makeMockDescriptorTable();
+    const auto device = fakeHandle<VkDevice>(0x43);
+    const rachis::vulkan::VulkanDescriptorLimits limits{
+        .maxPerStageDescriptorStorageBuffers = 4,
+        .maxPerStageResources = 8,
+    };
+    const std::array vertexAndMesh{
+        rachis::BindingLayoutEntry{0, rachis::BindingType::storageBuffer, ShaderStage::vertex | ShaderStage::mesh, 3}};
+    const std::array pixelAndMesh{
+        rachis::BindingLayoutEntry{0, rachis::BindingType::storageBuffer, ShaderStage::pixel | ShaderStage::mesh, 3}};
+
+    for (const bool meshShaders : {false, true})
+    {
+        CAPTURE(meshShaders);
+        rachis::DeviceCapabilities caps{};
+        caps.meshShaders = meshShaders;
+        caps.taskShaders = meshShaders;
+        rachis::vulkan::VulkanBindingManager bindings;
+        bindings.initialize(device, &table, caps, nullptr, {}, limits);
+        const auto first = bindings.createBindingLayout({.entries = vertexAndMesh});
+        const auto second = bindings.createBindingLayout({.entries = pixelAndMesh});
+        REQUIRE(first.has_value());
+        REQUIRE(second.has_value());
+        const auto layout = bindings.createPipelineLayout({.bindingLayouts = std::array{*first, *second}});
+        CHECK(layout.has_value() == !meshShaders);
+        bindings.shutdown();
+    }
+    gDescriptorMock = nullptr;
+}
+
 TEST_CASE("Vulkan pipeline layouts give each shader stage one native push-constant range",
           "[size:small][rhi][vulkan][vuid][bindings-mock][push-constants]")
 {
