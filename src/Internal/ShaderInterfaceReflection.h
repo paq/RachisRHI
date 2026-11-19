@@ -619,8 +619,12 @@ namespace rachis::shader_tool
             const auto* items = size != nullptr ? size->asArray() : nullptr;
             if (items == nullptr || items->size() != 3)
             {
-                return std::unexpected("The " + std::string(interfaceStageName(stage)) + " entry point '" +
-                                       std::string(entryPoint) + "' has no reflected thread-group size.");
+                return std::unexpected(
+                    "The " + std::string(interfaceStageName(stage)) + " entry point '" + std::string(entryPoint) +
+                    "' has no reflected thread-group size." +
+                    (stage == InterfaceStage::compute ? std::string{}
+                                                      : std::string(" Slang reflects the thread-group size of task "
+                                                                    "and mesh shaders from version 2026.20.")));
             }
             std::array<std::uint32_t, 3> workgroup{};
             for (std::size_t axis = 0; axis < 3; ++axis)

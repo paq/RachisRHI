@@ -2002,6 +2002,25 @@ using namespace metal;
     CHECK(onlyOne.error().find("'more'") != std::string::npos);
 }
 
+TEST_CASE("ShaderBinaryTool requires a reflected thread-group size for Metal task and mesh entry points",
+          "[size:small][rhi][shader][tooling]")
+{
+    for (const std::string_view stage : {std::string_view{"mesh"}, std::string_view{"amplification"}})
+    {
+        CAPTURE(stage);
+        const auto json = R"({"parameters": [], "entryPoints": [{"name": "groupMain", "stage": ")" + std::string(stage) +
+                          R"(", "parameters": []}]})";
+        const auto enriched = rachis::shader_tool::enrichMetalReflectionJson(json, {}, "groupMain");
+        REQUIRE_FALSE(enriched.has_value());
+        CHECK(enriched.error().contains("thread-group size"));
+        CHECK(enriched.error().contains("2026.20"));
+
+        const auto sized = R"({"parameters": [], "entryPoints": [{"name": "groupMain", "stage": ")" +
+                           std::string(stage) + R"(", "parameters": [], "threadGroupSize": [32, 1, 1]}]})";
+        CHECK(rachis::shader_tool::enrichMetalReflectionJson(sized, {}, "groupMain").has_value());
+    }
+}
+
 TEST_CASE("ShaderBinaryTool plans argument buffers for unbounded arrays declared as entry-point parameters",
           "[size:small][rhi][shader][tooling]")
 {

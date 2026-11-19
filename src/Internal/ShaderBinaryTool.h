@@ -1763,6 +1763,23 @@ namespace rachis::shader_tool
         {
             return std::unexpected(stageInterface.error());
         }
+        if (const auto* entry = detail::findSelectedEntryPoint(*parsed, entryPoint); entry != nullptr)
+        {
+            const auto* stage = entry->find("stage");
+            const auto* stageName = stage != nullptr ? stage->asString() : nullptr;
+            const auto* workgroup = entry->find("threadGroupSize");
+            const bool hasWorkgroup =
+                workgroup != nullptr && workgroup->asArray() != nullptr && workgroup->asArray()->size() == 3;
+            if (stageName != nullptr && (*stageName == "mesh" || *stageName == "amplification") && !hasWorkgroup)
+            {
+                const auto* name = entry->find("name");
+                return std::unexpected(
+                    "Slang did not reflect the thread-group size of the " +
+                    std::string(*stageName == "mesh" ? "mesh" : "task") + " entry point '" +
+                    std::string(name != nullptr && name->asString() != nullptr ? *name->asString() : "") +
+                    "'. Cooking task and mesh shaders for Metal needs Slang 2026.20 or later.");
+            }
+        }
 
         std::size_t closeBrace = rawMetalReflectionJson.size();
         while (closeBrace > 0)

@@ -1,4 +1,9 @@
-set(RACHIS_MIN_SLANGC_VERSION "2026.17.1" CACHE STRING "Minimum supported slangc version")
+set(rachis_required_slangc_version "2026.20")
+set(RACHIS_MIN_SLANGC_VERSION "${rachis_required_slangc_version}" CACHE STRING "Minimum supported slangc version")
+if(RACHIS_MIN_SLANGC_VERSION VERSION_LESS rachis_required_slangc_version)
+    set(RACHIS_MIN_SLANGC_VERSION "${rachis_required_slangc_version}" CACHE STRING "Minimum supported slangc version"
+        FORCE)
+endif()
 option(RACHIS_ALLOW_UNPINNED_SLANGC
     "Allow slangc versions older than RACHIS_MIN_SLANGC_VERSION or unparseable version strings" OFF)
 option(RACHIS_METAL_EMIT_DEBUG_SOURCE

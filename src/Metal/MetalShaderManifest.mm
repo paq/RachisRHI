@@ -260,7 +260,9 @@ namespace rachis::metal
             NSArray* const group = array(entry[@"threadGroupSize"]);
             if (group.count != 3)
             {
-                return std::unexpected(manifestError("Metal compute reflection requires three workgroup dimensions."));
+                return std::unexpected(
+                    manifestError("Metal compute, task, and mesh reflection requires three workgroup dimensions. Cook "
+                                  "task and mesh shaders with Slang 2026.20 or later, which reflects them."));
             }
             const auto x = uintValue(group[0]);
             const auto y = uintValue(group[1]);

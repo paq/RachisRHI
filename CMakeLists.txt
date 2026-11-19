@@ -140,7 +140,7 @@ if(RACHIS_ENABLE_METAL)
     find_library(RACHIS_APPKIT_FRAMEWORK AppKit REQUIRED)
     message(STATUS "Rachis Metal: AppleClang ${CMAKE_CXX_COMPILER_VERSION}, SDK ${RACHIS_APPLE_SDK_VERSION}, "
         "deployment ${CMAKE_OSX_DEPLOYMENT_TARGET}, language Objective-C++ ARC. "
-        "slangc 2026.17.1+ is required to cook metallib. "
+        "slangc 2026.20+ is required to cook metallib. "
         "Vulkan SDK, dxc, and spirv-val are not configure requirements.")
 endif()
 
