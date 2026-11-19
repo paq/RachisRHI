@@ -131,6 +131,7 @@ ctest --test-dir out/build/macos-arm64-metal -C Debug -R "RachisRHI.Metal textur
 | `RachisTlcTimeout` | Linux/macOS with `bash` + `perl` | Tests [`tools/tlc.sh`](../tools/tlc.sh) `TLC_TIMEOUT=1` Perl process-group termination against a sleeping stand-in `java` |
 | `RachisThirdPartyNotices` | Always | Verifies [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) links match all installed third-party license files |
 | `RachisDeviceCreationGuards` | Always | Ensures Vulkan test code checks failures via `skipWithoutCreatedDevice` / `skipWithoutVulkanAdapterList` instead of silently passing |
+| `RachisShaderDepfileScripts` | Always | Runs [`cmake/WriteShaderReflection.cmake`](../cmake/WriteShaderReflection.cmake) with a stand-in `slangc` and [`cmake/WriteShaderDepfile.cmake`](../cmake/WriteShaderDepfile.cmake) on `slangc` and `dxc` depfiles that name an include with a semicolon and a space, and checks each depfile names it whole (`support/CheckShaderDepfileScripts.cmake`) |
 
 ### C ABI tests
 

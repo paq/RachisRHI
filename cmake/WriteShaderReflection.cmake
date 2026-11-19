@@ -33,8 +33,11 @@ execute_process(
     OUTPUT_VARIABLE output
     ERROR_VARIABLE diagnostics)
 
+# A file name may contain a semicolon, which would split a CMake list element; carry it as the ASCII unit
+# separator until the depfile is written.
+string(ASCII 31 semicolon)
 string(REPLACE "\r\n" "\n" diagnostics "${diagnostics}")
-string(REPLACE ";" "\\;" diagnostics "${diagnostics}")
+string(REPLACE ";" "${semicolon}" diagnostics "${diagnostics}")
 string(REPLACE "\n" ";" lines "${diagnostics}")
 set(dependencies)
 set(passed_through "")
@@ -49,6 +52,7 @@ if(NOT output STREQUAL "")
     message(NOTICE "${output}")
 endif()
 if(NOT passed_through STREQUAL "")
+    string(REPLACE "${semicolon}" ";" passed_through "${passed_through}")
     message(NOTICE "${passed_through}")
 endif()
 if(NOT status EQUAL 0)
@@ -79,4 +83,5 @@ foreach(dependency IN LISTS dependencies)
         string(APPEND content " \\\n  ${dependency}")
     endif()
 endforeach()
+string(REPLACE "${semicolon}" ";" content "${content}")
 file(WRITE "${DEPFILE}" "${content}\n")

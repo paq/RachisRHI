@@ -2347,6 +2347,13 @@ if(rachis_build_tests)
             -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/support/CheckDeviceCreationGuards.cmake")
     set_tests_properties(RachisDeviceCreationGuards PROPERTIES LABELS "size:small" TIMEOUT 30)
 
+    add_test(NAME RachisShaderDepfileScripts
+        COMMAND "${CMAKE_COMMAND}"
+            "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/rachis-depfile-scripts"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/support/CheckShaderDepfileScripts.cmake")
+    set_tests_properties(RachisShaderDepfileScripts PROPERTIES LABELS "size:small" TIMEOUT 30)
+
     function(rachis_add_c_abi_fault_tests target test_prefix backend adapter size skip_host_only)
         if(backend STREQUAL "RACHIS_BACKEND_D3D12")
             set(fault_backend_def RACHIS_CABI_FAULT_BACKEND_D3D12=1)

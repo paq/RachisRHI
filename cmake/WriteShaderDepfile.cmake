@@ -11,6 +11,10 @@ endif()
 
 set(dependencies)
 file(READ "${INPUT}" content)
+# A file name may contain a semicolon, which would split a CMake list element; carry it as the ASCII unit
+# separator until the depfile is written.
+string(ASCII 31 semicolon)
+string(REPLACE ";" "${semicolon}" content "${content}")
 string(REPLACE "\r\n" "\n" content "${content}")
 if(FORMAT STREQUAL "dxc")
     string(REGEX REPLACE "[ \t]*\\\\\n[ \t]*" "\n" content "${content}")
@@ -74,4 +78,5 @@ foreach(dependency IN LISTS dependencies)
         string(APPEND content " \\\n  ${dependency}")
     endif()
 endforeach()
+string(REPLACE "${semicolon}" ";" content "${content}")
 file(WRITE "${OUTPUT}" "${content}\n")
