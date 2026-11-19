@@ -81,7 +81,7 @@ Each 64-bit atomic capability needs `shaderInt64`, and a shader built for shader
 
 | `DeviceCapabilities` field | Direct3D 12 | Vulkan |
 | --- | --- | --- |
-| `shaderInt64AtomicStorageBuffer` | Shader model 6.6 | `shaderBufferInt64Atomics` |
+| `shaderInt64AtomicStorageBuffer` | Shader model 6.6 and `AtomicInt64OnDescriptorHeapResourceSupported`, because storage buffers are bound through descriptor tables | `shaderBufferInt64Atomics` |
 | `shaderInt64AtomicGroupShared` | Shader model 6.6 and `AtomicInt64OnGroupSharedSupported` | `shaderSharedInt64Atomics` |
 | `shaderInt64AtomicTypedResource` | Shader model 6.6 and `AtomicInt64OnTypedResourceSupported` | `shaderImageInt64Atomics` and storage-image atomics on `R64_UINT` |
 

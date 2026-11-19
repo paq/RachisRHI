@@ -861,7 +861,12 @@ namespace rachis::d3d12
                                                          DeviceCapabilities& capabilities) noexcept
         {
             const bool supportsShaderModel66 = capabilities.shaderModel >= ApiVersion{6, 6};
-            capabilities.shaderInt64AtomicStorageBuffer = capabilities.shaderInt64 && supportsShaderModel66;
+            D3D12_FEATURE_DATA_D3D12_OPTIONS11 options11{};
+            const bool descriptorHeapAtomics =
+                SUCCEEDED(device.CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS11, &options11, sizeof(options11))) &&
+                options11.AtomicInt64OnDescriptorHeapResourceSupported != FALSE;
+            capabilities.shaderInt64AtomicStorageBuffer =
+                capabilities.shaderInt64 && supportsShaderModel66 && descriptorHeapAtomics;
 
             D3D12_FEATURE_DATA_D3D12_OPTIONS9 options9{};
             if (FAILED(device.CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS9, &options9, sizeof(options9))))

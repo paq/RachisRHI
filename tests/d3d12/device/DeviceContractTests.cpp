@@ -12,6 +12,10 @@
 #error Public Rachis headers must not include Windows.h.
 #endif
 
+#include <d3d12.h>
+#include <dxgi1_6.h>
+#include <wrl/client.h>
+
 namespace
 {
 
@@ -47,7 +51,25 @@ namespace
         CHECK_FALSE(hasAny(integerColor.features, rachis::FormatFeature::blendable));
     }
 
-    void verifyShaderNumericCapabilities(const rachis::DeviceCapabilities& capabilities)
+    [[nodiscard]] bool nativeDescriptorHeapInt64Atomics(rachis::AdapterId adapterId)
+    {
+        Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
+        REQUIRE(SUCCEEDED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory))));
+        const LUID luid{
+            .LowPart = static_cast<DWORD>(adapterId.value & 0xFFFF'FFFFU),
+            .HighPart = static_cast<LONG>(adapterId.value >> 32U),
+        };
+        Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+        REQUIRE(SUCCEEDED(factory->EnumAdapterByLuid(luid, IID_PPV_ARGS(&adapter))));
+        Microsoft::WRL::ComPtr<ID3D12Device> device;
+        REQUIRE(SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&device))));
+        D3D12_FEATURE_DATA_D3D12_OPTIONS11 options{};
+        return SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS11, &options, sizeof(options))) &&
+               options.AtomicInt64OnDescriptorHeapResourceSupported != FALSE;
+    }
+
+    void verifyShaderNumericCapabilities(const rachis::DeviceCapabilities& capabilities,
+                                         bool descriptorHeapInt64Atomics)
     {
         CHECK(capabilities.shaderFloat16 == capabilities.shaderInt16);
         if (capabilities.shaderFloat16 || capabilities.shaderInt16)
@@ -64,7 +86,8 @@ namespace
             CHECK(capabilities.shaderModel >= rachis::ApiVersion{6, 6});
         }
         CHECK(capabilities.shaderInt64AtomicStorageBuffer ==
-              (capabilities.shaderInt64 && capabilities.shaderModel >= rachis::ApiVersion{6, 6}));
+              (capabilities.shaderInt64 && capabilities.shaderModel >= rachis::ApiVersion{6, 6} &&
+               descriptorHeapInt64Atomics));
     }
 
     void verifyFramebufferLayerAndMultiviewLimits(const rachis::DeviceCapabilities& capabilities)
@@ -113,7 +136,8 @@ namespace
 
     void verifyFeatureCapabilities(rachis::Device& device, const rachis::DeviceCapabilities& capabilities)
     {
-        verifyShaderNumericCapabilities(capabilities);
+        verifyShaderNumericCapabilities(capabilities,
+                                        nativeDescriptorHeapInt64Atomics(rachis::test::requireAdapterInfo(device).id));
         verifySubgroupCapabilities(capabilities);
         verifyLogicOperationCapabilities(device);
         verifyRasterizationCapabilities(capabilities);
