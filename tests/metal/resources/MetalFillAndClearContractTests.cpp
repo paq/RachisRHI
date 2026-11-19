@@ -40,7 +40,7 @@ namespace
 
 } // namespace
 
-TEST_CASE("Metal fillBuffer resets a count buffer before a counted indirect draw and writes 32-bit patterns",
+TEST_CASE("Metal fillBuffer resets a count buffer before a counted indirect draw",
           "[size:large][rhi][metal][fill][indirect]")
 {
     auto created = rachis::createDevice(metalDesc());
@@ -52,6 +52,13 @@ TEST_CASE("Metal fillBuffer resets a count buffer before a counted indirect draw
     REQUIRE_FALSE(pixelBytecode.empty());
     rachis::test::fill_and_clear::verifyCountedDrawAfterFill(device,
                                                              {.inputVertex = vertexBytecode, .pixel = pixelBytecode});
+}
+
+TEST_CASE("Metal fillBuffer writes 32-bit patterns across a large buffer", "[size:large][rhi][metal][fill]")
+{
+    auto created = rachis::createDevice(metalDesc());
+    REQUIRE(created);
+    auto device = std::move(*created);
     rachis::test::fill_and_clear::verifyLargeBufferFill(device, rachis::QueueType::compute);
 }
 

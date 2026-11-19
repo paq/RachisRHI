@@ -38,7 +38,7 @@ namespace
 
 } // namespace
 
-TEST_CASE("Vulkan fillBuffer resets a count buffer before a counted indirect draw and writes 32-bit patterns",
+TEST_CASE("Vulkan fillBuffer resets a count buffer before a counted indirect draw",
           "[size:medium][rhi][vulkan][fill][indirect]")
 {
     auto created = rachis::createDevice(vulkanDesc());
@@ -55,6 +55,16 @@ TEST_CASE("Vulkan fillBuffer resets a count buffer before a counted indirect dra
     REQUIRE_FALSE(pixelBytecode.empty());
     rachis::test::fill_and_clear::verifyCountedDrawAfterFill(device,
                                                              {.inputVertex = vertexBytecode, .pixel = pixelBytecode});
+}
+
+TEST_CASE("Vulkan fillBuffer writes 32-bit patterns across a large buffer", "[size:medium][rhi][vulkan][fill]")
+{
+    auto created = rachis::createDevice(vulkanDesc());
+    if (rachis::test::skipWithoutCreatedDevice(created))
+    {
+        return;
+    }
+    auto device = std::move(*created);
     rachis::test::fill_and_clear::verifyLargeBufferFill(device, rachis::QueueType::compute);
 }
 

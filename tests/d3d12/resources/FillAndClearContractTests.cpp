@@ -84,7 +84,7 @@ namespace
 
 } // namespace
 
-TEST_CASE("D3D12 fillBuffer resets a count buffer before a counted indirect draw and writes 32-bit patterns",
+TEST_CASE("D3D12 fillBuffer resets a count buffer before a counted indirect draw",
           "[size:medium][rhi][d3d12][fill][indirect][warp]")
 {
     const auto vertexBytecode = loadShader(RACHIS_TEST_GRAPHICS_INPUT_VERTEX_SHADER_PATH);
@@ -97,6 +97,15 @@ TEST_CASE("D3D12 fillBuffer resets a count buffer before a counted indirect draw
         auto device = createWarpDevice(legacyBarriers);
         rachis::test::fill_and_clear::verifyCountedDrawAfterFill(
             device, {.inputVertex = vertexBytecode, .pixel = pixelBytecode});
+    }
+}
+
+TEST_CASE("D3D12 fillBuffer writes 32-bit patterns across a large buffer", "[size:medium][rhi][d3d12][fill][warp]")
+{
+    for (const bool legacyBarriers : {false, true})
+    {
+        INFO("Legacy barriers: " << legacyBarriers);
+        auto device = createWarpDevice(legacyBarriers);
         rachis::test::fill_and_clear::verifyLargeBufferFill(device, rachis::QueueType::compute);
     }
 }
