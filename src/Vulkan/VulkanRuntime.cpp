@@ -3070,8 +3070,8 @@ namespace rachis::vulkan
             capabilities.subgroupOperations = record.subgroupOperations;
             if (capabilities.subgroupOperations)
             {
-                const bool requiredComputeSize =
-                    record.subgroupSizeControl && (record.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
+                const bool requiredComputeSize = record.subgroupSizeControl &&
+                                                 (record.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
                 capabilities.subgroup = {
                     .minSize = record.subgroupMinSize,
                     .maxSize = record.subgroupMaxSize,

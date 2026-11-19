@@ -282,7 +282,8 @@ TEST_CASE("Metal commands recorded before an update-after-bind write keep the wr
             .resource = rachis::BufferBinding{.buffer = original, .structureByteStride = sizeof(std::uint32_t)},
         },
     };
-    auto set = rachis::test::createBindingSet(device, {.layout = *layout, .writes = writes, .variableDescriptorCount = 4});
+    auto set =
+        rachis::test::createBindingSet(device, {.layout = *layout, .writes = writes, .variableDescriptorCount = 4});
     REQUIRE(set.has_value());
     const std::array layouts{*layout};
     const std::array pushRanges{rachis::PushConstantRange{rachis::ShaderStage::compute, 0, 2 * sizeof(std::uint32_t)}};

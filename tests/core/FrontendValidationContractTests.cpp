@@ -2098,7 +2098,8 @@ TEST_CASE("Device frontend checks a required subgroup size against the device an
         REQUIRE_FALSE(compilation.has_value());
         CHECK(compilation.error().code == code);
     };
-    constexpr std::string_view outsideRange = "The required subgroup size is outside this device's subgroup size range.";
+    constexpr std::string_view outsideRange =
+        "The required subgroup size is outside this device's subgroup size range.";
     checkRejected(
         24, ErrorCode::invalidArgument, "ComputePipelineDesc::requiredSubgroupSize must be zero or a power of two.");
     checkRejected(8, ErrorCode::unsupported, outsideRange);

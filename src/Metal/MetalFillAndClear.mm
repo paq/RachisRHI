@@ -467,10 +467,10 @@ RACHIS_CLEAR_KERNELS(Sint, int, clear.s)
         const bool oneDimensional =
             target.view.textureType == MTLTextureType1D || target.view.textureType == MTLTextureType1DArray;
         const MTLSize threads = oneDimensional ? MTLSizeMake(64, 1, 1) : MTLSizeMake(8, 8, 1);
-        const MTLSize groups = MTLSizeMake((target.view.width + threads.width - 1U) / threads.width,
-                                           (std::max<NSUInteger>(target.view.height, 1) + threads.height - 1U) /
-                                               threads.height,
-                                           depth);
+        const MTLSize groups =
+            MTLSizeMake((target.view.width + threads.width - 1U) / threads.width,
+                        (std::max<NSUInteger>(target.view.height, 1) + threads.height - 1U) / threads.height,
+                        depth);
         return metalEncodeInternalDispatch(
             target.device, *entry, target.pipeline, std::as_bytes(std::span(&block, 1)), target.view, groups, threads);
     }

@@ -56,8 +56,8 @@ namespace
     }
 
     [[nodiscard]] rachis::Result<LaneCounts> runLaneCountKernel(rachis::Device& device,
-                                                               std::span<const std::byte> bytecode,
-                                                               std::uint32_t requiredSubgroupSize)
+                                                                std::span<const std::byte> bytecode,
+                                                                std::uint32_t requiredSubgroupSize)
     {
         REQUIRE_FALSE(bytecode.empty());
         auto shader = device.createShaderModule(rachis::ShaderModuleDesc{
@@ -146,10 +146,11 @@ namespace
                                        .accessAfter = rachis::Access::copySource,
                                    })
                     .has_value());
-        REQUIRE(device
-                    .copyBuffer(*command,
-                                rachis::BufferCopy{.source = *storage, .destination = *readback, .size = laneCountBytes})
-                    .has_value());
+        REQUIRE(
+            device
+                .copyBuffer(*command,
+                            rachis::BufferCopy{.source = *storage, .destination = *readback, .size = laneCountBytes})
+                .has_value());
         auto submitted = device.submit(std::move(*command));
         REQUIRE(submitted.has_value());
         REQUIRE(device.wait(*submitted).has_value());
@@ -415,10 +416,10 @@ TEST_CASE("compute pipelines that require a subgroup size run full waves of that
         auto& device = *created;
         const auto capabilities = rachis::test::requireCapabilities(device);
         const auto subgroup = capabilities.subgroup;
-        CHECK(subgroup.requiredSizeStages == (capabilities.subgroupOperations &&
-                                                      capabilities.shaderModel >= rachis::ApiVersion{6, 6}
-                                                  ? rachis::ShaderStage::compute
-                                                  : rachis::ShaderStage::none));
+        CHECK(subgroup.requiredSizeStages ==
+              (capabilities.subgroupOperations && capabilities.shaderModel >= rachis::ApiVersion{6, 6}
+                   ? rachis::ShaderStage::compute
+                   : rachis::ShaderStage::none));
         if (!rachis::hasAny(subgroup.requiredSizeStages, rachis::ShaderStage::compute))
         {
             continue;
@@ -450,8 +451,8 @@ TEST_CASE("compute pipelines that require a subgroup size run full waves of that
             }
         }
 
-        auto undeclared = runLaneCountKernel(device, rachis_shaders::SubgroupSizeAny(rachis::Backend::d3d12),
-                                             subgroup.minSize);
+        auto undeclared =
+            runLaneCountKernel(device, rachis_shaders::SubgroupSizeAny(rachis::Backend::d3d12), subgroup.minSize);
         REQUIRE_FALSE(undeclared.has_value());
         CHECK(undeclared.error().code == rachis::ErrorCode::invalidArgument);
         const auto otherSize = subgroup.minSize < waveSizes.back() ? subgroup.minSize * 2U : subgroup.minSize / 2U;

@@ -3165,8 +3165,8 @@ TEST_CASE("Vulkan graphics and ray-tracing push constants to a range shared with
     std::array<std::byte, 32> graphicsData{};
     graphicsData.fill(std::byte{0x22});
     REQUIRE(graphics.setComputePushConstants(vkCb, 0, computeData).has_value());
-    REQUIRE(graphics.setGraphicsPushConstants(vkCb, ShaderStage::vertex | ShaderStage::pixel, 0, graphicsData)
-                .has_value());
+    REQUIRE(
+        graphics.setGraphicsPushConstants(vkCb, ShaderStage::vertex | ShaderStage::pixel, 0, graphicsData).has_value());
 
     const auto& shadow = vkCb.computePushConstants();
     CHECK(std::ranges::all_of(std::span(shadow).first(16), [](std::byte value) { return value == std::byte{0x22}; }));

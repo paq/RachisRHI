@@ -454,8 +454,8 @@ TEST_CASE("reported storage-buffer int64 atomics keep the unsigned maximum and m
 
     auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
     REQUIRE(command.has_value());
-    REQUIRE(device.copyBuffer(*command, {.source = *upload, .destination = *extremes, .size = extremesBytes})
-                .has_value());
+    REQUIRE(
+        device.copyBuffer(*command, {.source = *upload, .destination = *extremes, .size = extremesBytes}).has_value());
     REQUIRE(device
                 .bufferBarrier(*command,
                                {

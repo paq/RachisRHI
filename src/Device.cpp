@@ -1108,10 +1108,10 @@ namespace rachis
             {
                 return std::unexpected(detail::preferDeviceLossError(*backend_, std::move(ready.error())));
             }
-            if (auto unconditional = rejectInsideConditionalExecution(
-                    *backend_,
-                    *commandBuffer.backend_,
-                    "Buffer fills cannot be recorded inside conditional execution.");
+            if (auto unconditional =
+                    rejectInsideConditionalExecution(*backend_,
+                                                     *commandBuffer.backend_,
+                                                     "Buffer fills cannot be recorded inside conditional execution.");
                 !unconditional)
             {
                 return unconditional;

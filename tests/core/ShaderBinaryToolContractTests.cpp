@@ -841,7 +841,8 @@ TEST_CASE("RachisShaderBinaryTool cook-metallib compiles every slangc step with 
 
     const auto [unsupported, unsupportedOutputs] = cookWithProfile("unsupported", "sm_6_7", "RACHIS_METAL=1");
     CHECK(unsupported.status != 0);
-    CHECK(unsupported.stderrText.contains("--profile must be sm_6_0, sm_6_1, sm_6_2, sm_6_3, sm_6_4, sm_6_5, or sm_6_6."));
+    CHECK(unsupported.stderrText.contains(
+        "--profile must be sm_6_0, sm_6_1, sm_6_2, sm_6_3, sm_6_4, sm_6_5, or sm_6_6."));
     CHECK_FALSE(unsupported.stderrText.contains("fake slangc"));
     CHECK_FALSE(unsupportedOutputs);
 }

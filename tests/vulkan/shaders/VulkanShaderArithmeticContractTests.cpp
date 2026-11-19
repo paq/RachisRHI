@@ -69,8 +69,8 @@ namespace
     }
 
     [[nodiscard]] rachis::Result<LaneCounts> runLaneCountKernel(rachis::Device& device,
-                                                               std::span<const std::byte> bytecode,
-                                                               std::uint32_t requiredSubgroupSize)
+                                                                std::span<const std::byte> bytecode,
+                                                                std::uint32_t requiredSubgroupSize)
     {
         REQUIRE_FALSE(bytecode.empty());
         auto shader = device.createShaderModule({

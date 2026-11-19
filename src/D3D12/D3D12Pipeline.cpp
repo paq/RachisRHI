@@ -2789,9 +2789,8 @@ namespace rachis::d3d12
                 }
                 return std::unexpected(std::move(declared.error()));
             }
-            if (requiredSubgroupSize != 0 &&
-                (!declared->has_value() || (*declared)->minimum != requiredSubgroupSize ||
-                 (*declared)->maximum != requiredSubgroupSize))
+            if (requiredSubgroupSize != 0 && (!declared->has_value() || (*declared)->minimum != requiredSubgroupSize ||
+                                              (*declared)->maximum != requiredSubgroupSize))
             {
                 return std::unexpected(Error{
                     ErrorCode::invalidArgument,
