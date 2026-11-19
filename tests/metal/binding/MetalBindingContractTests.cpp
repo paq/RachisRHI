@@ -566,7 +566,27 @@ TEST_CASE("Metal binding-set updates are copy-on-write and pipeline layouts rese
     auto overflowWithPush =
         device.createPipelineLayout({.bindingLayouts = std::array{*fullBuffersLayout}, .pushConstantRanges = push});
     REQUIRE_FALSE(overflowWithPush);
-    CHECK(overflowWithPush.error().code == rachis::ErrorCode::invalidArgument);
+    CHECK(overflowWithPush.error().code == rachis::ErrorCode::unsupported);
+
+    const std::array arrayEntry{rachis::BindingLayoutEntry{
+        .binding = 0,
+        .type = rachis::BindingType::readOnlyStorageBuffer,
+        .visibility = rachis::ShaderStage::compute,
+        .count = rachis::unboundedBindingCount,
+        .flags = rachis::BindingFlag::variableDescriptorCount | rachis::BindingFlag::partiallyBound,
+    }};
+    auto arrayLayout = device.createBindingLayout({.entries = arrayEntry});
+    REQUIRE(arrayLayout);
+    auto overflowAcrossSets =
+        device.createPipelineLayout({.bindingLayouts = std::array{*fullBuffersLayout, *arrayLayout}});
+    REQUIRE_FALSE(overflowAcrossSets);
+    CHECK(overflowAcrossSets.error().code == rachis::ErrorCode::unsupported);
+    fullBufferEntries.push_back(
+        rachis::BindingLayoutEntry{31, rachis::BindingType::uniformBuffer, rachis::ShaderStage::compute, 1});
+    auto oversizedLayout = device.createBindingLayout({.entries = fullBufferEntries});
+    REQUIRE_FALSE(oversizedLayout);
+    CHECK(oversizedLayout.error().code == rachis::ErrorCode::invalidArgument);
+    REQUIRE(device.destroyBindingLayout(*arrayLayout));
     REQUIRE(device.destroyBindingLayout(*fullBuffersLayout));
 
     auto pushBindings = device.createBindingLayout({

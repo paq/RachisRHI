@@ -1846,7 +1846,7 @@ namespace rachis::metal
                     stageSlots[kind] += entry.count == unboundedBindingCount ? 1U : entry.count;
                     if (stageSlots[kind] > argumentLimits[kind])
                     {
-                        return std::unexpected(metalSelectionError(ErrorCode::invalidArgument,
+                        return std::unexpected(metalSelectionError(ErrorCode::unsupported,
                                                                    "Pipeline layout bindings and push constants exceed "
                                                                    "Metal's per-stage argument-table capacity."));
                     }

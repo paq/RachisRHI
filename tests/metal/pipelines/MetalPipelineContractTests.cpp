@@ -278,7 +278,7 @@ TEST_CASE("Metal pipeline layouts charge the draw index and only the stages the 
     REQUIRE(withoutDrawIndex.has_value());
     auto overfull = device.createPipelineLayout({.bindingLayouts = full, .drawIndex = true});
     REQUIRE_FALSE(overfull.has_value());
-    CHECK(overfull.error().code == rachis::ErrorCode::invalidArgument);
+    CHECK(overfull.error().code == rachis::ErrorCode::unsupported);
     auto fitting = device.createPipelineLayout({.bindingLayouts = almostFull, .drawIndex = true});
     REQUIRE(fitting.has_value());
 
@@ -293,7 +293,7 @@ TEST_CASE("Metal pipeline layouts charge the draw index and only the stages the 
     }
     else
     {
-        CHECK(mixedLayout.error().code == rachis::ErrorCode::invalidArgument);
+        CHECK(mixedLayout.error().code == rachis::ErrorCode::unsupported);
     }
 
     REQUIRE(device.destroyPipelineLayout(*fitting).has_value());
