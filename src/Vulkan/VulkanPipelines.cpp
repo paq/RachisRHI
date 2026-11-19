@@ -3113,6 +3113,15 @@ namespace rachis::vulkan
         {
             return std::unexpected(std::move(shaders.error()));
         }
+        if (shaders->task.has_value() && shaders->mesh.has_value() && shaders->mesh->drawIndex)
+        {
+            return std::unexpected(Error{
+                ErrorCode::unsupported,
+                0,
+                "On Vulkan, only the task shader of a task and mesh pipeline can read the draw index. Pass it to the "
+                "mesh shader in the task payload.",
+            });
+        }
         const auto* lastPreRasterizationStage = shaders->geometry.has_value() ? &*shaders->geometry
                                                 : shaders->domain.has_value() ? &*shaders->domain
                                                 : shaders->mesh.has_value()   ? &*shaders->mesh
