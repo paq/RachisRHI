@@ -578,6 +578,7 @@ namespace rachis::vulkan
         constexpr std::uint32_t spirvDecorationPerVertexKHR = 5285;
         constexpr std::uint32_t spirvBuiltInPointSize = 1;
         constexpr std::uint32_t spirvBuiltInDrawIndex = 4426;
+        constexpr std::uint32_t spirvBuiltInWorkgroupSize = 25;
         constexpr std::uint32_t spirvStorageClassUniformConstant = 0;
         constexpr std::uint32_t spirvStorageClassInput = 1;
         constexpr std::uint32_t spirvStorageClassUniform = 2;
@@ -1493,6 +1494,7 @@ namespace rachis::vulkan
             std::unordered_set<std::uint32_t> pointSizeVariables;
             std::unordered_map<std::uint32_t, std::uint32_t> pointSizeMembers;
             std::unordered_set<std::uint32_t> drawIndexVariables;
+            std::unordered_set<std::uint32_t> workgroupSizeConstants;
             std::unordered_map<std::uint32_t, std::uint32_t> drawIndexMembers;
         };
 
@@ -1684,6 +1686,10 @@ namespace rachis::vulkan
                 if (hasLiteral && instruction.words[3] == spirvBuiltInDrawIndex)
                 {
                     decorations.drawIndexVariables.insert(target);
+                }
+                if (hasLiteral && instruction.words[3] == spirvBuiltInWorkgroupSize)
+                {
+                    decorations.workgroupSizeConstants.insert(target);
                 }
             }
             else if (decoration == spirvDecorationPerVertexKHR)
@@ -2444,14 +2450,62 @@ namespace rachis::vulkan
             resolveArrayLengths(module.types, module.constants.scalars);
         }
 
+        [[nodiscard]] Result<std::optional<ShaderWorkgroupSize>> resolveWorkgroupSizeBuiltIn(const SpirvModule& module)
+        {
+            std::optional<ShaderWorkgroupSize> workgroup;
+            for (const auto id : module.decorations.workgroupSizeConstants)
+            {
+                const auto composite = module.constants.composites.find(id);
+                if (composite == module.constants.composites.end() || composite->second.size() != 3)
+                {
+                    return std::unexpected(Error{
+                        ErrorCode::invalidArgument,
+                        0,
+                        "The SPIR-V WorkgroupSize built-in is not a constant three-component vector.",
+                    });
+                }
+                std::array<std::uint32_t, 3> components{};
+                for (std::size_t axis = 0; axis < components.size(); ++axis)
+                {
+                    const auto value = module.constants.scalars.find(composite->second[axis]);
+                    if (value == module.constants.scalars.end())
+                    {
+                        return std::unexpected(Error{
+                            ErrorCode::invalidArgument,
+                            0,
+                            "The SPIR-V WorkgroupSize built-in references an unresolved constant.",
+                        });
+                    }
+                    components[axis] = value->second;
+                }
+                workgroup = ShaderWorkgroupSize{components[0], components[1], components[2]};
+            }
+            return workgroup;
+        }
+
         [[nodiscard]] Result<std::optional<ShaderWorkgroupSize>> resolveWorkgroupSize(const SpirvModule& module)
         {
             const auto entryPointId = *module.entryPoint.functionId;
             const auto& constants = module.constants.scalars;
             const auto& constantIdsByEntry = module.localSizes.constantIdsByEntry;
             const auto& literalByEntry = module.localSizes.literalByEntry;
+            auto builtIn = resolveWorkgroupSizeBuiltIn(module);
+            if (!builtIn)
+            {
+                return std::unexpected(std::move(builtIn.error()));
+            }
             std::optional<ShaderWorkgroupSize> workgroup;
-            if (const auto sizeIdsIt = constantIdsByEntry.find(entryPointId); sizeIdsIt != constantIdsByEntry.end())
+            if (module.entryPoint.stage != ShaderStage::compute && module.entryPoint.stage != ShaderStage::task &&
+                module.entryPoint.stage != ShaderStage::mesh)
+            {
+                builtIn->reset();
+            }
+            if (builtIn->has_value())
+            {
+                workgroup = *builtIn;
+            }
+            else if (const auto sizeIdsIt = constantIdsByEntry.find(entryPointId);
+                     sizeIdsIt != constantIdsByEntry.end())
             {
                 const auto& ids = sizeIdsIt->second;
                 const auto xIt = constants.find(ids[0]);
@@ -3455,7 +3509,7 @@ namespace rachis::vulkan
                 return std::unexpected(Error{
                     ErrorCode::invalidArgument,
                     0,
-                    "Declared workgroup size does not match the SPIR-V LocalSize execution mode.",
+                    "Declared workgroup size does not match the SPIR-V workgroup size.",
                 });
             }
             if (declared.bindings.size() != reflected.bindings.size())

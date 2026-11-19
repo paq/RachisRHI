@@ -147,6 +147,7 @@ namespace
     constexpr std::uint32_t spirvOpConstantComposite = 44;
     constexpr std::uint32_t spirvOpSpecConstantTrue = 48;
     constexpr std::uint32_t spirvOpSpecConstant = 50;
+    constexpr std::uint32_t spirvOpSpecConstantComposite = 51;
     constexpr std::uint32_t spirvOpFunction = 54;
     constexpr std::uint32_t spirvOpFunctionEnd = 56;
     constexpr std::uint32_t spirvOpFunctionCall = 57;
@@ -381,6 +382,48 @@ namespace
             spirvInstruction(spirvOpExecutionMode, {mainId, spirvExecutionModeLocalSize, 1U, 1U, 1U}),
             spirvInstruction(spirvOpTypeVoid, {voidTypeId}),
             spirvInstruction(spirvOpTypeFunction, {functionTypeId, voidTypeId}),
+            emptyComputeFunction(voidTypeId, mainId, functionTypeId, labelId),
+        });
+    }
+
+    enum class WorkgroupSizeBuiltIn : std::uint8_t
+    {
+        constant,
+        specialization,
+    };
+
+    [[nodiscard]] std::vector<std::byte> computeModuleWithWorkgroupSizeBuiltIn(WorkgroupSizeBuiltIn kind)
+    {
+        constexpr std::uint32_t mainId = 1;
+        constexpr std::uint32_t voidTypeId = 2;
+        constexpr std::uint32_t functionTypeId = 3;
+        constexpr std::uint32_t labelId = 4;
+        constexpr std::uint32_t uintTypeId = 5;
+        constexpr std::uint32_t uint3TypeId = 6;
+        constexpr std::uint32_t oneId = 7;
+        constexpr std::uint32_t widthId = 8;
+        constexpr std::uint32_t workgroupSizeId = 9;
+        constexpr std::uint32_t idBound = 10;
+        constexpr std::uint32_t spirvBuiltInWorkgroupSize = 25;
+        const std::vector<std::uint32_t> header{spirvMagicNumber, spirvVersion1_0, 0U, idBound, 0U};
+        const bool specialized = kind == WorkgroupSizeBuiltIn::specialization;
+        return joinSpirvBytes({
+            header,
+            spirvInstruction(spirvOpCapability, {spirvCapabilityShader}),
+            spirvInstruction(spirvOpMemoryModel, {spirvAddressingLogical, spirvMemoryModelGlsl450}),
+            spirvInstructionWithString(spirvOpEntryPoint, {spirvExecutionModelGlCompute, mainId}, "main"),
+            spirvInstruction(spirvOpExecutionMode, {mainId, spirvExecutionModeLocalSize, 32U, 1U, 1U}),
+            specialized ? spirvInstruction(spirvOpDecorate, {widthId, spirvDecorationSpecId, 0U})
+                        : std::vector<std::uint32_t>{},
+            spirvInstruction(spirvOpDecorate, {workgroupSizeId, spirvDecorationBuiltIn, spirvBuiltInWorkgroupSize}),
+            spirvInstruction(spirvOpTypeVoid, {voidTypeId}),
+            spirvInstruction(spirvOpTypeFunction, {functionTypeId, voidTypeId}),
+            spirvInstruction(spirvOpTypeInt, {uintTypeId, 32U, 0U}),
+            spirvInstruction(spirvOpTypeVector, {uint3TypeId, uintTypeId, 3U}),
+            spirvInstruction(spirvOpConstant, {uintTypeId, oneId, 1U}),
+            spirvInstruction(specialized ? spirvOpSpecConstant : spirvOpConstant, {uintTypeId, widthId, 8U}),
+            spirvInstruction(specialized ? spirvOpSpecConstantComposite : spirvOpConstantComposite,
+                             {uint3TypeId, workgroupSizeId, widthId, oneId, oneId}),
             emptyComputeFunction(voidTypeId, mainId, functionTypeId, labelId),
         });
     }
@@ -1457,6 +1500,31 @@ TEST_CASE("Vulkan shader modules classify a group-shared 64-bit atomic after OpL
             CHECK(rejected.error().message == "Group-shared 64-bit integer atomics are not available on this device.");
         }
     }
+}
+
+TEST_CASE("Vulkan shader reflection gives the WorkgroupSize built-in precedence over LocalSize",
+          "[size:small][rhi][vulkan][shader][module][reflection]")
+{
+    rachis::DeviceCapabilities capabilities{};
+    capabilities.limits.maxComputeWorkgroupSize = {1024, 1024, 64};
+    capabilities.limits.maxComputeWorkgroupInvocations = 1024;
+    const auto kind = GENERATE(WorkgroupSizeBuiltIn::constant, WorkgroupSizeBuiltIn::specialization);
+    CAPTURE(kind == WorkgroupSizeBuiltIn::specialization);
+    const auto bytecode = computeModuleWithWorkgroupSizeBuiltIn(kind);
+
+    auto fromExecutionMode = createWithoutDevice(
+        bytecode, capabilities, rachis::ShaderStage::compute, {.workgroupSize = rachis::ShaderWorkgroupSize{32, 1, 1}});
+    REQUIRE_FALSE(fromExecutionMode.has_value());
+    CHECK(fromExecutionMode.error().code == rachis::ErrorCode::invalidArgument);
+    CHECK(fromExecutionMode.error().message.find("workgroup size") != std::string::npos);
+
+    auto effective = createWithoutDevice(
+        bytecode, capabilities, rachis::ShaderStage::compute, {.workgroupSize = rachis::ShaderWorkgroupSize{8, 1, 1}});
+    if (!effective)
+    {
+        UNSCOPED_INFO(effective.error().message);
+    }
+    CHECK(effective.has_value());
 }
 
 TEST_CASE("Vulkan shader modules gate storage-buffer 64-bit atomics on shaderInt64AtomicStorageBuffer alone",
