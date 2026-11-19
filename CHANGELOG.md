@@ -19,6 +19,21 @@
   unordered-access writes for barriers.
   [Using](docs/using.md#buffer-fills-and-storage-texture-clears) lists the
   rules.
+- `DeviceCapabilities::shaderInt64AtomicStorageBuffer` reports 64-bit atomics
+  on storage buffers: on Direct3D 12 with shader model 6.6, and on Vulkan with
+  `shaderBufferInt64Atomics`, which RachisRHI now enables. Metal reports no
+  64-bit atomics. Vulkan's `createShaderModule` accepts such shaders on devices
+  that report it instead of rejecting them all, and no longer counts a 32-bit
+  atomic as a 64-bit one because the module also declares 64-bit atomics.
+- `rachis_add_shader(... SHADER_MODEL 6_6)` builds a shader for a later shader
+  model, from `6_0`, the default, to `6_6`, for every backend.
+  `RachisShaderBinaryTool cook-metallib` takes the matching `--profile`.
+  [Using](docs/using.md#shader-model) explains.
+- `ComputePipelineDesc::requiredSubgroupSize` makes a compute pipeline run full
+  subgroups of one size. `SubgroupCapabilities::requiredSizeStages` reports
+  support. On Direct3D 12 the shader must declare the same `[WaveSize]`;
+  Vulkan uses `requiredSubgroupSize` with full subgroups; Metal accepts only
+  32. [Using](docs/using.md#required-subgroup-size) lists the checks.
 - `BindingFlag::updateAfterBind` lets `updateBindingSet` change elements of a
   large binding array in place while work in flight uses the set, without
   copying the whole set into a new version. The application promises not to
