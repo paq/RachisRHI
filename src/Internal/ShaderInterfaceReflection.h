@@ -297,17 +297,24 @@ namespace rachis::shader_tool
             return std::nullopt;
         }
 
-        [[nodiscard]] inline bool isDrawIndexParameter(const JsonValue& parameter,
-                                                       InterfaceBackend backend,
-                                                       const std::optional<RegisterSlot>& slot)
+        [[nodiscard]] inline std::expected<bool, std::string> classifyDrawIndexSpace(
+            const JsonValue& parameter, InterfaceBackend backend, const std::optional<RegisterSlot>& slot)
         {
-            if (backend == InterfaceBackend::vulkan || !slot.has_value() || slot->set != drawIndexSpace ||
-                slot->binding != drawIndexRegister)
+            if (!slot.has_value() || slot->set != drawIndexSpace)
             {
                 return false;
             }
             const auto* type = parameter.find("type");
-            return type != nullptr && jsonString(type->find("kind")) == "constantBuffer";
+            if (backend != InterfaceBackend::vulkan && slot->binding == drawIndexRegister && type != nullptr &&
+                isDrawIndexPayload(*type))
+            {
+                return true;
+            }
+            return std::unexpected(
+                "The resource '" + std::string(jsonString(parameter.find("name"))) +
+                "' uses register space 5, which is reserved for the draw index. Only the constant buffer of "
+                "Rachis/DrawIndex.hlsli, one uint at register(b0, space5), may use it, and only on Direct3D 12 and "
+                "Metal.");
         }
 
         [[nodiscard]] inline bool isTextureShape(std::string_view shape) noexcept
@@ -535,7 +542,12 @@ namespace rachis::shader_tool
                     continue;
                 }
                 const auto slot = detail::resourceSlot(parameter, backend);
-                if (detail::isDrawIndexParameter(parameter, backend, slot))
+                const auto drawIndex = detail::classifyDrawIndexSpace(parameter, backend, slot);
+                if (!drawIndex)
+                {
+                    return std::unexpected(drawIndex.error());
+                }
+                if (*drawIndex)
                 {
                     reflected.drawIndex = true;
                     continue;

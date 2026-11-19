@@ -1771,3 +1771,45 @@ using namespace metal;
     constexpr std::string_view missingJson = R"({"parameters": []})";
     CHECK_FALSE(rachis::shader_tool::planMetalArgumentBufferArrays(source, missingJson, metalJson).has_value());
 }
+
+TEST_CASE("ShaderBinaryTool marks only a one-uint constant buffer at b0, space5 as the Metal draw index",
+          "[size:small][rhi][shader][tooling][draw-index]")
+{
+    const auto metalJson = [](std::string_view parameter) {
+        return std::string(R"({"parameters": [)") + std::string(parameter) +
+               R"(], "entryPoints": [{"name": "vertexMain", "stage": "vertex"}]})";
+    };
+    constexpr std::string_view drawIndex = R"(
+        {"name": "RachisDrawIndex", "binding": {"kind": "constantBuffer", "space": 5, "index": 0},
+         "type": {"kind": "constantBuffer", "elementType": {"kind": "struct", "fields": [
+             {"name": "rachisDrawIndexValue", "type": {"kind": "scalar", "scalarType": "uint32"}}]}}})";
+    const auto planned = rachis::shader_tool::planMetalShaderBindings("{}", metalJson(drawIndex), "vertexMain");
+    REQUIRE(planned.has_value());
+    REQUIRE(planned->bindings.size() == 1);
+    CHECK(planned->bindings[0].drawIndex);
+
+    const std::array rejected{
+        std::string(R"(
+        {"name": "Other", "binding": {"kind": "constantBuffer", "space": 5, "index": 1},
+         "type": {"kind": "constantBuffer", "elementType": {"kind": "struct", "fields": [
+             {"name": "value", "type": {"kind": "scalar", "scalarType": "uint32"}}]}}})"),
+        std::string(R"(
+        {"name": "Wide", "binding": {"kind": "constantBuffer", "space": 5, "index": 0},
+         "type": {"kind": "constantBuffer", "elementType": {"kind": "struct", "fields": [
+             {"name": "data", "type": {"kind": "vector", "elementCount": 4,
+                                       "elementType": {"kind": "scalar", "scalarType": "uint32"}}}]}}})"),
+        std::string(R"(
+        {"name": "Records", "binding": {"kind": "constantBuffer", "space": 5, "index": 0},
+         "type": {"kind": "resource", "baseShape": "structuredBuffer"}})"),
+        std::string(R"(
+        {"name": "Table", "binding": {"kind": "shaderResource", "space": 5, "index": 0},
+         "type": {"kind": "resource", "baseShape": "texture2D"}})"),
+    };
+    for (const auto& parameter : rejected)
+    {
+        INFO(parameter);
+        const auto result = rachis::shader_tool::planMetalShaderBindings("{}", metalJson(parameter), "vertexMain");
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().find("register space 5") != std::string::npos);
+    }
+}

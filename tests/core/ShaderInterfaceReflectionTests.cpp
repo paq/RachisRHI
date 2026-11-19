@@ -531,8 +531,8 @@ TEST_CASE("Shader interface reflection reads the draw index from each backend's 
 
     const auto vulkan =
         reflectShaderInterface(drawIndexHlslJson, InterfaceBackend::vulkan, "vertexMain", InterfaceStage::vertex);
-    REQUIRE(vulkan.has_value());
-    CHECK_FALSE(vulkan->drawIndex);
+    REQUIRE_FALSE(vulkan.has_value());
+    CHECK(vulkan.error().find("register space 5") != std::string::npos);
 
     const auto drawIndexModule = vertexModuleWithBuiltIn(4426U, true);
     const auto reads = rachis::shader_tool::spirvReadsDrawIndex(drawIndexModule, "main", InterfaceStage::vertex);
@@ -652,6 +652,55 @@ TEST_CASE("Shader interface reflection reads task and mesh entry points and thei
         CHECK(header->contains("rachis::ShaderStage::" + std::string(name) + ";"));
         CHECK(header->contains("rachis::ShaderWorkgroupSize{4, 2, 1}"));
         CHECK(header->contains("inline constexpr bool drawIndex = true;"));
+    }
+}
+
+TEST_CASE("Shader interface reflection reserves register space 5 for the draw index",
+          "[size:small][rhi][tooling][shader-interface][draw-index]")
+{
+    const auto vertexJson = [](std::string_view parameter) {
+        return std::string(R"({"parameters": [)") + std::string(parameter) +
+               R"(], "entryPoints": [{"name": "vertexMain", "stage": "vertex", "parameters": []}]})";
+    };
+    constexpr std::string_view drawIndex = R"(
+        {"name": "RachisDrawIndex", "binding": {"kind": "constantBuffer", "space": 5, "index": 0},
+         "type": {"kind": "constantBuffer", "elementType": {"kind": "struct", "fields": [
+             {"name": "rachisDrawIndexValue", "type": {"kind": "scalar", "scalarType": "uint32"}}]}}})";
+    for (const auto backend : {InterfaceBackend::d3d12, InterfaceBackend::metal})
+    {
+        INFO("backend " << rachis::shader_tool::interfaceBackendName(backend));
+        const auto reflected =
+            reflectShaderInterface(vertexJson(drawIndex), backend, "vertexMain", InterfaceStage::vertex);
+        REQUIRE(reflected.has_value());
+        CHECK(reflected->drawIndex);
+        CHECK(reflected->bindings.empty());
+    }
+    const auto vulkan =
+        reflectShaderInterface(vertexJson(drawIndex), InterfaceBackend::vulkan, "vertexMain", InterfaceStage::vertex);
+    REQUIRE_FALSE(vulkan.has_value());
+    CHECK(vulkan.error().find("register space 5") != std::string::npos);
+
+    const std::array rejected{
+        std::string(R"(
+        {"name": "Other", "binding": {"kind": "constantBuffer", "space": 5, "index": 1},
+         "type": {"kind": "constantBuffer", "elementType": {"kind": "struct", "fields": [
+             {"name": "value", "type": {"kind": "scalar", "scalarType": "uint32"}}]}}})"),
+        std::string(R"(
+        {"name": "Wide", "binding": {"kind": "constantBuffer", "space": 5, "index": 0},
+         "type": {"kind": "constantBuffer", "elementType": {"kind": "struct", "fields": [
+             {"name": "data", "type": {"kind": "vector", "elementCount": 4,
+                                       "elementType": {"kind": "scalar", "scalarType": "uint32"}}}]}}})"),
+        std::string(R"(
+        {"name": "Records", "binding": {"kind": "shaderResource", "space": 5, "index": 0},
+         "type": {"kind": "resource", "baseShape": "structuredBuffer", "resultType": {"kind": "scalar"}}})"),
+    };
+    for (const auto& parameter : rejected)
+    {
+        INFO(parameter);
+        const auto result = reflectShaderInterface(
+            vertexJson(parameter), InterfaceBackend::d3d12, "vertexMain", InterfaceStage::vertex);
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().find("register space 5") != std::string::npos);
     }
 }
 

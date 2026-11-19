@@ -639,6 +639,28 @@ namespace rachis::shader_tool
             return nullptr;
         }
 
+        [[nodiscard]] inline bool isDrawIndexPayload(const JsonValue& type) noexcept
+        {
+            const auto isString = [](const JsonValue* node, std::string_view value) {
+                return node != nullptr && node->asString() != nullptr && *node->asString() == value;
+            };
+            const auto* element = type.find("elementType");
+            if (const auto* layout = type.find("elementVarLayout"); element == nullptr && layout != nullptr)
+            {
+                element = layout->find("type");
+            }
+            const auto* fields = element != nullptr ? element->find("fields") : nullptr;
+            if (!isString(type.find("kind"), "constantBuffer") || element == nullptr ||
+                !isString(element->find("kind"), "struct") || fields == nullptr || fields->asArray() == nullptr ||
+                fields->asArray()->size() != 1)
+            {
+                return false;
+            }
+            const auto* fieldType = fields->asArray()->front().find("type");
+            return fieldType != nullptr && isString(fieldType->find("kind"), "scalar") &&
+                   isString(fieldType->find("scalarType"), "uint32");
+        }
+
         struct ReflectedMetalParam final
         {
             std::string name;
@@ -647,6 +669,7 @@ namespace rachis::shader_tool
             std::uint32_t metalSpace = 0;
             std::uint32_t unshiftedMetalIndex = 0;
             std::uint32_t count = 1;
+            bool drawIndexPayload = false;
         };
 
         [[nodiscard]] inline const JsonValue* findSelectedEntryPoint(const JsonValue& root,
@@ -891,6 +914,7 @@ namespace rachis::shader_tool
                 .metalSpace = slot->space,
                 .unshiftedMetalIndex = slot->index,
                 .count = flattenedType.elementCount,
+                .drawIndexPayload = flattenedType.elementType == typeNode && isDrawIndexPayload(*typeNode),
             };
         }
 
@@ -1164,12 +1188,20 @@ namespace rachis::shader_tool
             return nullptr;
         }
 
-        [[nodiscard]] inline LogicalBindingCandidate resolveLogicalBinding(const ReflectedMetalParam& metalParam,
-                                                                           const JsonValue* spirvParam)
+        [[nodiscard]] inline std::expected<LogicalBindingCandidate, std::string> resolveLogicalBinding(
+            const ReflectedMetalParam& metalParam, const JsonValue* spirvParam)
         {
             LogicalBindingCandidate candidate{.metal = metalParam};
             if (metalParam.metalSpace == metalDrawIndexSpace)
             {
+                if (metalParam.kindClass != metalBufferKindClass || !metalParam.drawIndexPayload ||
+                    metalParam.unshiftedMetalIndex != 0 || metalParam.count != 1)
+                {
+                    return std::unexpected("The resource '" + metalParam.name +
+                                           "' uses register space 5, which is reserved for the draw index. Only the "
+                                           "constant buffer of Rachis/DrawIndex.hlsli, one uint at "
+                                           "register(b0, space5), may use it.");
+                }
                 candidate.drawIndex = true;
                 return candidate;
             }
@@ -1195,7 +1227,7 @@ namespace rachis::shader_tool
             return candidate;
         }
 
-        [[nodiscard]] inline std::vector<LogicalBindingCandidate> resolveLogicalBindings(
+        [[nodiscard]] inline std::expected<std::vector<LogicalBindingCandidate>, std::string> resolveLogicalBindings(
             const std::vector<ReflectedMetalParam>& metalParams,
             const JsonValue& spirvRoot,
             std::string_view entryPoint)
@@ -1206,8 +1238,12 @@ namespace rachis::shader_tool
             candidates.reserve(metalParams.size());
             for (const auto& metalParam : metalParams)
             {
-                candidates.push_back(
-                    resolveLogicalBinding(metalParam, findParameterNamed(spirvParams, metalParam.name)));
+                auto candidate = resolveLogicalBinding(metalParam, findParameterNamed(spirvParams, metalParam.name));
+                if (!candidate)
+                {
+                    return std::unexpected(std::move(candidate.error()));
+                }
+                candidates.push_back(std::move(*candidate));
             }
             return candidates;
         }
@@ -1316,7 +1352,12 @@ namespace rachis::shader_tool
         MetalCookPlan plan{};
         plan.shifts = detail::planMetalSpaceShifts(metalParams);
 
-        auto candidates = detail::resolveLogicalBindings(metalParams, roots->spirv, entryPoint);
+        auto resolved = detail::resolveLogicalBindings(metalParams, roots->spirv, entryPoint);
+        if (!resolved)
+        {
+            return std::unexpected(std::move(resolved.error()));
+        }
+        auto& candidates = *resolved;
         detail::restoreMetalIndicesForCollidingLogicalBindings(candidates);
         plan.bindings.reserve(candidates.size());
         for (const auto& item : candidates)
