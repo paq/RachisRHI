@@ -656,9 +656,15 @@ namespace rachis::shader_tool
             {
                 return false;
             }
-            const auto* fieldType = fields->asArray()->front().find("type");
+            const auto& field = fields->asArray()->front();
+            const auto* fieldType = field.find("type");
+            const auto* fieldBinding = field.find("binding");
+            const auto* offsetNode = fieldBinding != nullptr ? fieldBinding->find("offset") : nullptr;
+            const auto offset = offsetNode != nullptr ? offsetNode->asUint32() : std::nullopt;
+            const auto* size = fieldBinding != nullptr ? fieldBinding->find("size") : nullptr;
             return fieldType != nullptr && isString(fieldType->find("kind"), "scalar") &&
-                   isString(fieldType->find("scalarType"), "uint32");
+                   isString(fieldType->find("scalarType"), "uint32") && offset == 0U &&
+                   (size == nullptr || size->asUint32() == sizeof(std::uint32_t));
         }
 
         struct ReflectedMetalParam final

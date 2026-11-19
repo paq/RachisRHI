@@ -641,7 +641,8 @@ TEST_CASE("RachisShaderBinaryTool reflect-interface reports the draw index of ta
         const std::string drawIndexParameter = R"(
             {"name": "RachisDrawIndex", "binding": {"kind": "constantBuffer", "space": 5, "index": 0},
              "type": {"kind": "constantBuffer", "elementType": {"kind": "struct", "fields": [
-                 {"name": "rachisDrawIndexValue", "type": {"kind": "scalar", "scalarType": "uint32"}}]}}})";
+                 {"name": "rachisDrawIndexValue", "type": {"kind": "scalar", "scalarType": "uint32"},
+              "binding": {"kind": "uniform", "offset": 0, "size": 4}}]}}})";
         const auto entry = std::string(R"({"name": "main", "stage": ")") + std::string(item.reflectedStage) +
                            R"(", "threadGroupSize": [32, 1, 1]})";
         const auto hlslJson = R"({"parameters": [)" + drawIndexParameter + R"(], "entryPoints": [)" + entry + "]}";
@@ -1833,13 +1834,19 @@ TEST_CASE("ShaderBinaryTool marks only a one-uint constant buffer at b0, space5 
     constexpr std::string_view drawIndex = R"(
         {"name": "RachisDrawIndex", "binding": {"kind": "constantBuffer", "space": 5, "index": 0},
          "type": {"kind": "constantBuffer", "elementType": {"kind": "struct", "fields": [
-             {"name": "rachisDrawIndexValue", "type": {"kind": "scalar", "scalarType": "uint32"}}]}}})";
+             {"name": "rachisDrawIndexValue", "type": {"kind": "scalar", "scalarType": "uint32"},
+              "binding": {"kind": "uniform", "offset": 0, "size": 4}}]}}})";
     const auto planned = rachis::shader_tool::planMetalShaderBindings("{}", metalJson(drawIndex), "vertexMain");
     REQUIRE(planned.has_value());
     REQUIRE(planned->bindings.size() == 1);
     CHECK(planned->bindings[0].drawIndex);
 
     const std::array rejected{
+        std::string(R"(
+        {"name": "Offset", "binding": {"kind": "constantBuffer", "space": 5, "index": 0},
+         "type": {"kind": "constantBuffer", "elementType": {"kind": "struct", "fields": [
+             {"name": "index", "type": {"kind": "scalar", "scalarType": "uint32"},
+              "binding": {"kind": "uniform", "offset": 16, "size": 4}}]}}})"),
         std::string(R"(
         {"name": "Other", "binding": {"kind": "constantBuffer", "space": 5, "index": 1},
          "type": {"kind": "constantBuffer", "elementType": {"kind": "struct", "fields": [

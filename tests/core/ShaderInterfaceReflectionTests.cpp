@@ -702,7 +702,8 @@ TEST_CASE("Shader interface reflection reads task and mesh entry points and thei
         const std::string json = std::string(R"({"parameters": [
             {"name": "RachisDrawIndex", "binding": {"kind": "constantBuffer", "space": 5, "index": 0},
              "type": {"kind": "constantBuffer", "elementType": {"kind": "struct", "fields": [
-                 {"name": "rachisDrawIndexValue", "type": {"kind": "scalar", "scalarType": "uint32"}}]}}}],
+                 {"name": "rachisDrawIndexValue", "type": {"kind": "scalar", "scalarType": "uint32"},
+              "binding": {"kind": "uniform", "offset": 0, "size": 4}}]}}}],
             "entryPoints": [{"name": "main", "stage": ")") +
                                  (stage == InterfaceStage::task ? "amplification" : "mesh") +
                                  R"(", "threadGroupSize": [4, 2, 1], "bindings": [
@@ -750,7 +751,8 @@ TEST_CASE("Shader interface reflection reserves register space 5 for the draw in
     constexpr std::string_view drawIndex = R"(
         {"name": "RachisDrawIndex", "binding": {"kind": "constantBuffer", "space": 5, "index": 0},
          "type": {"kind": "constantBuffer", "elementType": {"kind": "struct", "fields": [
-             {"name": "rachisDrawIndexValue", "type": {"kind": "scalar", "scalarType": "uint32"}}]}}})";
+             {"name": "rachisDrawIndexValue", "type": {"kind": "scalar", "scalarType": "uint32"},
+              "binding": {"kind": "uniform", "offset": 0, "size": 4}}]}}})";
     for (const auto backend : {InterfaceBackend::d3d12, InterfaceBackend::metal})
     {
         INFO("backend " << rachis::shader_tool::interfaceBackendName(backend));
@@ -766,6 +768,11 @@ TEST_CASE("Shader interface reflection reserves register space 5 for the draw in
     CHECK(vulkan.error().find("register space 5") != std::string::npos);
 
     const std::array rejected{
+        std::string(R"(
+        {"name": "Offset", "binding": {"kind": "constantBuffer", "space": 5, "index": 0},
+         "type": {"kind": "constantBuffer", "elementType": {"kind": "struct", "fields": [
+             {"name": "index", "type": {"kind": "scalar", "scalarType": "uint32"},
+              "binding": {"kind": "uniform", "offset": 16, "size": 4}}]}}})"),
         std::string(R"(
         {"name": "Other", "binding": {"kind": "constantBuffer", "space": 5, "index": 1},
          "type": {"kind": "constantBuffer", "elementType": {"kind": "struct", "fields": [
