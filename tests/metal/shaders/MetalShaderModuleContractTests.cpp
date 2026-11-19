@@ -3,6 +3,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <filesystem>
 #include <fstream>
@@ -421,13 +422,16 @@ TEST_CASE("Metal shader interfaces resolve multi-set binding 0 and shifted push 
 TEST_CASE("Metal reflection accepts only a one-uint32 space-5 constant buffer as the draw index",
           "[size:small][rhi][metal][reflection][draw-index]")
 {
-    const auto reflection = [](std::string_view space, std::string_view payloadBytes) {
+    constexpr std::string_view uintField =
+        R"({"name": "index", "type": {"kind": "scalar", "scalarType": "uint32"}, "binding": {"kind": "uniform", "offset": 0, "size": 4}})";
+    const auto reflection = [](std::string_view space, std::string_view payloadBytes, std::string_view fields) {
         return std::string(R"({
         "parameters": [
             {"name": "RachisDrawIndex", "binding": {"kind": "constantBuffer", "space": )") +
                std::string(space) + R"(, "index": 0},
-             "type": {"kind": "constantBuffer", "elementType": {"kind": "struct", "sizes": [{"kind": "uniform", "value": )" +
-               std::string(payloadBytes) + R"(}]}}}
+             "type": {"kind": "constantBuffer", "elementType": {"kind": "struct", "fields": [)" +
+               std::string(fields) + R"(], "sizes": [{"kind": "uniform", "value": )" + std::string(payloadBytes) +
+               R"(}]}}}
         ],
         "entryPoints": [{
             "name": "vertexMain",
@@ -439,21 +443,36 @@ TEST_CASE("Metal reflection accepts only a one-uint32 space-5 constant buffer as
     })";
     };
 
-    const auto accepted =
-        rachis::metal::parseSlangReflectionJson(reflection("5", "4"), "vertexMain", rachis::ShaderStage::vertex);
+    const auto accepted = rachis::metal::parseSlangReflectionJson(
+        reflection("5", "4", uintField), "vertexMain", rachis::ShaderStage::vertex);
     REQUIRE(accepted.has_value());
     CHECK(accepted->drawIndex);
     CHECK(accepted->drawIndexMetalIndex == 0);
 
-    const auto wideConstant =
-        rachis::metal::parseSlangReflectionJson(reflection("5", "16"), "vertexMain", rachis::ShaderStage::vertex);
-    REQUIRE_FALSE(wideConstant.has_value());
-    CHECK(wideConstant.error().code == rachis::ErrorCode::invalidArgument);
-
-    const auto otherSpace =
-        rachis::metal::parseSlangReflectionJson(reflection("1", "4"), "vertexMain", rachis::ShaderStage::vertex);
-    REQUIRE_FALSE(otherSpace.has_value());
-    CHECK(otherSpace.error().code == rachis::ErrorCode::invalidArgument);
+    const std::array rejected{
+        reflection("5", "16", uintField),
+        reflection("1", "4", uintField),
+        reflection(
+            "5",
+            "4",
+            R"({"name": "index", "type": {"kind": "scalar", "scalarType": "float32"}, "binding": {"kind": "uniform", "offset": 0, "size": 4}})"),
+        reflection(
+            "5",
+            "4",
+            R"({"name": "index", "type": {"kind": "scalar", "scalarType": "int32"}, "binding": {"kind": "uniform", "offset": 0, "size": 4}})"),
+        reflection("5", "4", ""),
+        reflection(
+            "5",
+            "4",
+            R"({"name": "index", "type": {"kind": "vector", "elementCount": 1, "elementType": {"kind": "scalar", "scalarType": "uint32"}}, "binding": {"kind": "uniform", "offset": 0, "size": 4}})"),
+    };
+    for (const auto& json : rejected)
+    {
+        CAPTURE(json);
+        const auto parsed = rachis::metal::parseSlangReflectionJson(json, "vertexMain", rachis::ShaderStage::vertex);
+        REQUIRE_FALSE(parsed.has_value());
+        CHECK(parsed.error().code == rachis::ErrorCode::invalidArgument);
+    }
 }
 
 TEST_CASE("Metal reflection applies argument-buffer arrays only to the entry points that use them",

@@ -660,6 +660,28 @@ namespace rachis::metal
             return !sawUsage;
         }
 
+        [[nodiscard]] bool isDrawIndexPayload(NSDictionary* type)
+        {
+            NSDictionary* element = dictionary(type[@"elementType"]);
+            if (element == nil)
+            {
+                element = dictionary(dictionary(type[@"elementVarLayout"])[@"type"]);
+            }
+            NSArray* const fields = array(element[@"fields"]);
+            if (![string(type[@"kind"]) isEqualToString:@"constantBuffer"] ||
+                ![string(element[@"kind"]) isEqualToString:@"struct"] || fields.count != 1)
+            {
+                return false;
+            }
+            NSDictionary* const field = dictionary(fields[0]);
+            NSDictionary* const fieldType = dictionary(field[@"type"]);
+            NSDictionary* const binding = bindingOfKind(field, @"uniform");
+            const auto offset = uintValue(binding[@"offset"]);
+            return [string(fieldType[@"kind"]) isEqualToString:@"scalar"] &&
+                   [string(fieldType[@"scalarType"]) isEqualToString:@"uint32"] && offset == 0U &&
+                   (binding[@"size"] == nil || uintValue(binding[@"size"]) == sizeof(std::uint32_t));
+        }
+
         [[nodiscard]] Status reflectActiveBinding(NSDictionary* root,
                                                   NSDictionary* active,
                                                   const std::vector<LogicalBindingAnnotation>& rachisBindings,
@@ -723,7 +745,7 @@ namespace rachis::metal
                 const auto payloadBytes = uniformSize(dictionary(type[@"elementType"]));
                 if (resource.type != ShaderResourceType::uniformBuffer || resource.count != 1 ||
                     *space != drawIndexRegisterSpace || !payloadBytes || *payloadBytes != sizeof(std::uint32_t) ||
-                    resource.metalIndex >= 31 || layout.drawIndex)
+                    !isDrawIndexPayload(type) || resource.metalIndex >= 31 || layout.drawIndex)
                 {
                     return std::unexpected(
                         manifestError("Metal draw-index reflection must be one uint32 constant buffer in register "
