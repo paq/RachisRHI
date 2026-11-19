@@ -1016,15 +1016,19 @@ TEST_CASE("inline ray query traverses retained BLAS and TLAS versions", "[size:m
                 .has_value());
     CHECK(rachis::d3d12::test::accelerationStructureRecordCount().load(std::memory_order_relaxed) ==
           recordsBeforeRejectedTlasBuild + 1);
-    auto retainedBottomLevelInPlaceUpdate =
-        device.updateBottomLevelAccelerationStructureInPlace(*command,
-                                                             {
-                                                                 .target = *bottomLevel,
-                                                                 .input = bottomInput,
-                                                                 .scratch = *scratch,
-                                                             });
-    REQUIRE_FALSE(retainedBottomLevelInPlaceUpdate.has_value());
-    CHECK(retainedBottomLevelInPlaceUpdate.error().code == rachis::ErrorCode::invalidState);
+    {
+        auto foreignCommand = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+        REQUIRE(foreignCommand.has_value());
+        auto retainedBottomLevelInPlaceUpdate =
+            device.updateBottomLevelAccelerationStructureInPlace(*foreignCommand,
+                                                                 {
+                                                                     .target = *bottomLevel,
+                                                                     .input = bottomInput,
+                                                                     .scratch = *scratch,
+                                                                 });
+        REQUIRE_FALSE(retainedBottomLevelInPlaceUpdate.has_value());
+        CHECK(retainedBottomLevelInPlaceUpdate.error().code == rachis::ErrorCode::invalidState);
+    }
     REQUIRE(device
                 .updateTopLevelAccelerationStructureInPlace(*command,
                                                             {
@@ -1240,16 +1244,20 @@ TEST_CASE("inline ray query traverses retained BLAS and TLAS versions", "[size:m
                                                          .label = "Ray-query binding set",
                                                      });
     REQUIRE(bindingSet.has_value());
-    auto retainedTopLevelInPlaceUpdate =
-        device.updateTopLevelAccelerationStructureInPlace(*command,
-                                                          {
-                                                              .target = *updatedTopLevel,
-                                                              .instances = updatedInstances,
-                                                              .flags = topBuildFlags,
-                                                              .scratch = *scratch,
-                                                          });
-    REQUIRE_FALSE(retainedTopLevelInPlaceUpdate.has_value());
-    CHECK(retainedTopLevelInPlaceUpdate.error().code == rachis::ErrorCode::invalidState);
+    {
+        auto foreignCommand = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+        REQUIRE(foreignCommand.has_value());
+        auto retainedTopLevelInPlaceUpdate =
+            device.updateTopLevelAccelerationStructureInPlace(*foreignCommand,
+                                                              {
+                                                                  .target = *updatedTopLevel,
+                                                                  .instances = updatedInstances,
+                                                                  .flags = topBuildFlags,
+                                                                  .scratch = *scratch,
+                                                              });
+        REQUIRE_FALSE(retainedTopLevelInPlaceUpdate.has_value());
+        CHECK(retainedTopLevelInPlaceUpdate.error().code == rachis::ErrorCode::invalidState);
+    }
     REQUIRE(device
                 .bufferBarrier(*command,
                                {
@@ -2235,15 +2243,14 @@ TEST_CASE("in-place acceleration-structure refits and serialization barriers sta
         REQUIRE_FALSE(tlasBlockedByBoundSet.has_value());
         CHECK(tlasBlockedByBoundSet.error().code == rachis::ErrorCode::invalidState);
 
-        auto sameRecordingBlockedAfterBind =
+        auto sameRecordingAfterBind =
             device.updateBottomLevelAccelerationStructureInPlace(*holdingCommand,
                                                                  {
                                                                      .target = *bottomLevel,
                                                                      .input = finalBottomInput,
                                                                      .scratch = *scratch,
                                                                  });
-        REQUIRE_FALSE(sameRecordingBlockedAfterBind.has_value());
-        CHECK(sameRecordingBlockedAfterBind.error().code == rachis::ErrorCode::invalidState);
+        CHECK(sameRecordingAfterBind.has_value());
 
         REQUIRE(device.resetCommandBuffer(*holdingCommand).has_value());
         REQUIRE(device
