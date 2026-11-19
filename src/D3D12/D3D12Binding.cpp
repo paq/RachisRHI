@@ -1556,9 +1556,9 @@ namespace rachis::d3d12
             BindingSetRecord& record,
             const DescriptorPreparationMask* preparation)
         {
-            if (preparation != nullptr && reusesPublishedDescriptorTable(preparation->resources,
-                                                                         record.resources.get(),
-                                                                         record.resourceSources.size()))
+            if (preparation != nullptr && record.inPlace == nullptr &&
+                reusesPublishedDescriptorTable(
+                    preparation->resources, record.resources.get(), record.resourceSources.size()))
             {
                 return std::optional<StagedDescriptorHandles>{};
             }
@@ -2808,7 +2808,10 @@ namespace rachis::d3d12
             {
                 copyPreparedDescriptors(
                     *device, *candidate.resources, *staged.resources, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-                countResourceTablePublish(counters, *staged.resources, staged.resources->preparedIndices.size());
+                if (!staged.resources->preparedIndices.empty())
+                {
+                    countResourceTablePublish(counters, *staged.resources, staged.resources->preparedIndices.size());
+                }
             }
             else if (staged.resources.has_value())
             {

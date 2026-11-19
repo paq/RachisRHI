@@ -109,7 +109,8 @@ namespace
     class LargeArrayFixture final
     {
     public:
-        LargeArrayFixture(rachis::Device& device, rachis::BindingFlag arrayFlags) : device_(device)
+        LargeArrayFixture(rachis::Device& device, rachis::BindingFlag arrayFlags, bool withSampler = false)
+            : device_(device)
         {
             const auto bytecode = loadShader();
             REQUIRE_FALSE(bytecode.empty());
@@ -130,14 +131,16 @@ namespace
 
             createBuffers();
 
-            const std::array entries{
+            const std::array allEntries{
                 rachis::BindingLayoutEntry{0, rachis::BindingType::storageBuffer, rachis::ShaderStage::compute, 1},
                 rachis::BindingLayoutEntry{1,
                                            rachis::BindingType::readOnlyStorageBuffer,
                                            rachis::ShaderStage::compute,
                                            inputCount,
                                            arrayFlags},
+                rachis::BindingLayoutEntry{2, rachis::BindingType::sampler, rachis::ShaderStage::compute, 1},
             };
+            const auto entries = std::span(allEntries).first(withSampler ? 3U : 2U);
             auto layout = device_.createBindingLayout({.entries = entries, .label = "Large binding array layout"});
             const std::string layoutFailure = layout ? std::string{} : layout.error().message;
             CAPTURE(layoutFailure);
@@ -147,16 +150,28 @@ namespace
             const std::array sizes{
                 rachis::BindingPoolSize{rachis::BindingType::storageBuffer, 4},
                 rachis::BindingPoolSize{rachis::BindingType::readOnlyStorageBuffer, 3 * inputCount},
+                rachis::BindingPoolSize{rachis::BindingType::sampler, 4},
             };
             auto pool = device_.createBindingPool({.maxBindingSets = 1, .sizes = sizes, .label = "Large array pool"});
             REQUIRE(pool.has_value());
             pool_ = *pool;
 
-            const std::array writes{
+            if (withSampler)
+            {
+                for (auto& sampler : samplers_)
+                {
+                    auto created = device_.createSampler({.label = "Large array sampler"});
+                    REQUIRE(created.has_value());
+                    sampler = *created;
+                }
+            }
+            const std::array allWrites{
                 rachis::BindingWrite{0, 0, rachis::BufferBinding{results_, 0, resultRangeSize, sizeof(std::uint32_t)}},
                 rachis::BindingWrite{1, 0, slice(values_, 0)},
                 rachis::BindingWrite{1, 1, slice(values_, 1)},
+                rachis::BindingWrite{2, 0, samplers_[0]},
             };
+            const auto writes = std::span(allWrites).first(withSampler ? 4U : 3U);
             auto set = device_.createBindingSet({
                 .layout = layout_,
                 .writes = writes,
@@ -195,6 +210,13 @@ namespace
             destroyValues();
             static_cast<void>(device_.destroyBuffer(results_));
             static_cast<void>(device_.destroyBuffer(readback_));
+            for (const auto sampler : samplers_)
+            {
+                if (sampler.isValid())
+                {
+                    static_cast<void>(device_.destroySampler(sampler));
+                }
+            }
         }
 
         LargeArrayFixture(const LargeArrayFixture&) = delete;
@@ -215,6 +237,11 @@ namespace
         [[nodiscard]] rachis::BufferHandle results() const noexcept
         {
             return results_;
+        }
+
+        [[nodiscard]] rachis::SamplerHandle alternateSampler() const noexcept
+        {
+            return samplers_[1];
         }
 
         void destroySet()
@@ -377,6 +404,7 @@ namespace
         rachis::BindingLayoutHandle layout_{};
         rachis::BindingPoolHandle pool_{};
         rachis::BindingSetHandle set_{};
+        std::array<rachis::SamplerHandle, 2> samplers_{};
         rachis::PipelineLayoutHandle pipelineLayout_{};
         rachis::PipelineHandle pipeline_{};
     };
@@ -648,6 +676,32 @@ TEST_CASE("update-after-bind writes in place share one binding set version acros
     commands.clear();
     auto submitted = device.submit(std::move(last));
     REQUIRE(submitted.has_value());
+    REQUIRE(device.wait(*submitted).has_value());
+    CHECK(fixture.result(0) == sliceValues[1]);
+
+    checkCleanDiagnostics(device);
+}
+
+TEST_CASE("an update-after-bind write after a sampler update does not reach work recorded before it",
+          "[size:medium][rhi][binding][compute][warp]")
+{
+    auto device = createWarpDevice();
+    REQUIRE(rachis::test::requireCapabilities(device).updateAfterBindBindingArrays);
+    LargeArrayFixture fixture(device, rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind, true);
+    const auto replacement = fixture.createValueBuffer(replacementValues, replacementLabel);
+    QueueBlocker blocker(device);
+
+    const std::array selections{Selection{.element = 1, .slot = 0}};
+    auto command = fixture.record(selections);
+    fixture.recordReadback(command);
+    REQUIRE(update(device, fixture.set(), 2, 0, fixture.alternateSampler()).has_value());
+    REQUIRE(update(device, fixture.set(), 1, 1, slice(replacement, 0)).has_value());
+    auto submitted = device.submit(std::move(command));
+    REQUIRE(submitted.has_value());
+    fixture.destroySet();
+    REQUIRE(device.destroyBuffer(replacement).has_value());
+
+    blocker.release();
     REQUIRE(device.wait(*submitted).has_value());
     CHECK(fixture.result(0) == sliceValues[1]);
 
