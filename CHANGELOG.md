@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- The C ABI is at `RACHIS_ABI_VERSION` 3, and the shared library is
+  `librachis.so.3` and `librachis.3.dylib`. Modules built against version 2
+  must be rebuilt. [C ABI](docs/c-abi.md) describes what version 3 adds:
+  - `rachis_command_draw_indirect`, `rachis_command_draw_indexed_indirect`,
+    `rachis_command_dispatch_indirect`, and
+    `rachis_command_dispatch_mesh_indirect`, with several records, a count
+    buffer, and the draw-index prefix, and structs for the records.
+  - Task and mesh shaders: `task_shader` and `mesh_shader` in
+    `rachis_graphics_pipeline_desc`, `rachis_command_dispatch_mesh`, and the
+    `RACHIS_SHADER_TASK` and `RACHIS_SHADER_MESH` stage bits, which
+    `RACHIS_SHADER_ALL` now includes.
+  - `draw_index` in `rachis_shader_module_desc` and
+    `rachis_pipeline_layout_desc`.
+  - Binding arrays: `flags` in `rachis_binding_layout_entry` (partially bound,
+    variable count, update after bind), `variable_descriptor_count` in
+    `rachis_binding_set_desc`, and `rachis_binding_set_update`.
+  - `rachis_command_fill_buffer` and `rachis_command_clear_storage_texture`.
+  - `required_subgroup_size` in `rachis_compute_pipeline_desc`.
+  - `rachis_device_capabilities` reports the indirect-call, mesh-shader,
+    binding-array, 64-bit atomic, subgroup, and conditional-execution
+    capabilities, the mesh-shader limits, and the variable-count binding
+    limits.
 - Multi-record indirect calls can give each record a draw index that shaders
   read. Set `drawIndexPrefix` in `IndirectDrawDesc` or
   `IndirectMeshDispatchDesc` and start each record with a `uint32` equal to its
