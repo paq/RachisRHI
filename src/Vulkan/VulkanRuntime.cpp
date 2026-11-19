@@ -2942,8 +2942,9 @@ namespace rachis::vulkan
             capabilities.limits.maxVertexAttributes = std::min(limits.maxVertexInputAttributes, maxVertexAttributes);
             capabilities.limits.maxBindingSets = std::min(limits.maxBoundDescriptorSets, maxBindingSets);
             capabilities.limits.maxPushConstantBytes = std::min(limits.maxPushConstantsSize, maxPushConstantBytes);
-            capabilities.limits.maxDrawIndirectCount =
-                limits.maxDrawIndirectCount != 0 ? limits.maxDrawIndirectCount : (record.multiDrawIndirect ? 65535U : 1U);
+            capabilities.limits.maxDrawIndirectCount = limits.maxDrawIndirectCount != 0
+                                                           ? limits.maxDrawIndirectCount
+                                                           : (record.multiDrawIndirect ? 65535U : 1U);
             if (record.shaderClipDistance)
             {
                 capabilities.limits.maxClipDistances = limits.maxClipDistances;
