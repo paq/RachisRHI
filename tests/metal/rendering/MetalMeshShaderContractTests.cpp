@@ -178,8 +178,6 @@ namespace
         std::uint32_t middle = 0;
         std::uint32_t right = 0;
         std::uint32_t corner = 0;
-
-        friend constexpr bool operator==(const MeshCoverage&, const MeshCoverage&) noexcept = default;
     };
 
     [[nodiscard]] std::uint32_t meshDrawCount(const std::byte* pixel) noexcept
@@ -209,6 +207,15 @@ namespace
         };
         REQUIRE(device.unmapBuffer(target.readback).has_value());
         return coverage;
+    }
+
+    void checkMeshCoverage(rachis::Device& device, const MeshTarget& target, const MeshCoverage& expected)
+    {
+        const auto actual = readMeshCoverage(device, target);
+        CHECK(actual.left == expected.left);
+        CHECK(actual.middle == expected.middle);
+        CHECK(actual.right == expected.right);
+        CHECK(actual.corner == expected.corner);
     }
 
     void destroyMeshTarget(rachis::Device& device, const MeshTarget& target)
@@ -473,7 +480,7 @@ TEST_CASE("Metal mesh pipelines dispatch directly and indirectly with and withou
         REQUIRE(device.dispatchMeshIndirect(*command, {.argumentBuffer = *arguments, .argumentOffset = argumentOffset})
                     .has_value());
         finishMeshRendering(device, std::move(*command), target);
-        CHECK(readMeshCoverage(device, target) == MeshCoverage{.left = 1, .middle = 0, .right = 1, .corner = 0});
+        checkMeshCoverage(device, target, MeshCoverage{.left = 1, .middle = 0, .right = 1, .corner = 0});
         destroyMeshTarget(device, target);
     }
 
@@ -490,8 +497,117 @@ TEST_CASE("Metal mesh pipelines dispatch directly and indirectly with and withou
         REQUIRE(device.dispatchMeshIndirect(*command, {.argumentBuffer = *arguments, .argumentOffset = argumentOffset})
                     .has_value());
         finishMeshRendering(device, std::move(*command), target);
-        CHECK(readMeshCoverage(device, target) == MeshCoverage{.left = 0, .middle = 0, .right = 1, .corner = 0});
+        checkMeshCoverage(device, target, MeshCoverage{.left = 0, .middle = 0, .right = 1, .corner = 0});
         destroyMeshTarget(device, target);
+    }
+
+    SECTION("Each record of a multi-record mesh dispatch reads its own arguments")
+    {
+        struct RecordCase final
+        {
+            std::array<rachis::DispatchIndirectArguments, 3> records{};
+            std::uint32_t draws = 0;
+        };
+        const rachis::DispatchIndirectArguments one{1, 1, 1};
+        const rachis::DispatchIndirectArguments none{0, 0, 0};
+        const std::array cases{
+            RecordCase{.records = {none, one, none}, .draws = 1},
+            RecordCase{.records = {one, none, one}, .draws = 2},
+            RecordCase{.records = {none, none, one}, .draws = 1},
+        };
+        for (const bool taskStage : {false, true})
+        {
+            for (const auto& recordCase : cases)
+            {
+                CAPTURE(taskStage);
+                CAPTURE(recordCase.draws);
+                auto recordBuffer = device.createBuffer({
+                    .size = sizeof(recordCase.records),
+                    .usage = rachis::BufferUsage::indirect,
+                    .memoryType = rachis::MemoryType::upload,
+                });
+                REQUIRE(recordBuffer.has_value());
+                auto mappedRecords = device.mapBuffer(*recordBuffer);
+                REQUIRE(mappedRecords.has_value());
+                std::memcpy(mappedRecords->data, recordCase.records.data(), sizeof(recordCase.records));
+                REQUIRE(device.unmapBuffer(*recordBuffer).has_value());
+
+                const auto target = createMeshTarget(device);
+                auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::graphics);
+                REQUIRE(command.has_value());
+                beginMeshRendering(device, *command, target);
+                REQUIRE(device.bindGraphicsPipeline(*command, taskStage ? *taskPipeline : *noTaskPipeline).has_value());
+                REQUIRE(device.bindGraphicsBindingSet(*command, 0, *bindingSet).has_value());
+                setMeshDrawState(device, *command);
+                REQUIRE(device.dispatchMeshIndirect(*command, {.argumentBuffer = *recordBuffer, .maxDispatchCount = 3})
+                            .has_value());
+                finishMeshRendering(device, std::move(*command), target);
+                checkMeshCoverage(
+                    device, target, MeshCoverage{.left = recordCase.draws, .middle = 0, .right = 0, .corner = 0});
+                destroyMeshTarget(device, target);
+                REQUIRE(device.destroyBuffer(*recordBuffer).has_value());
+            }
+        }
+    }
+
+    SECTION("A mesh pipeline whose shaders read no argument table runs one record per indirect dispatch")
+    {
+        const auto fixedBytecode = loadPnms("MetalMeshShader.fixed.ms.pnms");
+        REQUIRE_FALSE(fixedBytecode.empty());
+        auto fixedShader = device.createShaderModule({
+            .stage = rachis::ShaderStage::mesh,
+            .bytecode = fixedBytecode,
+            .entryPoint = "meshFixed",
+            .shaderInterface = rachis::test::computeShaderInterface({1, 1, 1}),
+        });
+        REQUIRE(fixedShader.has_value());
+        auto emptyLayout = device.createPipelineLayout({});
+        REQUIRE(emptyLayout.has_value());
+        auto fixedPipeline = device.createGraphicsPipeline({
+            .layout = *emptyLayout,
+            .pixelShader = *pixelShader,
+            .meshShader = *fixedShader,
+            .cullMode = rachis::CullMode::none,
+            .colorTargets = colorTargets,
+            .label = "Metal binding-free mesh pipeline",
+        });
+        REQUIRE(fixedPipeline.has_value());
+
+        const auto target = createMeshTarget(device);
+        auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::graphics);
+        REQUIRE(command.has_value());
+        beginMeshRendering(device, *command, target);
+        REQUIRE(device.bindGraphicsPipeline(*command, *fixedPipeline).has_value());
+        REQUIRE(device
+                    .setViewport(*command,
+                                 {
+                                     .width = static_cast<float>(targetSize),
+                                     .height = static_cast<float>(targetSize),
+                                     .maxDepth = 1.0F,
+                                 })
+                    .has_value());
+        REQUIRE(device.setScissor(*command, {.width = targetSize, .height = targetSize}).has_value());
+        const std::array<rachis::DispatchIndirectArguments, 2> twoRecords{dispatchArguments, dispatchArguments};
+        auto twoRecordBuffer = device.createBuffer({
+            .size = sizeof(twoRecords),
+            .usage = rachis::BufferUsage::indirect,
+            .memoryType = rachis::MemoryType::upload,
+        });
+        REQUIRE(twoRecordBuffer.has_value());
+        const auto several =
+            device.dispatchMeshIndirect(*command, {.argumentBuffer = *twoRecordBuffer, .maxDispatchCount = 2});
+        REQUIRE_FALSE(several.has_value());
+        CHECK(several.error().code == rachis::ErrorCode::unsupported);
+        REQUIRE(device.dispatchMeshIndirect(*command, {.argumentBuffer = *arguments, .argumentOffset = argumentOffset})
+                    .has_value());
+        finishMeshRendering(device, std::move(*command), target);
+        checkMeshCoverage(device, target, MeshCoverage{.left = 1, .middle = 0, .right = 0, .corner = 0});
+        destroyMeshTarget(device, target);
+
+        REQUIRE(device.destroyBuffer(*twoRecordBuffer).has_value());
+        REQUIRE(device.destroyPipeline(*fixedPipeline).has_value());
+        REQUIRE(device.destroyPipelineLayout(*emptyLayout).has_value());
+        REQUIRE(device.destroyShaderModule(*fixedShader).has_value());
     }
 
     SECTION("Counted mesh dispatch draws only the number of records a GPU fill wrote")
@@ -552,7 +668,7 @@ TEST_CASE("Metal mesh pipelines dispatch directly and indirectly with and withou
                                                .countBuffer = *countBuffer})
                         .has_value());
             finishMeshRendering(device, std::move(*command), target);
-            CHECK(readMeshCoverage(device, target) == MeshCoverage{.left = gpuCount, .middle = 0, .right = 0, .corner = 0});
+            checkMeshCoverage(device, target, MeshCoverage{.left = gpuCount, .middle = 0, .right = 0, .corner = 0});
             destroyMeshTarget(device, target);
             REQUIRE(device.destroyBuffer(*countBuffer).has_value());
         }

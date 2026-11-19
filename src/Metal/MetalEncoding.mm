@@ -266,12 +266,16 @@ namespace rachis::metal
             std::span<const std::shared_ptr<MetalBindingSetVersion>> versions,
             std::optional<std::uint64_t> pushConstantGpuAddress,
             std::span<const MetalBoundBuffer> vertexBuffers,
-            std::uint32_t vertexBufferBaseIndex)
+            std::uint32_t vertexBufferBaseIndex,
+            bool freshTable = false)
         {
-            if (auto reusable = metalFindReusableSingleSetTable(stageBindings, versions, vertexBuffers);
-                reusable != nil)
+            if (!freshTable)
             {
-                return reusable;
+                if (auto reusable = metalFindReusableSingleSetTable(stageBindings, versions, vertexBuffers);
+                    reusable != nil)
+                {
+                    return reusable;
+                }
             }
 
             MetalArgumentTableCapacity capacity{};
@@ -832,7 +836,8 @@ namespace rachis::metal
         [[nodiscard]] Status metalApplyMeshStageArgumentTables(id<MTLDevice> device,
                                                                MetalCommandEntry& entry,
                                                                const MetalPipelineRecord& pipeline,
-                                                               std::optional<std::uint64_t> pushConstantGpuAddress)
+                                                               std::optional<std::uint64_t> pushConstantGpuAddress,
+                                                               bool freshTables)
         {
             if (!entry.vertexTableDirty)
             {
@@ -848,7 +853,8 @@ namespace rachis::metal
                     entry.boundGraphicsVersions,
                     pipeline.objectStageBindings.usesPushConstants ? pushConstantGpuAddress : std::nullopt,
                     {},
-                    0);
+                    0,
+                    freshTables);
                 if (!objectTable)
                 {
                     return std::unexpected(std::move(objectTable.error()));
@@ -866,7 +872,8 @@ namespace rachis::metal
                 entry.boundGraphicsVersions,
                 pipeline.meshStageBindings.usesPushConstants ? pushConstantGpuAddress : std::nullopt,
                 {},
-                0);
+                0,
+                freshTables);
             if (!meshTable)
             {
                 return std::unexpected(std::move(meshTable.error()));
@@ -1021,7 +1028,8 @@ namespace rachis::metal
 
         [[nodiscard]] Status metalApplyGraphicsDrawState(id<MTLDevice> device,
                                                          MetalCommandEntry& entry,
-                                                         const MetalPipelineRecord& pipeline)
+                                                         const MetalPipelineRecord& pipeline,
+                                                         bool freshMeshTables = false)
         {
             if (entry.renderEncoder == nil)
             {
@@ -1050,7 +1058,8 @@ namespace rachis::metal
                 return std::unexpected(std::move(pushConstantGpuAddress.error()));
             }
             auto applied = pipeline.mesh
-                               ? metalApplyMeshStageArgumentTables(device, entry, pipeline, *pushConstantGpuAddress)
+                               ? metalApplyMeshStageArgumentTables(
+                                     device, entry, pipeline, *pushConstantGpuAddress, freshMeshTables)
                                : metalApplyVertexArgumentTable(device, entry, pipeline, *pushConstantGpuAddress);
             if (!applied)
             {
@@ -3562,6 +3571,27 @@ namespace rachis::metal
     namespace
     {
 
+        [[nodiscard]] constexpr bool metalStageReadsArgumentTable(const MetalResolvedStageBindings& stage) noexcept
+        {
+            return !stage.resources.empty() || stage.usesPushConstants || stage.usesDrawIndex;
+        }
+
+        [[nodiscard]] Status metalRequireMeshRecordArguments(const MetalPipelineRecord& pipeline,
+                                                             const MetalIndirectRecordLayout& layout)
+        {
+            const bool tablesRead = metalStageReadsArgumentTable(pipeline.meshStageBindings) &&
+                                    (!pipeline.hasObjectShader ||
+                                     metalStageReadsArgumentTable(pipeline.objectStageBindings));
+            if (layout.maxRecords > 1 && !tablesRead)
+            {
+                return std::unexpected(metalSelectionError(
+                    ErrorCode::unsupported,
+                    "Metal runs an indirect mesh dispatch with more than one record only when the task and mesh "
+                    "shaders each read a binding, push constants, or the draw index."));
+            }
+            return {};
+        }
+
         [[nodiscard]] bool metalMeshDispatchReady(const detail::GraphicsCommandState& state,
                                                   const MetalPipelineRecord* pipeline,
                                                   const MetalCommandEntry* entry)
@@ -3691,6 +3721,10 @@ namespace rachis::metal
         {
             return prefixed;
         }
+        if (auto readable = metalRequireMeshRecordArguments(*pipeline, layout); !readable)
+        {
+            return readable;
+        }
         if (layout.maxRecords == 0 || metalDrawScissoredOut(*entry, *pipeline))
         {
             return {};
@@ -3721,13 +3755,11 @@ namespace rachis::metal
         const MetalDrawIndexRestore restore(*entry);
         for (std::uint32_t record = 0; record < layout.maxRecords; ++record)
         {
-            if (pipeline->readsDrawIndex)
+            entry->drawIndex = pipeline->readsDrawIndex ? record : 0U;
+            entry->vertexTableDirty = true;
+            if (auto applied = metalApplyGraphicsDrawState(inputs->device, *entry, *pipeline, true); !applied)
             {
-                entry->drawIndex = record;
-                if (auto applied = metalApplyGraphicsDrawState(inputs->device, *entry, *pipeline); !applied)
-                {
-                    return applied;
-                }
+                return applied;
             }
             [entry->renderEncoder drawMeshThreadgroupsWithIndirectBuffer:span->firstAddress + span->stride * record
                                              threadsPerObjectThreadgroup:pipeline->objectThreadgroupSize
