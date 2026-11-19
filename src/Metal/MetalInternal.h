@@ -1599,6 +1599,7 @@ namespace rachis::metal
         std::atomic<std::uint64_t> renderTimestampVertexStageCount{0};
         std::atomic<std::uint64_t> renderTimestampFragmentStageCount{0};
         std::shared_ptr<MetalCommitFeedbackGate> nextCommandPoolResetGate;
+        std::shared_ptr<MetalCommitFeedbackGate> nextSubmitFoldGate;
         std::shared_ptr<MetalCommitFeedbackGate> nextDrawableAcquireGate;
     };
 
@@ -1621,6 +1622,7 @@ namespace rachis::metal
     [[nodiscard]] bool consumeInjectedMetalPushConstantSliceFailure() noexcept;
     [[nodiscard]] bool consumeInjectedMetalBindingResidencyReserveFailure() noexcept;
     [[nodiscard]] bool consumeInjectedMetalLayoutStagingFailure() noexcept;
+    void waitAtMetalSubmitAfterResidencyFold() noexcept;
 #endif
 
     [[nodiscard]] FormatProperties probeFormat(id<MTLDevice> device, Format format) noexcept;

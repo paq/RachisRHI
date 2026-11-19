@@ -524,7 +524,6 @@ namespace rachis::metal
     {
         for (const auto& contents : entry.foldedArgumentContents)
         {
-            const std::scoped_lock lock(*contents->mutex);
             for (const auto& [key, count] : contents->residentElements)
             {
                 if (count != 0)
@@ -1614,6 +1613,36 @@ namespace rachis::metal
             return {};
         }
 
+        [[nodiscard]] Status reserveMetalFoldedArgumentLocks(const MetalSubmissionBatch& batch,
+                                                             std::vector<std::mutex*>& mutexes,
+                                                             std::vector<std::unique_lock<std::mutex>>& locks)
+        {
+            try
+            {
+                for (const auto* entry : batch.entries)
+                {
+                    if (entry == nullptr)
+                    {
+                        continue;
+                    }
+                    for (const auto& contents : entry->foldedArgumentContents)
+                    {
+                        mutexes.push_back(contents->mutex.get());
+                    }
+                }
+                std::ranges::sort(mutexes);
+                const auto duplicates = std::ranges::unique(mutexes);
+                mutexes.erase(duplicates.begin(), duplicates.end());
+                locks.reserve(mutexes.size());
+            }
+            catch (const std::bad_alloc&)
+            {
+                return std::unexpected(metalSelectionError(
+                    ErrorCode::outOfMemory, "Failed to reserve Metal binding-array residency for a submission."));
+            }
+            return {};
+        }
+
         [[nodiscard]] Status flushMetalBatchDeferredBarriers(const MetalSubmissionBatch& batch)
         {
             for (std::size_t index = 0; index < batch.entries.size(); ++index)
@@ -1877,6 +1906,12 @@ namespace rachis::metal
         {
             return std::unexpected(std::move(gathered.error()));
         }
+        std::vector<std::mutex*> foldedMutexes;
+        std::vector<std::unique_lock<std::mutex>> foldedLocks;
+        if (auto reserved = reserveMetalFoldedArgumentLocks(batch, foldedMutexes, foldedLocks); !reserved)
+        {
+            return std::unexpected(std::move(reserved.error()));
+        }
         if (auto applied = applyMetalStagedQuerySlots(nativeCommands, querySlots); !applied)
         {
             return std::unexpected(std::move(applied.error()));
@@ -1899,6 +1934,10 @@ namespace rachis::metal
         }
 
         consumeMetalCommandLeases(state, batch, nativeCommands, commandBuffers);
+        for (auto* mutex : foldedMutexes)
+        {
+            foldedLocks.emplace_back(*mutex);
+        }
         for (auto* entry : batch.entries)
         {
             metalFoldArgumentResidency(*entry);
@@ -1906,6 +1945,7 @@ namespace rachis::metal
             endMetalRecording(*entry);
         }
 #ifdef RACHIS_TESTING
+        waitAtMetalSubmitAfterResidencyFold();
         if (auto closed = rollBackInjectedMetalSubmitCloseFailure(state, batch, submittedValue); !closed)
         {
             return std::unexpected(std::move(closed.error()));

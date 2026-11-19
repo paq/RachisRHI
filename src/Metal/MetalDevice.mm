@@ -1765,6 +1765,25 @@ void rachis::metal::holdNextCommitFeedback(std::shared_ptr<rachis::metal::MetalC
     }
 }
 
+void rachis::metal::holdNextSubmitAfterResidencyFold(std::shared_ptr<rachis::metal::MetalCommitFeedbackGate> gate)
+{
+    const std::scoped_lock lock(metalTestingState().mutex);
+    metalTestingState().nextSubmitFoldGate = std::move(gate);
+}
+
+void rachis::metal::waitAtMetalSubmitAfterResidencyFold() noexcept
+{
+    std::shared_ptr<rachis::metal::MetalCommitFeedbackGate> gate;
+    {
+        const std::scoped_lock lock(metalTestingState().mutex);
+        gate = std::move(metalTestingState().nextSubmitFoldGate);
+    }
+    if (gate != nullptr)
+    {
+        gate->waitUntilReleased();
+    }
+}
+
 void rachis::metal::holdNextCommandPoolReset(std::shared_ptr<rachis::metal::MetalCommitFeedbackGate> gate)
 {
     const std::scoped_lock lock(metalTestingState().mutex);
