@@ -271,7 +271,7 @@ A binding layout entry with `BindingFlag::updateAfterBind` changes its elements 
 
 | Backend | Reported when | Limits that apply |
 | --- | --- | --- |
-| Direct3D 12 | Always | The usual shader-visible heap budget (`maxBindingPoolResourceDescriptors`). Descriptor ranges of these entries are volatile in the root signature, so the GPU reads each descriptor when a shader uses it. |
+| Direct3D 12 | Always | The usual shader-visible heap budget (`maxBindingPoolResourceDescriptors`). Descriptor ranges of these entries are volatile in the root signature, so the GPU reads each descriptor when a shader uses it. `updateBindingSet` fails with `ErrorCode::unsupported` when a write to these entries names a sparse resource or a swapchain texture; name those in `createBindingSet` instead. |
 | Vulkan | The device supports `descriptorBindingPartiallyBound`, `descriptorBindingUpdateUnusedWhilePending`, and `descriptorBindingSampledImageUpdateAfterBind`, `descriptorBindingStorageImageUpdateAfterBind`, and `descriptorBindingStorageBufferUpdateAfterBind` | See below |
 | Metal | Always | Only on variable-count entries, which live in an argument buffer (see [Variable-count binding arrays](#variable-count-binding-arrays)). The flag on a fixed-size entry fails `createBindingLayout` with `ErrorCode::unsupported`. |
 

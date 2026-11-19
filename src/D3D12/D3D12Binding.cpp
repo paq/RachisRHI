@@ -2922,6 +2922,18 @@ namespace rachis::d3d12
         }
         if (writesOnlyUpdateAfterBindEntries(*current->layout, writes) && rewritesLiveResourceTable(*current, *staged))
         {
+            for (std::size_t index = 0; index < preparation.resources.size(); ++index)
+            {
+                if (preparation.resources[index] != 0 && needsSpecialResourceCapture(candidate->resourceSources[index]))
+                {
+                    return std::unexpected(Error{
+                        ErrorCode::unsupported,
+                        0,
+                        "An update-after-bind write in place cannot name a sparse resource or a swapchain texture on "
+                        "Direct3D 12.",
+                    });
+                }
+            }
             return impl_->publishInPlaceUpdate(set, current, std::move(candidate), *staged);
         }
 

@@ -617,3 +617,32 @@ TEST_CASE("unretained command pools do not keep update-after-bind elements writt
     REQUIRE(device.destroyCommandPool(*pool).has_value());
     checkCleanDiagnostics(device);
 }
+TEST_CASE("update-after-bind writes in place cannot name a sparse buffer on Direct3D 12",
+          "[size:medium][rhi][binding][sparse][warp]")
+{
+    auto device = createWarpDevice();
+    const auto capabilities = rachis::test::requireCapabilities(device);
+    REQUIRE(capabilities.updateAfterBindBindingArrays);
+    if (!capabilities.sparseBuffers)
+    {
+        SKIP("This adapter reports no sparse buffers.");
+    }
+    LargeArrayFixture fixture(device, rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind);
+    auto sparse = device.createSparseBuffer({
+        .size = 64ULL * 1024ULL,
+        .usage = rachis::BufferUsage::storage,
+        .memoryType = rachis::MemoryType::deviceLocal,
+        .label = "Update-after-bind sparse buffer",
+    });
+    REQUIRE(sparse.has_value());
+
+    const auto before = device.bindingUpdateStatistics();
+    const auto rejected = update(device, fixture.set(), 1, 1, slice(*sparse, 0));
+    REQUIRE_FALSE(rejected.has_value());
+    CHECK(rejected.error().code == rachis::ErrorCode::unsupported);
+    const auto unchanged = resourceDelta(before, device.bindingUpdateStatistics());
+    CHECK(unchanged.published == 0);
+
+    REQUIRE(device.destroyBuffer(*sparse).has_value());
+    checkCleanDiagnostics(device);
+}
