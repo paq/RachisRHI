@@ -1270,15 +1270,16 @@ namespace rachis::vulkan
 
         [[nodiscard]] VkMemoryBarrier2 aliasDeactivationBarrier(PipelineStage stagesBefore,
                                                                 Access accessBefore,
-                                                                PipelineStage stagesAfter) noexcept
+                                                                PipelineStage stagesAfter,
+                                                                Access accessAfter) noexcept
         {
             return {
                 .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                 .pNext = {},
                 .srcStageMask = nativeStagesForAccess(stagesBefore, accessBefore),
                 .srcAccessMask = nativeAccessForStages(stagesBefore, accessBefore),
-                .dstStageMask = nativeStages(stagesAfter),
-                .dstAccessMask = VK_ACCESS_2_NONE,
+                .dstStageMask = nativeStagesForAccess(stagesAfter, accessAfter),
+                .dstAccessMask = nativeAccessForStages(stagesAfter, accessAfter),
             };
         }
 
@@ -1290,7 +1291,7 @@ namespace rachis::vulkan
             return {
                 .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
                 .pNext = {},
-                .srcStageMask = nativeStages(activation.stagesBefore & enabledStages),
+                .srcStageMask = nativeStagesForAccess(activation.stagesBefore & enabledStages, activation.accessBefore),
                 .srcAccessMask = VK_ACCESS_2_NONE,
                 .dstStageMask = nativeStagesForAccess(activation.stagesAfter & enabledStages, activation.accessAfter),
                 .dstAccessMask = nativeAccessForStages(activation.stagesAfter & enabledStages, activation.accessAfter),
@@ -1365,7 +1366,7 @@ namespace rachis::vulkan
             VkImageMemoryBarrier2 activate{
                 .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
                 .pNext = {},
-                .srcStageMask = nativeStages(activation.stagesBefore & enabledStages),
+                .srcStageMask = nativeStagesForAccess(activation.stagesBefore & enabledStages, activation.accessBefore),
                 .srcAccessMask = VK_ACCESS_2_NONE,
                 .dstStageMask = nativeStagesForAccess(activation.stagesAfter & enabledStages, activation.accessAfter),
                 .dstAccessMask = nativeAccessForStages(activation.stagesAfter & enabledStages, activation.accessAfter),
@@ -2249,6 +2250,30 @@ namespace rachis::vulkan
         const std::scoped_lock lock(capturedBarrierMutex);
         capturedBarriers = sink;
     }
+
+    void captureAliasBarriers(const VkMemoryBarrier2& deactivate,
+                              VkPipelineStageFlags2 activateSrcStages,
+                              VkPipelineStageFlags2 activateDstStages,
+                              VkAccessFlags2 activateDstAccess)
+    {
+        const std::scoped_lock lock(capturedBarrierMutex);
+        if (capturedBarriers == nullptr)
+        {
+            return;
+        }
+        capturedBarriers->push_back(VulkanCapturedBarrier{
+            .memory = true,
+            .srcStageMask = deactivate.srcStageMask,
+            .dstStageMask = deactivate.dstStageMask,
+            .srcAccessMask = deactivate.srcAccessMask,
+            .dstAccessMask = deactivate.dstAccessMask,
+        });
+        capturedBarriers->push_back(VulkanCapturedBarrier{
+            .srcStageMask = activateSrcStages,
+            .dstStageMask = activateDstStages,
+            .dstAccessMask = activateDstAccess,
+        });
+    }
 #endif
 
     Status VulkanResourceAllocator::resourceBarriers(VkCommandBuffer command,
@@ -2386,14 +2411,19 @@ namespace rachis::vulkan
             });
         }
 
-        auto deactivate = aliasDeactivationBarrier(
-            activation.stagesBefore & support.stages, activation.accessBefore, activation.stagesAfter & support.stages);
+        auto deactivate = aliasDeactivationBarrier(activation.stagesBefore & support.stages,
+                                                   activation.accessBefore,
+                                                   activation.stagesAfter & support.stages,
+                                                   activation.accessAfter);
         auto activate = bufferAliasActivationBarrier(activation, after->buffer, after->desc.size, support.stages);
         if (allCommandsBarrierSources_)
         {
             waitOnAllCommandsBefore(std::span(&deactivate, 1));
             waitOnAllCommandsBefore(std::span(&activate, 1));
         }
+#ifdef RACHIS_TESTING
+        captureAliasBarriers(deactivate, activate.srcStageMask, activate.dstStageMask, activate.dstAccessMask);
+#endif
         const auto dependency = barrierDependencyInfo(std::span(&deactivate, 1), std::span(&activate, 1), {});
         table_->vkCmdPipelineBarrier2(command, &dependency);
         if (retained != nullptr)
@@ -2482,14 +2512,19 @@ namespace rachis::vulkan
             return std::unexpected(std::move(afterRange.error()));
         }
 
-        auto deactivate = aliasDeactivationBarrier(
-            activation.stagesBefore & support.stages, activation.accessBefore, activation.stagesAfter & support.stages);
+        auto deactivate = aliasDeactivationBarrier(activation.stagesBefore & support.stages,
+                                                   activation.accessBefore,
+                                                   activation.stagesAfter & support.stages,
+                                                   activation.accessAfter);
         auto activate = textureAliasActivationBarrier(activation, after->image, *afterRange, support.stages);
         if (allCommandsBarrierSources_)
         {
             waitOnAllCommandsBefore(std::span(&deactivate, 1));
             waitOnAllCommandsBefore(std::span(&activate, 1));
         }
+#ifdef RACHIS_TESTING
+        captureAliasBarriers(deactivate, activate.srcStageMask, activate.dstStageMask, activate.dstAccessMask);
+#endif
         const auto dependency = barrierDependencyInfo(std::span(&deactivate, 1), {}, std::span(&activate, 1));
         if (retained != nullptr)
         {

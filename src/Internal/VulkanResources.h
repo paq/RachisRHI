@@ -830,6 +830,7 @@ namespace rachis::vulkan
     struct VulkanCapturedBarrier final
     {
         bool image = false;
+        bool memory = false;
         VkSharingMode sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         std::uint32_t recordingFamily = VK_QUEUE_FAMILY_IGNORED;
         std::uint32_t srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -838,9 +839,15 @@ namespace rachis::vulkan
         VkImageLayout newLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         VkPipelineStageFlags2 srcStageMask = VK_PIPELINE_STAGE_2_NONE;
         VkPipelineStageFlags2 dstStageMask = VK_PIPELINE_STAGE_2_NONE;
+        VkAccessFlags2 srcAccessMask = VK_ACCESS_2_NONE;
+        VkAccessFlags2 dstAccessMask = VK_ACCESS_2_NONE;
     };
 
     void captureVulkanResourceBarriers(std::vector<VulkanCapturedBarrier>* sink) noexcept;
+    void captureAliasBarriers(const VkMemoryBarrier2& deactivate,
+                              VkPipelineStageFlags2 activateSrcStages,
+                              VkPipelineStageFlags2 activateDstStages,
+                              VkAccessFlags2 activateDstAccess);
 
     enum class VulkanBadAllocPoint : std::uint8_t
     {

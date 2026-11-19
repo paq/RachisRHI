@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <span>
 #include <string_view>
+#include <vector>
 
 namespace
 {
@@ -767,6 +768,101 @@ TEST_CASE("Vulkan placed indirect buffers bind to device-address-capable heap me
     REQUIRE(device.destroyBuffer(*indirect).has_value());
     REQUIRE(device.destroyResourceHeap(*heap).has_value());
     device.collectGarbage();
+    const auto diagnostics = device.diagnosticCounts();
+    CHECK(diagnostics.errors == 0);
+    CHECK(diagnostics.corruptions == 0);
+}
+
+TEST_CASE("Vulkan buffer alias activation orders a fill of the old alias before a fill of the new alias",
+          "[size:medium][rhi][vulkan][memory][aliasing]")
+{
+    auto created = rachis::createDevice(vulkanDesc());
+    if (rachis::test::skipWithoutCreatedDevice(created))
+    {
+        return;
+    }
+    auto device = std::move(*created);
+    REQUIRE(rachis::test::requireCapabilities(device).enhancedBarriers);
+
+    constexpr std::uint64_t bufferSize = 4096;
+    const rachis::BufferDesc placedBufferDesc{
+        .size = bufferSize,
+        .usage = rachis::BufferUsage::storage | rachis::BufferUsage::copySource | rachis::BufferUsage::copyDestination,
+        .memoryType = rachis::MemoryType::deviceLocal,
+        .label = "Aliased filled buffer",
+    };
+    const auto requirements = device.queryBufferMemoryRequirements(placedBufferDesc);
+    REQUIRE(requirements.has_value());
+    const auto heap = device.createResourceHeap({
+        .size = requirements->size,
+        .alignment = requirements->alignment,
+        .memoryType = rachis::MemoryType::deviceLocal,
+        .resourceClass = rachis::ResourceHeapClass::buffer,
+        .flags = rachis::ResourceHeapFlag::allowAliasing,
+    });
+    REQUIRE(heap.has_value());
+    const auto first = device.createPlacedBuffer({.heap = *heap}, placedBufferDesc);
+    const auto second = device.createPlacedBuffer({.heap = *heap}, placedBufferDesc);
+    const auto readback = device.createBuffer({
+        .size = bufferSize,
+        .usage = rachis::BufferUsage::copyDestination,
+        .memoryType = rachis::MemoryType::readback,
+    });
+    REQUIRE(first.has_value());
+    REQUIRE(second.has_value());
+    REQUIRE(readback.has_value());
+
+    auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+    REQUIRE(command.has_value());
+    REQUIRE(device.fillBuffer(*command, *first, 0, rachis::wholeResource, 0x11111111U).has_value());
+    std::vector<rachis::vulkan::VulkanCapturedBarrier> captured;
+    rachis::vulkan::captureVulkanResourceBarriers(&captured);
+    const auto activated = device.activateBufferAlias(*command,
+                                                      {
+                                                          .before = *first,
+                                                          .after = *second,
+                                                          .stagesBefore = rachis::PipelineStage::computeShader,
+                                                          .stagesAfter = rachis::PipelineStage::computeShader,
+                                                          .accessBefore = rachis::Access::unorderedAccess,
+                                                          .accessAfter = rachis::Access::unorderedAccess,
+                                                      });
+    rachis::vulkan::captureVulkanResourceBarriers(nullptr);
+    REQUIRE(activated.has_value());
+    REQUIRE(device.fillBuffer(*command, *second, 0, rachis::wholeResource, 0x22222222U).has_value());
+    REQUIRE(device
+                .bufferBarrier(*command,
+                               {
+                                   .buffer = *second,
+                                   .stagesBefore = rachis::PipelineStage::computeShader,
+                                   .stagesAfter = rachis::PipelineStage::copy,
+                                   .accessBefore = rachis::Access::unorderedAccess,
+                                   .accessAfter = rachis::Access::copySource,
+                               })
+                .has_value());
+    REQUIRE(device.copyBuffer(*command, {.source = *second, .destination = *readback, .size = bufferSize}).has_value());
+
+    const auto ordersFills = std::ranges::any_of(captured, [](const rachis::vulkan::VulkanCapturedBarrier& barrier) {
+        constexpr VkPipelineStageFlags2 clear = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+        constexpr VkAccessFlags2 transferWrite = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        const bool allCommandsSource = (barrier.srcStageMask & VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT) != 0;
+        return barrier.memory && ((barrier.srcStageMask & clear) != 0 || allCommandsSource) &&
+               (barrier.dstStageMask & clear) != 0 && (barrier.srcAccessMask & transferWrite) != 0 &&
+               (barrier.dstAccessMask & transferWrite) != 0;
+    });
+    CHECK(ordersFills);
+
+    auto submitted = device.submit(std::move(*command));
+    REQUIRE(submitted.has_value());
+    REQUIRE(device.wait(*submitted).has_value());
+    std::array<std::uint32_t, bufferSize / sizeof(std::uint32_t)> values{};
+    REQUIRE(device.readBuffer(*readback, 0, std::as_writable_bytes(std::span(values))).has_value());
+    CHECK(std::ranges::all_of(values, [](std::uint32_t value) { return value == 0x22222222U; }));
+
+    REQUIRE(device.destroyBuffer(*first).has_value());
+    REQUIRE(device.destroyBuffer(*second).has_value());
+    REQUIRE(device.destroyBuffer(*readback).has_value());
+    device.collectGarbage();
+    REQUIRE(device.destroyResourceHeap(*heap).has_value());
     const auto diagnostics = device.diagnosticCounts();
     CHECK(diagnostics.errors == 0);
     CHECK(diagnostics.corruptions == 0);
