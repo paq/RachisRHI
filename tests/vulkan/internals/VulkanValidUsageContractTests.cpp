@@ -3116,6 +3116,71 @@ TEST_CASE("Vulkan push constants name the enabled stages of composite layout ran
     gMock = nullptr;
 }
 
+TEST_CASE("Vulkan graphics push constants to a range shared with compute update the compute shadow",
+          "[size:small][rhi][vulkan][vuid][graphics-mock]")
+{
+    using rachis::ShaderStage;
+    MockVulkanDispatch mock;
+    gMock = &mock;
+    const auto table = makeMockDeviceTable();
+    const auto physical = fakeHandle<VkPhysicalDevice>(0x15);
+    const auto device = fakeHandle<VkDevice>(0x26);
+    const rachis::vulkan::VulkanQueueFamilies families{.graphics = 0, .compute = 0, .transfer = 0};
+    const rachis::vulkan::VulkanQueueHandles queueHandles{
+        .graphics = fakeHandle<VkQueue>(0x35),
+        .compute = fakeHandle<VkQueue>(0x35),
+        .copy = fakeHandle<VkQueue>(0x35),
+        .families = families,
+    };
+
+    rachis::vulkan::VulkanResourceAllocator resources;
+    resources.initializeDispatchForTesting(device, &table, nullptr, physical, families);
+    const rachis::DeviceCapabilities capabilities{};
+    rachis::vulkan::VulkanGraphicsEncoder graphics;
+    graphics.initialize(device, &table, &capabilities, &resources, nullptr, nullptr);
+
+    rachis::vulkan::VulkanCommandAllocator commands;
+    commands.initialize(device, &table, queueHandles, 0xABC4, &resources);
+    const auto cmdPool = commands.createCommandPool({.queueType = rachis::QueueType::graphics, .maxCommandBuffers = 1});
+    REQUIRE(cmdPool.has_value());
+    auto cb = commands.acquireCommandBuffer(*cmdPool);
+    REQUIRE(cb.has_value());
+    auto& vkCb = static_cast<rachis::vulkan::VulkanCommandBuffer&>(**cb);
+
+    auto pipeline = std::make_shared<rachis::vulkan::VulkanNativePipeline>();
+    pipeline->pipeline = fakeHandle<VkPipeline>(0x5031);
+    pipeline->layout = fakeHandle<VkPipelineLayout>(0x5032);
+    pipeline->pushConstantRanges = {
+        {.visibility = ShaderStage::vertex | ShaderStage::pixel | ShaderStage::compute, .offset = 0, .size = 16},
+        {.visibility = ShaderStage::vertex | ShaderStage::pixel, .offset = 16, .size = 16},
+    };
+    pipeline->nativePushConstantRanges =
+        rachis::vulkan::validation_detail::mergePushConstantRangesPerStage(pipeline->pushConstantRanges);
+    vkCb.computeState().pipelineOwner = pipeline;
+    vkCb.graphicsState().pipelineOwner = pipeline;
+    vkCb.graphicsState().renderingOwner = std::make_shared<int>(1);
+
+    std::array<std::byte, 16> computeData{};
+    computeData.fill(std::byte{0x11});
+    std::array<std::byte, 32> graphicsData{};
+    graphicsData.fill(std::byte{0x22});
+    REQUIRE(graphics.setComputePushConstants(vkCb, 0, computeData).has_value());
+    REQUIRE(graphics.setGraphicsPushConstants(vkCb, ShaderStage::vertex | ShaderStage::pixel, 0, graphicsData)
+                .has_value());
+
+    const auto& shadow = vkCb.computePushConstants();
+    CHECK(std::ranges::all_of(std::span(shadow).first(16), [](std::byte value) { return value == std::byte{0x22}; }));
+    CHECK(std::ranges::all_of(std::span(shadow).subspan(16, 16), [](std::byte value) { return value == std::byte{}; }));
+
+    vkCb.graphicsState().renderingOwner.reset();
+    vkCb.graphicsState().pipelineOwner.reset();
+    vkCb.computeState().pipelineOwner.reset();
+    cb->reset();
+    commands.shutdown();
+    resources.shutdown();
+    gMock = nullptr;
+}
+
 TEST_CASE("Vulkan barriers drop pipeline stages the device has not enabled and reject scopes left without one",
           "[size:small][rhi][vulkan][vuid][barriers-mock]")
 {

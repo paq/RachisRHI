@@ -1498,6 +1498,11 @@ namespace rachis::vulkan
                                        subrange.offset,
                                        subrange.size,
                                        data.data() + (subrange.offset - offset));
+            if (hasAny(subrange.stages, ShaderStage::compute))
+            {
+                std::ranges::copy(data.subspan(subrange.offset - offset, subrange.size),
+                                  commandBuffer.computePushConstants().begin() + subrange.offset);
+            }
         }
         return {};
     }
