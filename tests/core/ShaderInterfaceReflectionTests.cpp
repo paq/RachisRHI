@@ -1,3 +1,5 @@
+#include "GeneratedBindingArray.h"
+#include "Internal/PortableValidation.h"
 #include "Internal/ShaderInterfaceReflection.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -785,4 +787,30 @@ TEST_CASE("PNMS draw-index reflection checks the envelope and reads only the sel
     const std::string duplicated(R"({"entryPoints": [{"name": "drawn", "stage": "vertex"},
                                                     {"name": "drawn", "stage": "vertex"}]})");
     CHECK_FALSE(metalManifestReadsDrawIndex(pnmsShader(duplicated), "drawn", InterfaceStage::vertex).has_value());
+}
+
+TEST_CASE("Generated binding layouts of unbounded arrays pass binding layout validation",
+          "[size:small][rhi][tooling][shader-interface]")
+{
+    namespace generated = rachis_shaders::reflection::GeneratedBindingArray;
+    std::size_t backends = 0;
+    for (const auto backend : {rachis::Backend::d3d12, rachis::Backend::vulkan, rachis::Backend::metal})
+    {
+        if (rachis_shaders::GeneratedBindingArray(backend).empty())
+        {
+            continue;
+        }
+        ++backends;
+        INFO("backend " << static_cast<int>(backend));
+        REQUIRE(generated::bindingSetCount(backend) == 2);
+        const auto entries = generated::bindingLayout(backend, 1);
+        REQUIRE(entries.size() == 1);
+        CHECK(entries[0].count == rachis::unboundedBindingCount);
+        CHECK(entries[0].flags == rachis::BindingFlag::variableDescriptorCount);
+        const auto valid = rachis::detail::validateBindingLayoutDesc(rachis::BindingLayoutDesc{.entries = entries});
+        INFO((valid ? std::string{} : valid.error().message));
+        CHECK(valid.has_value());
+        CHECK(generated::bindingPoolSizes(backend, 1).empty());
+    }
+    CHECK(backends > 0);
 }

@@ -3225,6 +3225,13 @@ if(rachis_build_tests)
                     REFLECT)
             endforeach()
         endif()
+        # An unbounded binding array, whose generated binding layout must pass createBindingLayout.
+        rachis_add_shader(RachisRHITests
+            NAME GeneratedBindingArray
+            SOURCE tests/shaders/GeneratedBindingArray.hlsl
+            ENTRY main
+            STAGE compute
+            REFLECT)
         # Shaders that include Rachis/DrawIndex.hlsli through the include directory rachis_add_shader passes.
         rachis_add_shader(RachisRHITests
             NAME GeneratedDrawIndexVertex

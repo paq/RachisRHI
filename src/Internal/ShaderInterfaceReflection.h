@@ -1169,7 +1169,12 @@ namespace rachis::shader_tool
                     {
                         text += "            {.binding = " + std::to_string(binding->binding) +
                                 ", .type = rachis::BindingType::" + std::string(binding->type) +
-                                ", .visibility = stage, .count = " + countText(binding->count) + "},\n";
+                                ", .visibility = stage, .count = " + countText(binding->count);
+                        if (binding->count == unboundedResourceCount)
+                        {
+                            text += ", .flags = rachis::BindingFlag::variableDescriptorCount";
+                        }
+                        text += "},\n";
                     }
                     text += "        }};\n";
                 }
