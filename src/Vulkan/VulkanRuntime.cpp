@@ -564,11 +564,6 @@ namespace rachis::vulkan
         });
         if (selected.graphics == VK_QUEUE_FAMILY_IGNORED)
         {
-            selected.graphics = claims.firstUnclaimed(
-                [](const VkQueueFamilyProperties& family) { return (family.queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0; });
-        }
-        if (selected.graphics == VK_QUEUE_FAMILY_IGNORED)
-        {
             return selected;
         }
         selected.graphicsIndex = claims.claim(selected.graphics);
@@ -2222,8 +2217,8 @@ namespace rachis::vulkan
             {
                 return std::unexpected(
                     selectionError(VulkanSelectionFailure::requiredFeatureMissing,
-                                   "Vulkan adapter has no graphics queue family. Selection did not fall back "
-                                   "to D3D12."));
+                                   "Vulkan adapter has no queue family that supports both graphics and compute. "
+                                   "Selection did not fall back to D3D12."));
             }
             return {};
         }

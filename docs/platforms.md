@@ -128,7 +128,7 @@ When provided by the driver, RachisRHI also enables swapchain maintenance, prese
 
 Each `QueueType` receives its own native Vulkan queue when the device exposes enough queues:
 
-- **Graphics queue:** The first family that supports both graphics and compute, or the first graphics family when no family supports both.
+- **Graphics queue:** The first family that supports both graphics and compute. Graphics command buffers also record compute work, so an adapter without such a family is rejected.
 - **Compute queue selection order:**
   1. A second queue from the graphics family, when that family supports compute (preferred first because concurrent submissions to the graphics queue and compute-only family on an RTX 4080 can trigger device loss under NVIDIA Windows driver `621.14`).
   2. A compute family without graphics.
