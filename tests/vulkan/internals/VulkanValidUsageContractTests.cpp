@@ -3227,6 +3227,18 @@ TEST_CASE("Vulkan barriers drop pipeline stages the device has not enabled and r
             .accessBefore = Access::renderTarget,
             .accessAfter = Access::shadingRateSource,
         },
+        rachis::GlobalBarrier{
+            .stagesBefore = PipelineStage::computeShader,
+            .stagesAfter = PipelineStage::all,
+            .accessBefore = Access::unorderedAccess,
+            .accessAfter = Access::predicate,
+        },
+        rachis::GlobalBarrier{
+            .stagesBefore = PipelineStage::all,
+            .stagesAfter = PipelineStage::vertexShader,
+            .accessBefore = Access::streamOutputWrite,
+            .accessAfter = Access::shaderResource,
+        },
     };
     const std::array optionalOnly{
         rachis::GlobalBarrier{
@@ -3247,6 +3259,12 @@ TEST_CASE("Vulkan barriers drop pipeline stages the device has not enabled and r
         },
         rachis::GlobalBarrier{
             .stagesBefore = PipelineStage::accelerationStructureBuild,
+            .stagesAfter = PipelineStage::computeShader,
+            .accessBefore = Access::accelerationStructureScratch,
+            .accessAfter = Access::shaderResource,
+        },
+        rachis::GlobalBarrier{
+            .stagesBefore = PipelineStage::all,
             .stagesAfter = PipelineStage::computeShader,
             .accessBefore = Access::accelerationStructureScratch,
             .accessAfter = Access::shaderResource,

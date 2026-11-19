@@ -216,6 +216,16 @@ namespace rachis::vulkan
             {
                 return false;
             }
+            const auto enabledFor = [&](Access gated, PipelineStage stage) {
+                return !hasAny(access, gated) || hasAny(support.stages, stage);
+            };
+            if (!enabledFor(Access::predicate, PipelineStage::conditionalExecution) ||
+                !enabledFor(Access::accelerationStructureBuildInput | Access::accelerationStructureScratch,
+                            PipelineStage::accelerationStructureBuild) ||
+                !enabledFor(Access::streamOutputWrite, PipelineStage::streamOutput))
+            {
+                return false;
+            }
             return accessMatchesStages(enabled, access);
         }
 
