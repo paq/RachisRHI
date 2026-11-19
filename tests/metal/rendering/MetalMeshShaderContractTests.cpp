@@ -525,50 +525,143 @@ TEST_CASE("Metal mesh pipelines dispatch directly and indirectly with and withou
 
     SECTION("Each record of a multi-record mesh dispatch reads its own arguments")
     {
+        const auto recordTaskBytecode = loadPnms("MetalMeshRecords.as.pnms");
+        const auto recordMeshBytecode = loadPnms("MetalMeshRecords.ms.pnms");
+        const auto recordMeshFromTaskBytecode = loadPnms("MetalMeshRecords.task.ms.pnms");
+        const auto recordPixelBytecode = loadPnms("MetalMeshRecords.ps.pnms");
+        REQUIRE_FALSE(recordTaskBytecode.empty());
+        REQUIRE_FALSE(recordMeshBytecode.empty());
+        REQUIRE_FALSE(recordMeshFromTaskBytecode.empty());
+        REQUIRE_FALSE(recordPixelBytecode.empty());
+        const rachis::ShaderInterfaceDesc drawIndexInterface{
+            .workgroupSize = rachis::ShaderWorkgroupSize{1, 1, 1},
+            .drawIndex = true,
+        };
+        auto recordTask = device.createShaderModule({
+            .stage = rachis::ShaderStage::task,
+            .bytecode = recordTaskBytecode,
+            .entryPoint = "recordTask",
+            .shaderInterface = drawIndexInterface,
+        });
+        auto recordMesh = device.createShaderModule({
+            .stage = rachis::ShaderStage::mesh,
+            .bytecode = recordMeshBytecode,
+            .entryPoint = "recordMesh",
+            .shaderInterface = drawIndexInterface,
+        });
+        auto recordMeshFromTask = device.createShaderModule({
+            .stage = rachis::ShaderStage::mesh,
+            .bytecode = recordMeshFromTaskBytecode,
+            .entryPoint = "recordMeshFromTask",
+            .shaderInterface = drawIndexInterface,
+        });
+        auto recordPixel = device.createShaderModule({
+            .stage = rachis::ShaderStage::pixel,
+            .bytecode = recordPixelBytecode,
+            .entryPoint = "recordColor",
+        });
+        REQUIRE(recordTask.has_value());
+        REQUIRE(recordMesh.has_value());
+        REQUIRE(recordMeshFromTask.has_value());
+        REQUIRE(recordPixel.has_value());
+        auto recordLayout = device.createPipelineLayout({.drawIndex = true});
+        REQUIRE(recordLayout.has_value());
+        auto recordNoTaskPipeline = device.createGraphicsPipeline({
+            .layout = *recordLayout,
+            .pixelShader = *recordPixel,
+            .meshShader = *recordMesh,
+            .cullMode = rachis::CullMode::none,
+            .colorTargets = colorTargets,
+        });
+        auto recordTaskPipeline = device.createGraphicsPipeline({
+            .layout = *recordLayout,
+            .pixelShader = *recordPixel,
+            .taskShader = *recordTask,
+            .meshShader = *recordMeshFromTask,
+            .cullMode = rachis::CullMode::none,
+            .colorTargets = colorTargets,
+        });
+        REQUIRE(recordNoTaskPipeline.has_value());
+        REQUIRE(recordTaskPipeline.has_value());
+
+        struct MeshRecord final
+        {
+            std::uint32_t drawIndex = 0;
+            rachis::DispatchIndirectArguments arguments{};
+        };
+        static_assert(sizeof(MeshRecord) == rachis::drawIndexPrefixSize + sizeof(rachis::DispatchIndirectArguments));
         struct RecordCase final
         {
             std::array<rachis::DispatchIndirectArguments, 3> records{};
-            std::uint32_t draws = 0;
+            MeshCoverage coverage{};
         };
         const rachis::DispatchIndirectArguments one{1, 1, 1};
+        const rachis::DispatchIndirectArguments two{2, 1, 1};
         const rachis::DispatchIndirectArguments none{0, 0, 0};
         const std::array cases{
-            RecordCase{.records = {none, one, none}, .draws = 1},
-            RecordCase{.records = {one, none, one}, .draws = 2},
-            RecordCase{.records = {none, none, one}, .draws = 1},
+            RecordCase{.records = {none, one, none}, .coverage = {.middle = 1}},
+            RecordCase{.records = {one, none, two}, .coverage = {.left = 1, .right = 2}},
+            RecordCase{.records = {none, none, one}, .coverage = {.right = 1}},
+            RecordCase{.records = {two, one, none}, .coverage = {.left = 2, .middle = 1}},
         };
         for (const bool taskStage : {false, true})
         {
             for (const auto& recordCase : cases)
             {
                 CAPTURE(taskStage);
-                CAPTURE(recordCase.draws);
+                CAPTURE(recordCase.coverage.left, recordCase.coverage.middle, recordCase.coverage.right);
+                std::array<MeshRecord, 3> records{};
+                for (std::uint32_t record = 0; record < records.size(); ++record)
+                {
+                    records[record] = MeshRecord{.drawIndex = record, .arguments = recordCase.records[record]};
+                }
                 auto recordBuffer = device.createBuffer({
-                    .size = sizeof(recordCase.records),
+                    .size = sizeof(records),
                     .usage = rachis::BufferUsage::indirect,
                     .memoryType = rachis::MemoryType::upload,
                 });
                 REQUIRE(recordBuffer.has_value());
                 auto mappedRecords = device.mapBuffer(*recordBuffer);
                 REQUIRE(mappedRecords.has_value());
-                std::memcpy(mappedRecords->data, recordCase.records.data(), sizeof(recordCase.records));
+                std::memcpy(mappedRecords->data, records.data(), sizeof(records));
                 REQUIRE(device.unmapBuffer(*recordBuffer).has_value());
 
                 const auto target = createMeshTarget(device);
                 auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::graphics);
                 REQUIRE(command.has_value());
                 beginMeshRendering(device, *command, target);
-                REQUIRE(device.bindGraphicsPipeline(*command, taskStage ? *taskPipeline : *noTaskPipeline).has_value());
-                REQUIRE(device.bindGraphicsBindingSet(*command, 0, *bindingSet).has_value());
-                setMeshDrawState(device, *command);
-                REQUIRE(device.dispatchMeshIndirect(*command, {.argumentBuffer = *recordBuffer, .maxDispatchCount = 3})
+                REQUIRE(device.bindGraphicsPipeline(*command, taskStage ? *recordTaskPipeline : *recordNoTaskPipeline)
+                            .has_value());
+                REQUIRE(device
+                            .setViewport(*command,
+                                         {
+                                             .width = static_cast<float>(targetSize),
+                                             .height = static_cast<float>(targetSize),
+                                             .maxDepth = 1.0F,
+                                         })
+                            .has_value());
+                REQUIRE(device.setScissor(*command, {.width = targetSize, .height = targetSize}).has_value());
+                REQUIRE(device
+                            .dispatchMeshIndirect(*command,
+                                                  {
+                                                      .argumentBuffer = *recordBuffer,
+                                                      .maxDispatchCount = 3,
+                                                      .drawIndexPrefix = true,
+                                                  })
                             .has_value());
                 finishMeshRendering(device, std::move(*command), target);
-                checkMeshCoverage(
-                    device, target, MeshCoverage{.left = recordCase.draws, .middle = 0, .right = 0, .corner = 0});
+                checkMeshCoverage(device, target, recordCase.coverage);
                 destroyMeshTarget(device, target);
                 REQUIRE(device.destroyBuffer(*recordBuffer).has_value());
             }
+        }
+
+        REQUIRE(device.destroyPipeline(*recordTaskPipeline).has_value());
+        REQUIRE(device.destroyPipeline(*recordNoTaskPipeline).has_value());
+        REQUIRE(device.destroyPipelineLayout(*recordLayout).has_value());
+        for (const auto module : {*recordPixel, *recordMeshFromTask, *recordMesh, *recordTask})
+        {
+            REQUIRE(device.destroyShaderModule(module).has_value());
         }
     }
 
