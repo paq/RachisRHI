@@ -1,3 +1,4 @@
+#include "Metal/MetalIndirectRecordMath.h"
 #include "Rachis/Device.h"
 #include "RhiTestSupport.h"
 
@@ -10,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -272,6 +274,17 @@ namespace
     };
 
 } // namespace
+
+TEST_CASE("Metal count clamps launch enough workgroups for every record count", "[size:small][rhi][metal][indirect]")
+{
+    STATIC_REQUIRE(rachis::metal::metalClampThreadgroups(0) == 0);
+    STATIC_REQUIRE(rachis::metal::metalClampThreadgroups(1) == 1);
+    STATIC_REQUIRE(rachis::metal::metalClampThreadgroups(64) == 1);
+    STATIC_REQUIRE(rachis::metal::metalClampThreadgroups(65) == 2);
+    STATIC_REQUIRE(rachis::metal::metalClampThreadgroups(std::numeric_limits<std::uint32_t>::max() - 62U) ==
+                   67'108'864U);
+    STATIC_REQUIRE(rachis::metal::metalClampThreadgroups(std::numeric_limits<std::uint32_t>::max()) == 67'108'864U);
+}
 
 TEST_CASE("Metal reports multi-record indirect calls and GPU-written counts", "[size:large][rhi][metal][indirect]")
 {

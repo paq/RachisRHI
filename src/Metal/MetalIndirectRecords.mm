@@ -1,3 +1,4 @@
+#include "MetalIndirectRecordMath.h"
 #include "MetalInternal.h"
 
 #include <algorithm>
@@ -11,8 +12,6 @@ namespace rachis::metal
 
     namespace
     {
-
-        constexpr std::uint32_t kMetalClampThreadgroupSize = 64;
 
         constexpr const char* kMetalIndirectRecordSource = R"msl(
 #include <metal_stdlib>
@@ -55,10 +54,14 @@ static void rachisClampRecord(constant RachisIndirectClamp& clamp, uint record)
 
 [[object]] void rachisClampIndirectRecordsObject(constant RachisIndirectClamp& clamp [[buffer(0)]],
                                                  uint record [[thread_position_in_grid]],
+                                                 uint lane [[thread_index_in_threadgroup]],
                                                  mesh_grid_properties grid)
 {
     rachisClampRecord(clamp, record);
-    grid.set_threadgroups_per_grid(uint3(0, 0, 0));
+    if (lane == 0)
+    {
+        grid.set_threadgroups_per_grid(uint3(0, 0, 0));
+    }
 }
 
 struct RachisClampVertex
@@ -150,11 +153,6 @@ struct RachisClampVertex
             native.indirectClampCompute = compute;
             native.indirectClampRender = render;
             return {};
-        }
-
-        [[nodiscard]] std::uint32_t metalClampThreadgroups(std::uint32_t records) noexcept
-        {
-            return (records + kMetalClampThreadgroupSize - 1U) / kMetalClampThreadgroupSize;
         }
 
     } // namespace
