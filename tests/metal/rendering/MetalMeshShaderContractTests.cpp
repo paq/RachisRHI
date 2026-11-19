@@ -8,6 +8,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -16,6 +17,8 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include <unistd.h>
 
 namespace
 {
@@ -809,6 +812,302 @@ TEST_CASE("Metal mesh pipeline cache entries depend on the mesh workgroup size",
     REQUIRE(device.destroyPipelineCache(*cache).has_value());
     REQUIRE(device.destroyPipelineLayout(*layout).has_value());
     for (const auto module : {*pixel, *wide, *narrow})
+    {
+        REQUIRE(device.destroyShaderModule(module).has_value());
+    }
+}
+
+TEST_CASE("Metal task shaders launch every mesh workgroup they request", "[size:large][rhi][metal][mesh]")
+{
+    auto created = rachis::createDevice(metalDesc());
+    REQUIRE(created);
+    auto device = std::move(*created);
+    if (!rachis::test::requireCapabilities(device).meshShaders)
+    {
+        SKIP("The Metal GPU is older than the Apple9 family.");
+    }
+    constexpr std::uint32_t meshGroups = 5000;
+    const auto taskBytecode = loadPnms("MetalMeshShader.grid.as.pnms");
+    const auto meshBytecode = loadPnms("MetalMeshShader.count.ms.pnms");
+    const auto pixelBytecode = loadPnms("MetalMeshShader.ps.pnms");
+    REQUIRE_FALSE(taskBytecode.empty());
+    REQUIRE_FALSE(meshBytecode.empty());
+    REQUIRE_FALSE(pixelBytecode.empty());
+    const std::array taskBindings{rachis::ShaderBindingRequirement{0, 0, rachis::ShaderResourceType::uniformBuffer, 1}};
+    const std::array meshBindings{rachis::ShaderBindingRequirement{0, 1, rachis::ShaderResourceType::storageBuffer, 1}};
+    auto task = device.createShaderModule({
+        .stage = rachis::ShaderStage::task,
+        .bytecode = taskBytecode,
+        .entryPoint = "taskGrid",
+        .shaderInterface = rachis::test::computeShaderInterface({1, 1, 1}, taskBindings),
+    });
+    auto mesh = device.createShaderModule({
+        .stage = rachis::ShaderStage::mesh,
+        .bytecode = meshBytecode,
+        .entryPoint = "meshCount",
+        .shaderInterface = rachis::test::computeShaderInterface({1, 1, 1}, meshBindings),
+    });
+    auto pixel = device.createShaderModule({
+        .stage = rachis::ShaderStage::pixel,
+        .bytecode = pixelBytecode,
+        .entryPoint = "meshPixel",
+    });
+    REQUIRE(task.has_value());
+    REQUIRE(mesh.has_value());
+    REQUIRE(pixel.has_value());
+
+    auto constants = device.createBuffer({
+        .size = 256,
+        .usage = rachis::BufferUsage::constant,
+        .memoryType = rachis::MemoryType::upload,
+    });
+    auto counter = device.createBuffer({
+        .size = sizeof(std::uint32_t),
+        .usage = rachis::BufferUsage::storage,
+        .memoryType = rachis::MemoryType::upload,
+    });
+    REQUIRE(constants.has_value());
+    REQUIRE(counter.has_value());
+    auto mappedConstants = device.mapBuffer(*constants);
+    REQUIRE(mappedConstants.has_value());
+    std::memset(mappedConstants->data, 0, mappedConstants->size);
+    const std::array taskColor{0.0F, 0.0F, 0.0F, static_cast<float>(meshGroups)};
+    std::memcpy(mappedConstants->data, taskColor.data(), sizeof(taskColor));
+    REQUIRE(device.unmapBuffer(*constants).has_value());
+    auto mappedCounter = device.mapBuffer(*counter);
+    REQUIRE(mappedCounter.has_value());
+    std::memset(mappedCounter->data, 0, sizeof(std::uint32_t));
+    REQUIRE(device.unmapBuffer(*counter).has_value());
+
+    const std::array entries{
+        rachis::BindingLayoutEntry{0, rachis::BindingType::uniformBuffer, rachis::ShaderStage::task, 1},
+        rachis::BindingLayoutEntry{1, rachis::BindingType::storageBuffer, rachis::ShaderStage::mesh, 1},
+    };
+    auto bindingLayout = device.createBindingLayout({.entries = entries});
+    REQUIRE(bindingLayout.has_value());
+    const std::array writes{
+        rachis::BindingWrite{.binding = 0, .resource = rachis::BufferBinding{.buffer = *constants, .size = 256}},
+        rachis::BindingWrite{
+            .binding = 1,
+            .resource = rachis::BufferBinding{.buffer = *counter, .structureByteStride = sizeof(std::uint32_t)},
+        },
+    };
+    auto set = rachis::test::createBindingSet(device, {.layout = *bindingLayout, .writes = writes});
+    REQUIRE(set.has_value());
+    const std::array layouts{*bindingLayout};
+    auto pipelineLayout = device.createPipelineLayout({.bindingLayouts = layouts});
+    REQUIRE(pipelineLayout.has_value());
+    const std::array colorTargets{rachis::ColorTargetState{.format = rachis::Format::rgba8Unorm}};
+    auto pipeline = device.createGraphicsPipeline({
+        .layout = *pipelineLayout,
+        .pixelShader = *pixel,
+        .taskShader = *task,
+        .meshShader = *mesh,
+        .cullMode = rachis::CullMode::none,
+        .colorTargets = colorTargets,
+    });
+    REQUIRE(pipeline.has_value());
+
+    const auto target = createMeshTarget(device);
+    auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::graphics);
+    REQUIRE(command.has_value());
+    beginMeshRendering(device, *command, target);
+    REQUIRE(device.bindGraphicsPipeline(*command, *pipeline).has_value());
+    REQUIRE(device.bindGraphicsBindingSet(*command, 0, *set).has_value());
+    REQUIRE(device
+                .setViewport(*command,
+                             {
+                                 .width = static_cast<float>(targetSize),
+                                 .height = static_cast<float>(targetSize),
+                                 .maxDepth = 1.0F,
+                             })
+                .has_value());
+    REQUIRE(device.setScissor(*command, {.width = targetSize, .height = targetSize}).has_value());
+    REQUIRE(device.dispatchMesh(*command, 1).has_value());
+    finishMeshRendering(device, std::move(*command), target);
+    auto mapped = device.mapBuffer(*counter);
+    REQUIRE(mapped.has_value());
+    std::uint32_t launched = 0;
+    std::memcpy(&launched, mapped->data, sizeof(launched));
+    REQUIRE(device.unmapBuffer(*counter).has_value());
+    CHECK(launched == meshGroups);
+    CHECK(device.diagnosticCounts().errors == 0);
+
+    destroyMeshTarget(device, target);
+    REQUIRE(device.destroyPipeline(*pipeline).has_value());
+    REQUIRE(device.destroyPipelineLayout(*pipelineLayout).has_value());
+    REQUIRE(device.destroyBindingSet(*set).has_value());
+    REQUIRE(device.destroyBindingLayout(*bindingLayout).has_value());
+    REQUIRE(device.destroyBuffer(*counter).has_value());
+    REQUIRE(device.destroyBuffer(*constants).has_value());
+    REQUIRE(device.destroyShaderModule(*pixel).has_value());
+    REQUIRE(device.destroyShaderModule(*mesh).has_value());
+    REQUIRE(device.destroyShaderModule(*task).has_value());
+}
+
+TEST_CASE("Metal task shaders may declare their own mesh-grid maximum", "[size:large][rhi][metal][mesh]")
+{
+    auto created = rachis::createDevice(metalDesc());
+    REQUIRE(created);
+    auto device = std::move(*created);
+    if (!rachis::test::requireCapabilities(device).meshShaders)
+    {
+        SKIP("The Metal GPU is older than the Apple9 family.");
+    }
+    if (std::system("xcrun -sdk macosx --find metal > /dev/null 2>&1") != 0)
+    {
+        SKIP("The Metal compiler is not installed.");
+    }
+    constexpr std::string_view source = R"msl(#include <metal_stdlib>
+using namespace metal;
+struct GridPayload
+{
+    uint groups;
+};
+struct GridVertex
+{
+    float4 position [[position]];
+};
+using GridMesh = metal::mesh<GridVertex, void, 3, 1, topology::triangle>;
+[[object, max_total_threadgroups_per_mesh_grid(8)]] void gridTask(object_data GridPayload& payload [[payload]],
+                                                                 mesh_grid_properties grid)
+{
+    payload.groups = 4;
+    grid.set_threadgroups_per_grid(uint3(4, 1, 1));
+}
+[[mesh]] void gridMesh(GridMesh output,
+                       const object_data GridPayload& payload [[payload]],
+                       device atomic_uint* counter [[buffer(0)]])
+{
+    output.set_primitive_count(0);
+    atomic_fetch_add_explicit(counter, payload.groups == 4 ? 1U : 0U, memory_order_relaxed);
+}
+[[fragment]] float4 gridPixel()
+{
+    return float4(0.0F, 1.0F, 0.0F, 1.0F);
+}
+)msl";
+    constexpr std::string_view json = R"({
+        "parameters": [
+            {"name": "counter", "binding": {"kind": "constantBuffer", "index": 0},
+             "type": {"kind": "resource", "baseShape": "structuredBuffer", "access": "readWrite"}}
+        ],
+        "entryPoints": [
+            {"name": "gridTask", "stage": "amplification", "threadGroupSize": [1, 1, 1], "bindings": []},
+            {"name": "gridMesh", "stage": "mesh", "threadGroupSize": [1, 1, 1],
+             "bindings": [{"name": "counter", "binding": {"kind": "constantBuffer", "index": 0, "used": 1}}]},
+            {"name": "gridPixel", "stage": "fragment", "bindings": []}
+        ],
+        "rachisBindings": [{"name": "counter", "set": 0, "binding": 0}]
+    })";
+    const auto directory =
+        std::filesystem::temp_directory_path() / ("rachis-mesh-grid-" + std::to_string(::getpid()));
+    std::filesystem::create_directories(directory);
+    const auto sourcePath = directory / "grid.metal";
+    const auto libraryPath = directory / "grid.metallib";
+    {
+        std::ofstream stream(sourcePath, std::ios::binary);
+        stream << source;
+        REQUIRE(stream);
+    }
+    const auto command = "xcrun -sdk macosx metal -std=metal3.1 -o \"" + libraryPath.string() + "\" \"" +
+                         sourcePath.string() + "\"";
+    REQUIRE(std::system(command.c_str()) == 0);
+    const auto metallib = loadBytes(libraryPath);
+    std::filesystem::remove_all(directory);
+    REQUIRE_FALSE(metallib.empty());
+    const auto bytecode = rachis::metal::packShaderManifest(std::as_bytes(std::span(json)), metallib);
+
+    const std::array counterBinding{rachis::ShaderBindingRequirement{0, 0, rachis::ShaderResourceType::storageBuffer, 1}};
+    auto task = device.createShaderModule({
+        .stage = rachis::ShaderStage::task,
+        .bytecode = bytecode,
+        .entryPoint = "gridTask",
+        .shaderInterface = rachis::test::computeShaderInterface({1, 1, 1}),
+    });
+    auto mesh = device.createShaderModule({
+        .stage = rachis::ShaderStage::mesh,
+        .bytecode = bytecode,
+        .entryPoint = "gridMesh",
+        .shaderInterface = rachis::test::computeShaderInterface({1, 1, 1}, counterBinding),
+    });
+    auto pixel = device.createShaderModule({
+        .stage = rachis::ShaderStage::pixel,
+        .bytecode = bytecode,
+        .entryPoint = "gridPixel",
+    });
+    REQUIRE(task.has_value());
+    REQUIRE(mesh.has_value());
+    REQUIRE(pixel.has_value());
+
+    auto counter = device.createBuffer({
+        .size = sizeof(std::uint32_t),
+        .usage = rachis::BufferUsage::storage,
+        .memoryType = rachis::MemoryType::upload,
+    });
+    REQUIRE(counter.has_value());
+    auto mappedCounter = device.mapBuffer(*counter);
+    REQUIRE(mappedCounter.has_value());
+    std::memset(mappedCounter->data, 0, sizeof(std::uint32_t));
+    REQUIRE(device.unmapBuffer(*counter).has_value());
+    const std::array entries{
+        rachis::BindingLayoutEntry{0, rachis::BindingType::storageBuffer, rachis::ShaderStage::mesh, 1},
+    };
+    auto bindingLayout = device.createBindingLayout({.entries = entries});
+    REQUIRE(bindingLayout.has_value());
+    const std::array writes{rachis::BindingWrite{
+        .binding = 0,
+        .resource = rachis::BufferBinding{.buffer = *counter, .structureByteStride = sizeof(std::uint32_t)},
+    }};
+    auto set = rachis::test::createBindingSet(device, {.layout = *bindingLayout, .writes = writes});
+    REQUIRE(set.has_value());
+    const std::array layouts{*bindingLayout};
+    auto pipelineLayout = device.createPipelineLayout({.bindingLayouts = layouts});
+    REQUIRE(pipelineLayout.has_value());
+    const std::array colorTargets{rachis::ColorTargetState{.format = rachis::Format::rgba8Unorm}};
+    auto pipeline = device.createGraphicsPipeline({
+        .layout = *pipelineLayout,
+        .pixelShader = *pixel,
+        .taskShader = *task,
+        .meshShader = *mesh,
+        .cullMode = rachis::CullMode::none,
+        .colorTargets = colorTargets,
+    });
+    INFO((pipeline.has_value() ? std::string{} : pipeline.error().message));
+    REQUIRE(pipeline.has_value());
+
+    const auto target = createMeshTarget(device);
+    auto recording = rachis::test::acquireCommandBuffer(device, rachis::QueueType::graphics);
+    REQUIRE(recording.has_value());
+    beginMeshRendering(device, *recording, target);
+    REQUIRE(device.bindGraphicsPipeline(*recording, *pipeline).has_value());
+    REQUIRE(device.bindGraphicsBindingSet(*recording, 0, *set).has_value());
+    REQUIRE(device
+                .setViewport(*recording,
+                             {
+                                 .width = static_cast<float>(targetSize),
+                                 .height = static_cast<float>(targetSize),
+                                 .maxDepth = 1.0F,
+                             })
+                .has_value());
+    REQUIRE(device.setScissor(*recording, {.width = targetSize, .height = targetSize}).has_value());
+    REQUIRE(device.dispatchMesh(*recording, 1).has_value());
+    finishMeshRendering(device, std::move(*recording), target);
+    auto mapped = device.mapBuffer(*counter);
+    REQUIRE(mapped.has_value());
+    std::uint32_t launched = 0;
+    std::memcpy(&launched, mapped->data, sizeof(launched));
+    REQUIRE(device.unmapBuffer(*counter).has_value());
+    CHECK(launched == 4);
+    CHECK(device.diagnosticCounts().errors == 0);
+
+    destroyMeshTarget(device, target);
+    REQUIRE(device.destroyPipeline(*pipeline).has_value());
+    REQUIRE(device.destroyPipelineLayout(*pipelineLayout).has_value());
+    REQUIRE(device.destroyBindingSet(*set).has_value());
+    REQUIRE(device.destroyBindingLayout(*bindingLayout).has_value());
+    REQUIRE(device.destroyBuffer(*counter).has_value());
+    for (const auto module : {*pixel, *mesh, *task})
     {
         REQUIRE(device.destroyShaderModule(module).has_value());
     }

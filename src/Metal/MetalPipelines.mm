@@ -2937,7 +2937,6 @@ namespace rachis::metal
                 pipelineDesc.objectFunctionDescriptor =
                     metalLibraryFunctionDescriptor(inputs.task.library, inputs.task.entryPoint);
                 pipelineDesc.maxTotalThreadsPerObjectThreadgroup = metalWorkgroupThreads(inputs.task.snapshot);
-                pipelineDesc.maxTotalThreadgroupsPerMeshGrid = metalMaxMeshGridThreadgroups;
             }
             pipelineDesc.meshFunctionDescriptor =
                 metalLibraryFunctionDescriptor(inputs.mesh.library, inputs.mesh.entryPoint);
