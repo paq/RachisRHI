@@ -2187,12 +2187,12 @@ TEST_CASE("C ABI runs indirect dispatch batches with a GPU count and clears stor
     CHECK(rachis_command_clear_storage_texture(device.get(), command, storageView, &rejectedClear, &error) ==
           RACHIS_STATUS_INVALID_ARGUMENT);
     const GuardedClearValue floatOnly(RACHIS_STORAGE_TEXTURE_CLEAR_FLOAT32,
-                                      offsetof(rachis_storage_texture_clear_value, uint32));
+                                      offsetof(rachis_storage_texture_clear_value, float32) + sizeof(float));
     CHECK(rachis_command_clear_storage_texture(device.get(), command, storageView, floatOnly.get(), &error) ==
           RACHIS_STATUS_INVALID_ARGUMENT);
     GuardedClearValue uintOnly(RACHIS_STORAGE_TEXTURE_CLEAR_UINT32,
-                               offsetof(rachis_storage_texture_clear_value, sint32));
-    uintOnly.write(offsetof(rachis_storage_texture_clear_value, uint32), clear.uint32, sizeof(clear.uint32));
+                               offsetof(rachis_storage_texture_clear_value, uint32) + sizeof(std::uint32_t));
+    uintOnly.write(offsetof(rachis_storage_texture_clear_value, uint32), clear.uint32, sizeof(std::uint32_t));
     requireOk(rachis_command_clear_storage_texture(device.get(), command, storageView, uintOnly.get(), &error), error);
 
     const std::array<rachis_buffer_barrier, 2> afterFill{

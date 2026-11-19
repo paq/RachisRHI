@@ -5,6 +5,7 @@
 #include "C/CAbiText.h"
 #include "C/CAbiTokenSource.h"
 #include "Common/MonotonicIdentitySource.h"
+#include "Internal/FillAndClearValidation.h"
 #include "Rachis/Device.h"
 
 #include <algorithm>
@@ -61,6 +62,8 @@ namespace
         std::uint64_t dependents = 0;
 
         std::uint64_t byteSize = 0;
+
+        rachis::Format format = rachis::Format::unknown;
     };
 
     struct CommandLease final
@@ -1739,7 +1742,7 @@ extern "C"
             {
                 return *lost;
             }
-            return createToken(*device, TokenKind::texture, output, error, [&] {
+            const auto status = createToken(*device, TokenKind::texture, output, error, [&] {
                 rachis::TextureDesc native{};
                 native.dimension = static_cast<rachis::TextureDimension>(desc->dimension);
                 native.width = desc->width;
@@ -1752,6 +1755,11 @@ extern "C"
                 native.label = optionalString(desc->label);
                 return device->native.createTexture(native);
             });
+            if (status == RACHIS_STATUS_OK)
+            {
+                device->tokens.find(*output)->format = *format;
+            }
+            return status;
         });
     }
 
@@ -1892,8 +1900,11 @@ extern "C"
             });
             if (status == RACHIS_STATUS_OK)
             {
-                device->tokens.find(*output)->parent = owner;
-                ++device->tokens.find(owner)->dependents;
+                auto* const created = device->tokens.find(*output);
+                auto* const texture = device->tokens.find(owner);
+                created->parent = owner;
+                created->format = *format != rachis::Format::unknown ? *format : texture->format;
+                ++texture->dependents;
             }
             return status;
         });
@@ -2182,24 +2193,27 @@ extern "C"
             {
                 return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "invalid storage texture clear type");
             }
-            rachis::StorageTextureClearValue clear{.type = static_cast<rachis::StorageTextureClearType>(value->type)};
-            switch (value->type)
-            {
-            case RACHIS_STORAGE_TEXTURE_CLEAR_FLOAT32:
-                std::ranges::copy(value->float32, clear.float32.begin());
-                break;
-            case RACHIS_STORAGE_TEXTURE_CLEAR_UINT32:
-                std::ranges::copy(value->uint32, clear.uint32.begin());
-                break;
-            default:
-                std::ranges::copy(value->sint32, clear.sint32.begin());
-                break;
-            }
             return recordCommand(*device, command, error, [&](rachis::CommandBuffer& commandBuffer) {
                 const auto* token = findView(device->tokens, view);
                 if (token == nullptr)
                 {
                     return invalidHandle(error);
+                }
+                const auto channels = rachis::detail::storageTextureClearFormat(token->format);
+                const std::size_t present = channels.has_value() ? channels->channelCount : 0U;
+                rachis::StorageTextureClearValue clear{.type =
+                                                           static_cast<rachis::StorageTextureClearType>(value->type)};
+                switch (value->type)
+                {
+                case RACHIS_STORAGE_TEXTURE_CLEAR_FLOAT32:
+                    std::copy_n(value->float32, present, clear.float32.begin());
+                    break;
+                case RACHIS_STORAGE_TEXTURE_CLEAR_UINT32:
+                    std::copy_n(value->uint32, present, clear.uint32.begin());
+                    break;
+                default:
+                    std::copy_n(value->sint32, present, clear.sint32.begin());
+                    break;
                 }
                 return result(
                     error,
