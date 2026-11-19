@@ -1838,6 +1838,8 @@ TEST_CASE("C ABI mesh pipelines dispatch directly, through counted indirect reco
     const auto taskBytes = loadFile(RACHIS_CABI_DRAW_INDEX_TASK_PATH);
     const auto taskMeshBytes = loadFile(RACHIS_CABI_DRAW_INDEX_TASK_MESH_PATH);
     const auto pixelBytes = loadFile(RACHIS_CABI_DRAW_INDEX_PIXEL_PATH);
+    const auto vertexBytes = loadFile(RACHIS_CABI_DRAW_INDEX_VERTEX_PATH);
+    REQUIRE_FALSE(vertexBytes.empty());
     REQUIRE_FALSE(meshBytes.empty());
     REQUIRE_FALSE(taskBytes.empty());
     REQUIRE_FALSE(taskMeshBytes.empty());
@@ -1877,6 +1879,12 @@ TEST_CASE("C ABI mesh pipelines dispatch directly, through counted indirect reco
     CHECK(rejectedShader == 0);
     pixelDesc.workgroup_x = 0;
     const auto pixel = createShaderModule(device.get(), pixelDesc, error);
+    const std::array<std::uint32_t, 1> inputLocations{0};
+    auto vertexDesc = shaderModuleDesc(RACHIS_SHADER_VERTEX, vertexBytes, "indirectVertex");
+    vertexDesc.vertex_input_locations = inputLocations.data();
+    vertexDesc.vertex_input_location_count = static_cast<std::uint32_t>(inputLocations.size());
+    vertexDesc.draw_index = 1;
+    const auto vertex = createShaderModule(device.get(), vertexDesc, error);
 
     rachis_handle plainLayout = 0;
     rachis_handle pipelineLayout = 0;
@@ -1900,8 +1908,9 @@ TEST_CASE("C ABI mesh pipelines dispatch directly, through counted indirect reco
     CHECK(rachis_graphics_pipeline_create(device.get(), &pipelineDesc, &rejectedPipeline, &error) ==
           RACHIS_STATUS_INVALID_ARGUMENT);
     pipelineDesc.mesh_shader = mesh;
-    pipelineDesc.vertex_shader = pixel;
-    CHECK(rachis_graphics_pipeline_create(device.get(), &pipelineDesc, &rejectedPipeline, &error) != RACHIS_STATUS_OK);
+    pipelineDesc.vertex_shader = vertex;
+    CHECK(rachis_graphics_pipeline_create(device.get(), &pipelineDesc, &rejectedPipeline, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
     CHECK(rejectedPipeline == 0);
     pipelineDesc.vertex_shader = 0;
     pipelineDesc.layout = plainLayout;
@@ -2029,6 +2038,7 @@ TEST_CASE("C ABI mesh pipelines dispatch directly, through counted indirect reco
     requireOk(rachis_pipeline_destroy(device.get(), meshPipeline, &error), error);
     requireOk(rachis_pipeline_layout_destroy(device.get(), pipelineLayout, &error), error);
     requireOk(rachis_pipeline_layout_destroy(device.get(), plainLayout, &error), error);
+    requireOk(rachis_shader_module_destroy(device.get(), vertex, &error), error);
     requireOk(rachis_shader_module_destroy(device.get(), pixel, &error), error);
     requireOk(rachis_shader_module_destroy(device.get(), mesh, &error), error);
     requireNoValidationErrors(device.get(), error);
