@@ -634,6 +634,32 @@ namespace rachis::metal
             return {};
         }
 
+        [[nodiscard]] bool activeBindingIsUsed(NSDictionary* active)
+        {
+            bool sawUsage = false;
+            const auto used = [&](NSDictionary* binding) {
+                id const flag = binding[@"used"];
+                if (flag == nil)
+                {
+                    return false;
+                }
+                sawUsage = true;
+                return [flag isKindOfClass:[NSNumber class]] && [flag doubleValue] != 0;
+            };
+            if (NSDictionary* const single = dictionary(active[@"binding"]); single != nil && used(single))
+            {
+                return true;
+            }
+            for (id item in array(active[@"bindings"]))
+            {
+                if (NSDictionary* const binding = dictionary(item); binding != nil && used(binding))
+                {
+                    return true;
+                }
+            }
+            return !sawUsage;
+        }
+
         [[nodiscard]] Status reflectActiveBinding(NSDictionary* root,
                                                   NSDictionary* active,
                                                   const std::vector<LogicalBindingAnnotation>& rachisBindings,
@@ -694,9 +720,14 @@ namespace rachis::metal
                 foundAnnotation != rachisBindings.end() ? &*foundAnnotation : nullptr;
             if (annotation != nullptr && annotation->drawIndex)
             {
-                if (resource.type != ShaderResourceType::uniformBuffer || resource.metalIndex >= 31 || layout.drawIndex)
+                const auto payloadBytes = uniformSize(dictionary(type[@"elementType"]));
+                if (resource.type != ShaderResourceType::uniformBuffer || resource.count != 1 ||
+                    *space != drawIndexRegisterSpace || !payloadBytes || *payloadBytes != sizeof(std::uint32_t) ||
+                    resource.metalIndex >= 31 || layout.drawIndex)
                 {
-                    return std::unexpected(manifestError("Metal draw-index reflection has an invalid layout."));
+                    return std::unexpected(
+                        manifestError("Metal draw-index reflection must be one uint32 constant buffer in register "
+                                      "space 5."));
                 }
                 layout.drawIndex = true;
                 layout.drawIndexMetalIndex = resource.metalIndex;
@@ -784,6 +815,7 @@ namespace rachis::metal
                 return std::unexpected(std::move(argumentBuffers.error()));
             }
 
+            std::vector<std::string> activeArrays;
             for (id item in array(entry[@"bindings"]))
             {
                 NSString* const activeName = string(dictionary(item)[@"name"]);
@@ -792,6 +824,10 @@ namespace rachis::metal
                     std::ranges::any_of(*argumentBuffers,
                                         [&](const MetalReflectedResource& array) { return array.name == activeUtf8; }))
                 {
+                    if (activeBindingIsUsed(dictionary(item)))
+                    {
+                        activeArrays.emplace_back(activeUtf8);
+                    }
                     continue;
                 }
                 if (auto reflected = reflectActiveBinding(root, dictionary(item), *rachisBindings, layout); !reflected)
@@ -799,8 +835,13 @@ namespace rachis::metal
                     return std::unexpected(std::move(reflected.error()));
                 }
             }
+            const bool entryListsBindings = array(entry[@"bindings"]) != nil;
             for (auto& array : *argumentBuffers)
             {
+                if (entryListsBindings && std::ranges::find(activeArrays, array.name) == activeArrays.end())
+                {
+                    continue;
+                }
                 layout.resources.push_back(std::move(array));
             }
             return layout;

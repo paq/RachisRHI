@@ -417,3 +417,91 @@ TEST_CASE("Metal shader interfaces resolve multi-set binding 0 and shifted push 
             {.bindings = wrongBinding, .pushConstants = push, .workgroupSize = rachis::ShaderWorkgroupSize{1, 1, 1}})
             .has_value());
 }
+
+TEST_CASE("Metal reflection accepts only a one-uint32 space-5 constant buffer as the draw index",
+          "[size:small][rhi][metal][reflection][draw-index]")
+{
+    const auto reflection = [](std::string_view space, std::string_view payloadBytes) {
+        return std::string(R"({
+        "parameters": [
+            {"name": "RachisDrawIndex", "binding": {"kind": "constantBuffer", "space": )") +
+               std::string(space) + R"(, "index": 0},
+             "type": {"kind": "constantBuffer", "elementType": {"kind": "struct", "sizes": [{"kind": "uniform", "value": )" +
+               std::string(payloadBytes) + R"(}]}}}
+        ],
+        "entryPoints": [{
+            "name": "vertexMain",
+            "stage": "vertex",
+            "bindings": [{"name": "RachisDrawIndex", "binding": {"kind": "constantBuffer", "space": )" +
+               std::string(space) + R"(, "index": 0, "used": 1}}]
+        }],
+        "rachisBindings": [{"name": "RachisDrawIndex", "drawIndex": true}]
+    })";
+    };
+
+    const auto accepted = rachis::metal::parseSlangReflectionJson(
+        reflection("5", "4"), "vertexMain", rachis::ShaderStage::vertex);
+    REQUIRE(accepted.has_value());
+    CHECK(accepted->drawIndex);
+    CHECK(accepted->drawIndexMetalIndex == 0);
+
+    const auto wideConstant = rachis::metal::parseSlangReflectionJson(
+        reflection("5", "16"), "vertexMain", rachis::ShaderStage::vertex);
+    REQUIRE_FALSE(wideConstant.has_value());
+    CHECK(wideConstant.error().code == rachis::ErrorCode::invalidArgument);
+
+    const auto otherSpace = rachis::metal::parseSlangReflectionJson(
+        reflection("1", "4"), "vertexMain", rachis::ShaderStage::vertex);
+    REQUIRE_FALSE(otherSpace.has_value());
+    CHECK(otherSpace.error().code == rachis::ErrorCode::invalidArgument);
+}
+
+TEST_CASE("Metal reflection applies argument-buffer arrays only to the entry points that use them",
+          "[size:small][rhi][metal][reflection][binding]")
+{
+    constexpr std::string_view json = R"({
+        "parameters": [
+            {"name": "textures", "binding": {"kind": "shaderResource", "space": 1, "index": 0},
+             "type": {"kind": "array", "elementCount": 0, "elementType": {"kind": "resource", "baseShape": "texture2D"}}}
+        ],
+        "entryPoints": [
+            {
+                "name": "withArray",
+                "stage": "compute",
+                "threadGroupSize": [1, 1, 1],
+                "bindings": [{"name": "textures", "binding": {"kind": "shaderResource", "space": 1, "index": 0, "used": 1}}]
+            },
+            {
+                "name": "unusedArray",
+                "stage": "compute",
+                "threadGroupSize": [1, 1, 1],
+                "bindings": [{"name": "textures", "binding": {"kind": "shaderResource", "space": 1, "index": 0, "used": 0}}]
+            },
+            {
+                "name": "withoutArray",
+                "stage": "compute",
+                "threadGroupSize": [1, 1, 1],
+                "bindings": []
+            }
+        ],
+        "rachisBindings": [],
+        "rachisArgumentBuffers": [
+            {"name": "textures", "type": "sampledTexture", "set": 1, "binding": 0, "index": 0, "capacity": 64}
+        ]
+    })";
+
+    const auto withArray = rachis::metal::parseSlangReflectionJson(json, "withArray", rachis::ShaderStage::compute);
+    REQUIRE(withArray.has_value());
+    REQUIRE(withArray->resources.size() == 1);
+    CHECK(withArray->resources.front().argumentBuffer);
+    CHECK(withArray->resources.front().argumentCapacity == 64);
+
+    for (const std::string_view entry : {std::string_view{"unusedArray"}, std::string_view{"withoutArray"}})
+    {
+        CAPTURE(entry);
+        const auto parsed = rachis::metal::parseSlangReflectionJson(json, entry, rachis::ShaderStage::compute);
+        REQUIRE(parsed.has_value());
+        CHECK(parsed->resources.empty());
+        CHECK(rachis::metal::validateShaderInterface(*parsed, {.workgroupSize = rachis::ShaderWorkgroupSize{1, 1, 1}}));
+    }
+}
