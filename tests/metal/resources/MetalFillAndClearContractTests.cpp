@@ -55,8 +55,7 @@ TEST_CASE("Metal fillBuffer resets a count buffer before a counted indirect draw
     rachis::test::fill_and_clear::verifyLargeBufferFill(device, rachis::QueueType::compute);
 }
 
-TEST_CASE("Metal clearStorageTexture clears the subresources a storage view covers",
-          "[size:large][rhi][metal][clear]")
+TEST_CASE("Metal clearStorageTexture clears the subresources a storage view covers", "[size:large][rhi][metal][clear]")
 {
     auto created = rachis::createDevice(metalDesc());
     REQUIRE(created);

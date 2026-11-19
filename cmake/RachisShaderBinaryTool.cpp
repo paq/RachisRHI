@@ -49,18 +49,19 @@ namespace
 
     void printUsage(std::ostream& stream)
     {
-        stream << "Usage:\n"
-               << "  RachisShaderBinaryTool --help\n"
-               << "  RachisShaderBinaryTool embed-header --input <binary> --output <header> --symbol <identifier>\n"
-               << "  RachisShaderBinaryTool pack-pnms --json <reflection.json> --metallib <shader.metallib> --output "
-                  "<shader.pnms>\n"
-               << "  RachisShaderBinaryTool cook-metallib --slangc <slangc> --source <shader> --entry <entry> --output "
-                  "<shader.metallib> --json <reflection.json> --pnms <shader.pnms> [--stage <stage>] "
-                  "[--metal-source <shader.metal>] [--depfile <shader.d>] [--no-warnings-as-errors] "
-                  "[--define <NAME=VALUE> ...] [--include-dir <directory> ...]\n"
-               << "  RachisShaderBinaryTool reflect-interface --name <identifier> --stage <stage> --entry <entry> "
-                  "--output <header> --reflection <backend>=<reflection.json> ... [--layout <backend>=<file> ...] "
-                  "[--spirv-reflection vulkan=<module.spv>] [--bytecode <d3d12|vulkan>=<file> ...] [--tag <tag>]\n";
+        stream
+            << "Usage:\n"
+            << "  RachisShaderBinaryTool --help\n"
+            << "  RachisShaderBinaryTool embed-header --input <binary> --output <header> --symbol <identifier>\n"
+            << "  RachisShaderBinaryTool pack-pnms --json <reflection.json> --metallib <shader.metallib> --output "
+               "<shader.pnms>\n"
+            << "  RachisShaderBinaryTool cook-metallib --slangc <slangc> --source <shader> --entry <entry> --output "
+               "<shader.metallib> --json <reflection.json> --pnms <shader.pnms> [--stage <stage>] "
+               "[--metal-source <shader.metal>] [--depfile <shader.d>] [--no-warnings-as-errors] "
+               "[--define <NAME=VALUE> ...] [--include-dir <directory> ...]\n"
+            << "  RachisShaderBinaryTool reflect-interface --name <identifier> --stage <stage> --entry <entry> "
+               "--output <header> --reflection <backend>=<reflection.json> ... [--layout <backend>=<file> ...] "
+               "[--spirv-reflection vulkan=<module.spv>] [--bytecode <d3d12|vulkan|metal>=<file> ...] [--tag <tag>]\n";
     }
 
     [[nodiscard]] std::expected<std::vector<std::byte>, std::string> readBinaryFile(const std::string& rawPath)
@@ -1402,10 +1403,9 @@ namespace
                 const auto backend = separator == std::string_view::npos
                                          ? std::nullopt
                                          : rachis::shader_tool::parseInterfaceBackend(value.substr(0, separator));
-                if (!backend.has_value() || *backend == rachis::shader_tool::InterfaceBackend::metal ||
-                    separator + 1 == value.size())
+                if (!backend.has_value() || separator + 1 == value.size())
                 {
-                    return std::unexpected("--bytecode takes <d3d12|vulkan>=<file>.");
+                    return std::unexpected("--bytecode takes <d3d12|vulkan|metal>=<file>.");
                 }
                 if (std::ranges::any_of(options.bytecodes, [&](const auto& item) { return item.first == *backend; }))
                 {
@@ -1455,7 +1455,7 @@ namespace
         {
             std::cout << "--name <identifier> --stage <stage> --entry <entry> --output <header> "
                          "--reflection <backend>=<reflection.json> ... [--layout <backend>=<file> ...] "
-                         "[--spirv-reflection vulkan=<module.spv>] [--bytecode <d3d12|vulkan>=<file> ...] "
+                         "[--spirv-reflection vulkan=<module.spv>] [--bytecode <d3d12|vulkan|metal>=<file> ...] "
                          "[--tag <tag>]\n";
             return 0;
         }
@@ -1565,6 +1565,8 @@ namespace
             const auto drawIndex =
                 backend == rachis::shader_tool::InterfaceBackend::d3d12
                     ? rachis::shader_tool::dxilReadsDrawIndex(*bytes)
+                : backend == rachis::shader_tool::InterfaceBackend::metal
+                    ? rachis::shader_tool::metalManifestReadsDrawIndex(*bytes)
                     : rachis::shader_tool::spirvReadsDrawIndex(*bytes, options->entryPoint, options->stage);
             if (!drawIndex.has_value())
             {

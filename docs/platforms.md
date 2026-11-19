@@ -49,7 +49,7 @@ The table below shows which backends *can* report each feature (subject to adapt
 | --- | --- | --- | --- |
 | `rayTracing`, `rayQuery` | Yes | Yes | No |
 | `meshShaders`, `taskShaders` | Yes | Yes | Apple9 GPUs and later ([Mesh shaders on Metal](#mesh-shaders-on-metal)) |
-| `shaderDrawIndex` ([draw index in indirect calls](using.md#draw-index-in-indirect-calls)) | Yes | Yes, with `shaderDrawParameters` | No |
+| `shaderDrawIndex` ([draw index in indirect calls](using.md#draw-index-in-indirect-calls)) | Yes | Yes, with `shaderDrawParameters` | Yes |
 | `geometryShaders`, `tessellationShaders` | Yes | Yes | No |
 | `variableRateShading`, `variableRateShadingTier2` | Yes | Yes | No |
 | `sparseBuffers`, `sparseTextures` | Yes | No | No |

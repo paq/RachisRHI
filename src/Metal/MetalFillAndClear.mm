@@ -124,8 +124,9 @@ RACHIS_CLEAR_KERNELS(Sint, int, clear.s)
             desc.computeFunctionDescriptor = function;
             desc.label = name;
             NSError* error = nil;
-            id<MTLComputePipelineState> const pipeline =
-                [native.compiler newComputePipelineStateWithDescriptor:desc compilerTaskOptions:nil error:&error];
+            id<MTLComputePipelineState> const pipeline = [native.compiler newComputePipelineStateWithDescriptor:desc
+                                                                                            compilerTaskOptions:nil
+                                                                                                          error:&error];
             if (pipeline == nil)
             {
                 return std::unexpected(metalNsError(ErrorCode::nativeFailure, error, "newComputePipelineState(fill)"));
@@ -156,8 +157,8 @@ RACHIS_CLEAR_KERNELS(Sint, int, clear.s)
             {
                 for (std::size_t shape = 0; shape < kMetalClearShapes.size(); ++shape)
                 {
-                    NSString* const name =
-                        [NSString stringWithFormat:@"rachisClear%s%s", kMetalClearShapes[shape], kMetalClearTypes[type]];
+                    NSString* const name = [NSString
+                        stringWithFormat:@"rachisClear%s%s", kMetalClearShapes[shape], kMetalClearTypes[type]];
                     auto clear = metalCompileFillFunction(native, library, name);
                     if (!clear)
                     {
@@ -234,8 +235,8 @@ RACHIS_CLEAR_KERNELS(Sint, int, clear.s)
                 return std::unexpected(std::move(slice.error()));
             }
             metalRetainResidency(entry, slice->buffer);
-            auto table =
-                acquireMetalArgumentTable(device, entry, MetalArgumentTableStage::compute, 1, texture != nil ? 1 : 0, 0);
+            auto table = acquireMetalArgumentTable(
+                device, entry, MetalArgumentTableStage::compute, 1, texture != nil ? 1 : 0, 0);
             if (!table)
             {
                 return std::unexpected(std::move(table.error()));
@@ -382,8 +383,8 @@ RACHIS_CLEAR_KERNELS(Sint, int, clear.s)
             std::scoped_lock const lock(mutex_);
             if (native_ == nullptr || native_->device == nil)
             {
-                return std::unexpected(
-                    metalSelectionError(ErrorCode::invalidState, "Metal clearStorageTexture requires an active device."));
+                return std::unexpected(metalSelectionError(ErrorCode::invalidState,
+                                                           "Metal clearStorageTexture requires an active device."));
             }
             auto* viewRecord = native_->views.find(view);
             auto* textureRecord = viewRecord != nullptr ? native_->textures.find(viewRecord->texture) : nullptr;

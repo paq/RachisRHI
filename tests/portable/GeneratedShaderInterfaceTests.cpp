@@ -1,11 +1,9 @@
 #include "Rachis/Device.h"
 
 #include "GeneratedComputePush.h"
-#if !(defined(RACHIS_ENABLE_METAL) && RACHIS_ENABLE_METAL)
 #include "GeneratedDrawIndexPixel.h"
 #include "GeneratedDrawIndexVertex.h"
 #include "GeneratedDrawIndexVertexSlang.h"
-#endif
 #include "GeneratedLayouts.h"
 #include "GeneratedLayoutsSlang.h"
 #include "GeneratedSlang.h"
@@ -777,7 +775,6 @@ TEST_CASE("rachis_add_shader compiles GLSL for Vulkan only", RACHIS_GENERATED_IN
 
 #endif
 
-#if !(defined(RACHIS_ENABLE_METAL) && RACHIS_ENABLE_METAL)
 TEST_CASE("rachis_add_shader interfaces declare the draw index a shader reads on every backend",
           "[size:medium][rhi][portable][shader-interface][draw-index]")
 {
@@ -862,4 +859,3 @@ TEST_CASE("rachis_add_shader interfaces declare the draw index a shader reads on
         CHECK(counts.corruptions == 0);
     }
 }
-#endif

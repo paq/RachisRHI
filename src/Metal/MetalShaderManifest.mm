@@ -278,6 +278,7 @@ namespace rachis::metal
             bool pushConstant = false;
             std::uint32_t set = 0;
             std::uint32_t binding = 0;
+            bool drawIndex = false;
         };
 
         [[nodiscard]] Result<LogicalBindingAnnotation> parseLogicalBindingAnnotation(
@@ -302,6 +303,17 @@ namespace rachis::metal
                     return std::unexpected(manifestError("Metal rachisBindings pushConstant flag must be true."));
                 }
                 return LogicalBindingAnnotation{.name = utf8, .pushConstant = true};
+            }
+            id const drawIndexFlag = node[@"drawIndex"];
+            if (drawIndexFlag != nil)
+            {
+                if (![drawIndexFlag isKindOfClass:[NSNumber class]] ||
+                    CFGetTypeID((__bridge CFTypeRef)drawIndexFlag) != CFBooleanGetTypeID() ||
+                    ![drawIndexFlag boolValue])
+                {
+                    return std::unexpected(manifestError("Metal rachisBindings drawIndex flag must be true."));
+                }
+                return LogicalBindingAnnotation{.name = utf8, .drawIndex = true};
             }
             const auto logicalSet = uintValue(node[@"set"]);
             const auto logicalBinding = uintValue(node[@"binding"]);
@@ -680,6 +692,16 @@ namespace rachis::metal
                 rachisBindings, [&](const auto& candidate) { return candidate.name == resource.name; });
             const LogicalBindingAnnotation* const annotation =
                 foundAnnotation != rachisBindings.end() ? &*foundAnnotation : nullptr;
+            if (annotation != nullptr && annotation->drawIndex)
+            {
+                if (resource.type != ShaderResourceType::uniformBuffer || resource.metalIndex >= 31 || layout.drawIndex)
+                {
+                    return std::unexpected(manifestError("Metal draw-index reflection has an invalid layout."));
+                }
+                layout.drawIndex = true;
+                layout.drawIndexMetalIndex = resource.metalIndex;
+                return {};
+            }
             const bool isAnnotatedPushConstant = annotation != nullptr && annotation->pushConstant;
             const bool isLegacySpace4PushConstant =
                 annotation == nullptr && resource.type == ShaderResourceType::uniformBuffer && *space == 4;
@@ -974,8 +996,18 @@ namespace rachis::metal
         {
             return std::unexpected(std::move(valid.error()));
         }
+        if (declared.drawIndex != layout.drawIndex)
+        {
+            return std::unexpected(
+                manifestError(declared.drawIndex ? "The shader interface declares the draw index, but the Metal "
+                                                   "shader does not read it."
+                                                 : "The Metal shader reads the draw index, but the shader interface "
+                                                   "does not declare it."));
+        }
 
         MetalResolvedStageBindings resolved{};
+        resolved.usesDrawIndex = layout.drawIndex;
+        resolved.drawIndexMetalIndex = layout.drawIndexMetalIndex;
         resolved.usesPushConstants = layout.pushConstantBytes > 0;
         resolved.pushConstantBytes = layout.pushConstantBytes;
         resolved.pushConstantMetalIndex = layout.pushConstantMetalIndex;
@@ -985,6 +1017,14 @@ namespace rachis::metal
         if (layout.pushConstantBytes > 0)
         {
             occupied[0][layout.pushConstantMetalIndex] = true;
+        }
+        if (layout.drawIndex)
+        {
+            if (occupied[0][layout.drawIndexMetalIndex])
+            {
+                return std::unexpected(manifestError("Reflected Metal argument ranges collide."));
+            }
+            occupied[0][layout.drawIndexMetalIndex] = true;
         }
 
         std::vector<bool> claimedHostBinding(declared.bindings.size(), false);

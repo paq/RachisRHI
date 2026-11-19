@@ -249,7 +249,7 @@ C ABI callers and custom build pipelines can cook shaders outside `rachis_add_sh
 - **Vulkan (`dxc`):** Pass `-spirv -fspv-target-env=vulkan1.3 -fvk-support-nonzero-base-vertex -fvk-support-nonzero-base-instance` and validate with `spirv-val`.
 - **Slang (`slangc`):** Pass `-profile sm_6_0 -matrix-layout-column-major` with `-target dxil`, or with `-target spirv -fvk-use-entrypoint-name -fvk-b-shift 0 all -fvk-t-shift 0 all -fvk-s-shift 0 all -fvk-u-shift 0 all`, and validate SPIR-V with `spirv-val`.
 - **GLSL (`glslangValidator`):** Pass `-V --target-env vulkan1.3 -S <vert|frag|comp>` and validate with `spirv-val`. `RachisShaderBinaryTool reflect-interface --spirv-reflection vulkan=<shader.spv>` generates the interface header from the module.
-- **Reflection:** `reflect-interface --bytecode d3d12=<shader.dxil> --bytecode vulkan=<shader.spv>` reads whether the entry point reads the draw index from the compiled bytecode. `slangc` reflection lists every constant buffer a source declares, so without `--bytecode` every vertex entry point in a file that includes `Rachis/DrawIndex.hlsli` is reported as reading it on Direct3D 12 and Metal.
+- **Reflection:** `reflect-interface --bytecode d3d12=<shader.dxil> --bytecode vulkan=<shader.spv> --bytecode metal=<shader.pnms>` reads whether the entry point reads the draw index from the compiled bytecode. `slangc` reflection lists every constant buffer a source declares, so without `--bytecode` every vertex entry point in a file that includes `Rachis/DrawIndex.hlsli` is reported as reading it on Direct3D 12 and Metal.
 - **Metal (`RachisShaderBinaryTool cook-metallib`):**
 
 ```bash
@@ -340,7 +340,7 @@ Rasterized point lists render at a fixed **1 px** point size across all backends
 
 ## Draw index in indirect calls
 
-`drawIndirect`, `drawIndexedIndirect`, and `dispatchMeshIndirect` can run many records in one call, with the count written by the GPU. The draw index tells a shader which record it belongs to, so a GPU culling pass can hand per-draw data (a transform, a material, a meshlet range) to the draws it writes. `DeviceCapabilities::shaderDrawIndex` reports support: Direct3D 12 always has it, Vulkan when the device has `shaderDrawParameters`, and Metal does not have it yet. Without it, a shader interface or pipeline layout with `drawIndex`, and an indirect call with `drawIndexPrefix`, fail with `ErrorCode::unsupported`.
+`drawIndirect`, `drawIndexedIndirect`, and `dispatchMeshIndirect` can run many records in one call, with the count written by the GPU. The draw index tells a shader which record it belongs to, so a GPU culling pass can hand per-draw data (a transform, a material, a meshlet range) to the draws it writes. `DeviceCapabilities::shaderDrawIndex` reports support: Direct3D 12 and Metal always have it, and Vulkan has it when the device has `shaderDrawParameters`. Without it, a shader interface or pipeline layout with `drawIndex`, and an indirect call with `drawIndexPrefix`, fail with `ErrorCode::unsupported`.
 
 ### Reading the draw index in a shader
 
@@ -388,7 +388,7 @@ With `IndirectDrawDesc::drawIndexPrefix` or `IndirectMeshDispatchDesc::drawIndex
 | `dispatchMeshIndirect` | draw index, `DispatchIndirectArguments` | 16 bytes |
 
 - `argumentOffset` points at the draw index of the first record. A zero `stride` means the record size; any other stride must be at least the record size and a multiple of 4.
-- The draw index of a record must be its position: 0, 1, 2, and so on. The GPU writes it, so the RHI cannot check it. Another value gives backend-dependent results: Vulkan reports the position, and Direct3D 12 reports the value in the record.
+- The draw index of a record must be its position: 0, 1, 2, and so on. The GPU writes it, so the RHI cannot check it. Another value gives backend-dependent results: Vulkan and Metal report the position, and Direct3D 12 reports the value in the record.
 - A pipeline that reads the draw index needs `drawIndexPrefix` when `maxDrawCount` (or `maxDispatchCount`) is above 1; without it the call fails with `ErrorCode::invalidArgument`. With one record, the draw index is 0.
 - `drawIndexPrefix` also works with a pipeline that does not read the draw index and with a layout that does not reserve it: the draw index is skipped.
 - Direct draws and mesh dispatches (`draw`, `drawIndexed`, `dispatchMesh`) read 0, also right after an indirect call.

@@ -21,7 +21,7 @@
 namespace rachis::shader_tool
 {
 
-    inline constexpr std::size_t metalShiftSpaceCount = 5;
+    inline constexpr std::size_t metalShiftSpaceCount = 6;
 
     struct MetalSpaceShifts final
     {
@@ -34,6 +34,7 @@ namespace rachis::shader_tool
     {
         std::string name;
         bool pushConstant = false;
+        bool drawIndex = false;
         std::uint32_t set = 0;
         std::uint32_t binding = 0;
     };
@@ -1121,8 +1122,8 @@ namespace rachis::shader_tool
 
         [[nodiscard]] inline MetalSpaceShifts planMetalSpaceShifts(const std::vector<ReflectedMetalParam>& metalParams)
         {
-            constexpr std::array<std::size_t, metalShiftSpaceCount> defaultSpaceOrder{0, 1, 2, 3, 4};
-            constexpr std::array<std::size_t, metalShiftSpaceCount> pushFirstSpaceOrder{4, 0, 1, 2, 3};
+            constexpr std::array<std::size_t, metalShiftSpaceCount> defaultSpaceOrder{0, 1, 2, 3, 4, 5};
+            constexpr std::array<std::size_t, metalShiftSpaceCount> pushFirstSpaceOrder{4, 0, 1, 2, 3, 5};
             const auto ranges = measureSpaceIndexRanges(metalParams);
             const auto& firstSpaceBuffers = ranges[metalBufferKindClass][0];
             const auto& pushSpaceBuffers = ranges[metalBufferKindClass][metalPushConstantSpace];
@@ -1138,10 +1139,13 @@ namespace rachis::shader_tool
             return shifts;
         }
 
+        inline constexpr std::uint32_t metalDrawIndexSpace = 5;
+
         struct LogicalBindingCandidate final
         {
             ReflectedMetalParam metal;
             bool pushConstant = false;
+            bool drawIndex = false;
             std::uint32_t logicalSet = 0;
             std::uint32_t logicalBinding = 0;
         };
@@ -1164,6 +1168,11 @@ namespace rachis::shader_tool
                                                                            const JsonValue* spirvParam)
         {
             LogicalBindingCandidate candidate{.metal = metalParam};
+            if (metalParam.metalSpace == metalDrawIndexSpace)
+            {
+                candidate.drawIndex = true;
+                return candidate;
+            }
             if (metalParam.metalSpace == metalPushConstantSpace ||
                 (spirvParam != nullptr && findBindingOfKind(*spirvParam, "pushConstantBuffer") != nullptr))
             {
@@ -1206,7 +1215,7 @@ namespace rachis::shader_tool
         [[nodiscard]] inline bool isDescriptorInSameSetAndKindClass(const LogicalBindingCandidate& peer,
                                                                     const LogicalBindingCandidate& reference) noexcept
         {
-            return !peer.pushConstant && peer.logicalSet == reference.logicalSet &&
+            return !peer.pushConstant && !peer.drawIndex && peer.logicalSet == reference.logicalSet &&
                    peer.metal.kindClass == reference.metal.kindClass;
         }
 
@@ -1270,7 +1279,8 @@ namespace rachis::shader_tool
         {
             for (std::size_t index = 0; index < candidates.size(); ++index)
             {
-                if (candidates[index].pushConstant || !collidesOnlyInLogicalBindings(candidates, index))
+                if (candidates[index].pushConstant || candidates[index].drawIndex ||
+                    !collidesOnlyInLogicalBindings(candidates, index))
                 {
                     continue;
                 }
@@ -1314,6 +1324,7 @@ namespace rachis::shader_tool
             plan.bindings.push_back(MetalLogicalParameterBinding{
                 .name = item.metal.name,
                 .pushConstant = item.pushConstant,
+                .drawIndex = item.drawIndex,
                 .set = item.logicalSet,
                 .binding = item.logicalBinding,
             });
@@ -1742,6 +1753,10 @@ namespace rachis::shader_tool
             if (entry.pushConstant)
             {
                 suffix += ", \"pushConstant\": true}";
+            }
+            else if (entry.drawIndex)
+            {
+                suffix += ", \"drawIndex\": true}";
             }
             else
             {
@@ -2545,6 +2560,41 @@ namespace rachis::shader_tool
         const auto helperAt = assigned.find(usingNamespace);
         assigned.insert(helperAt + usingNamespace.size(), helpers);
         return assigned;
+    }
+
+    [[nodiscard]] inline std::expected<bool, std::string> metalManifestReadsDrawIndex(std::span<const std::byte> pnms)
+    {
+        constexpr std::size_t headerBytes = 16;
+        if (pnms.size() < headerBytes || pnms[0] != std::byte{'P'} || pnms[1] != std::byte{'N'} ||
+            pnms[2] != std::byte{'M'} || pnms[3] != std::byte{'S'})
+        {
+            return std::unexpected("The Metal shader does not start with a PNMS header.");
+        }
+        const auto readU32 = [&](std::size_t offset) {
+            return static_cast<std::uint32_t>(pnms[offset]) | (static_cast<std::uint32_t>(pnms[offset + 1]) << 8U) |
+                   (static_cast<std::uint32_t>(pnms[offset + 2]) << 16U) |
+                   (static_cast<std::uint32_t>(pnms[offset + 3]) << 24U);
+        };
+        const std::size_t jsonBytes = readU32(8);
+        if (jsonBytes > pnms.size() - headerBytes)
+        {
+            return std::unexpected("The PNMS reflection section is truncated.");
+        }
+        const std::string_view json(reinterpret_cast<const char*>(pnms.data() + headerBytes), jsonBytes);
+        auto root = detail::JsonParser(json).parseDocument();
+        if (!root.has_value())
+        {
+            return std::unexpected("The PNMS reflection does not parse: " + root.error());
+        }
+        const auto* bindings = root->find("rachisBindings");
+        if (bindings == nullptr || bindings->asArray() == nullptr)
+        {
+            return false;
+        }
+        return std::ranges::any_of(*bindings->asArray(), [](const detail::JsonValue& binding) {
+            const auto* flag = binding.find("drawIndex");
+            return flag != nullptr && flag->asBool() != nullptr && *flag->asBool();
+        });
     }
 
 } // namespace rachis::shader_tool

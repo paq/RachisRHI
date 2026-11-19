@@ -468,6 +468,10 @@ namespace rachis::metal
             {
                 flags |= MTLStageDispatch;
             }
+            if (hasAny(stages, PipelineStage::indirect))
+            {
+                flags |= MTLStageVertex | MTLStageObject | MTLStageMesh;
+            }
             if (hasAny(stages, PipelineStage::copy))
             {
                 flags |= MTLStageBlit | MTLStageDispatch;

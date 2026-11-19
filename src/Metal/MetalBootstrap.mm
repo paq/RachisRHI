@@ -271,6 +271,7 @@ namespace rachis::metal
             capabilities.multiDispatchIndirect = true;
             capabilities.dispatchIndirectCount = true;
             capabilities.updateAfterBindBindingArrays = true;
+            capabilities.shaderDrawIndex = true;
             capabilities.primitiveRestart = true;
             if ([device supportsFamily:MTLGPUFamilyApple9])
             {

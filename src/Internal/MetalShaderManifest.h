@@ -63,6 +63,8 @@ namespace rachis::metal
         std::uint32_t pushConstantBytes = 0;
         std::uint32_t pushConstantMetalIndex = reservedPushConstantBufferIndex;
         std::optional<MetalReflectedStageInterface> stageInterface{};
+        bool drawIndex = false;
+        std::uint32_t drawIndexMetalIndex = 0;
     };
 
     struct MetalResolvedResourceBinding final
@@ -82,6 +84,8 @@ namespace rachis::metal
         bool usesPushConstants = false;
         std::uint32_t pushConstantBytes = 0;
         std::uint32_t pushConstantMetalIndex = reservedPushConstantBufferIndex;
+        bool usesDrawIndex = false;
+        std::uint32_t drawIndexMetalIndex = 0;
     };
 
     [[nodiscard]] std::vector<std::byte> packShaderManifest(std::span<const std::byte> json,

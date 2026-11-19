@@ -51,7 +51,8 @@ namespace rachis::metal
                 anyVertexBuffer = anyVertexBuffer || bound.buffer != nil;
             }
 
-            if (stageBindings.usesPushConstants || anyVertexBuffer || stageBindings.resources.empty() ||
+            if (stageBindings.usesPushConstants || stageBindings.usesDrawIndex || anyVertexBuffer ||
+                stageBindings.resources.empty() ||
                 std::ranges::any_of(stageBindings.resources,
                                     [](const MetalResolvedResourceBinding& res) { return res.argumentBuffer; }))
             {
@@ -268,6 +269,10 @@ namespace rachis::metal
             {
                 return std::unexpected(std::move(measured.error()));
             }
+            if (stageBindings.usesDrawIndex)
+            {
+                metalIncludeBindingSlot(capacity, BindingType::storageBuffer, stageBindings.drawIndexMetalIndex + 1U);
+            }
 
             if (!capacity.anyBuffer && !capacity.anyTexture && !capacity.anySampler)
             {
@@ -294,6 +299,10 @@ namespace rachis::metal
             }
 
             metalWriteVertexBufferSlots(table, vertexBuffers, vertexBufferBaseIndex);
+            if (stageBindings.usesDrawIndex)
+            {
+                [table setAddress:entry.drawIndexAddress atIndex:stageBindings.drawIndexMetalIndex];
+            }
 
             return table;
         }
@@ -888,6 +897,67 @@ namespace rachis::metal
             return {};
         }
 
+        constexpr std::uint32_t kMetalDrawIndexTableMinimum = 1024;
+
+        [[nodiscard]] Status metalPrepareDrawIndex(id<MTLDevice> device, MetalCommandEntry& entry)
+        {
+            if (entry.drawIndex >= entry.drawIndexTableCapacity)
+            {
+                std::uint32_t capacity = std::max(kMetalDrawIndexTableMinimum, entry.drawIndexTableCapacity);
+                while (capacity <= entry.drawIndex && capacity < (1U << 31U))
+                {
+                    capacity *= 2U;
+                }
+                capacity = std::max(capacity, entry.drawIndex + 1U);
+                id<MTLBuffer> const table =
+                    [device newBufferWithLength:static_cast<NSUInteger>(capacity) * sizeof(std::uint32_t)
+                                        options:MTLResourceStorageModeShared];
+                if (table == nil)
+                {
+                    return std::unexpected(
+                        metalSelectionError(ErrorCode::outOfMemory, "Metal could not allocate the draw-index table."));
+                }
+                table.label = @"RHI.Metal.DrawIndexTable";
+                auto* const values = static_cast<std::uint32_t*>(table.contents);
+                for (std::uint32_t index = 0; index < capacity; ++index)
+                {
+                    values[index] = index;
+                }
+                if (entry.drawIndexTable != nil)
+                {
+                    try
+                    {
+                        entry.indirectScratchBuffers.push_back(entry.drawIndexTable);
+                    }
+                    catch (const std::bad_alloc&)
+                    {
+                        return std::unexpected(metalSelectionError(ErrorCode::outOfMemory,
+                                                                   "Failed to retain the Metal draw-index table."));
+                    }
+                }
+                entry.drawIndexTable = table;
+                entry.drawIndexTableCapacity = capacity;
+            }
+            metalRetainResidency(entry, entry.drawIndexTable);
+            const auto address =
+                entry.drawIndexTable.gpuAddress + static_cast<std::uint64_t>(entry.drawIndex) * sizeof(std::uint32_t);
+            if (address != entry.drawIndexAddress)
+            {
+                entry.drawIndexAddress = address;
+                entry.vertexTableDirty = true;
+            }
+            return {};
+        }
+
+        void metalResetDrawIndex(MetalCommandEntry& entry, const MetalPipelineRecord& pipeline) noexcept
+        {
+            if (pipeline.readsDrawIndex && entry.drawIndex != 0)
+            {
+                entry.drawIndex = 0;
+                entry.vertexTableDirty = true;
+            }
+        }
+
         [[nodiscard]] Status metalApplyGraphicsDrawState(id<MTLDevice> device,
                                                          MetalCommandEntry& entry,
                                                          const MetalPipelineRecord& pipeline)
@@ -896,6 +966,13 @@ namespace rachis::metal
             {
                 return std::unexpected(
                     metalSelectionError(ErrorCode::invalidState, "Draw requires an active Metal render encoder."));
+            }
+            if (pipeline.readsDrawIndex)
+            {
+                if (auto prepared = metalPrepareDrawIndex(device, entry); !prepared)
+                {
+                    return prepared;
+                }
             }
             if (entry.activeGraphicsPipeline != &pipeline)
             {
@@ -1348,6 +1425,7 @@ namespace rachis::metal
             std::uint32_t stride = 0;
             BufferHandle countBuffer = {};
             std::uint64_t countOffset = 0;
+            std::uint32_t prefixBytes = 0;
         };
 
         struct MetalIndirectRecordMessages final
@@ -1372,6 +1450,30 @@ namespace rachis::metal
                 .countBuffer = desc.countBuffer,
                 .countOffset = desc.countOffset,
             };
+        }
+
+        template<typename IndirectDesc>
+        [[nodiscard]] MetalIndirectRecordLayout metalPrefixedRecordLayout(const IndirectDesc& desc,
+                                                                          std::uint32_t maxRecords,
+                                                                          std::uint32_t argumentSize) noexcept
+        {
+            const std::uint32_t prefix = desc.drawIndexPrefix ? drawIndexPrefixSize : 0U;
+            auto layout = metalIndirectRecordLayout(desc, maxRecords, argumentSize + prefix);
+            layout.prefixBytes = prefix;
+            return layout;
+        }
+
+        [[nodiscard]] Status metalRequireDrawIndexPrefix(const MetalPipelineRecord& pipeline,
+                                                         const MetalIndirectRecordLayout& layout)
+        {
+            if (pipeline.readsDrawIndex && layout.prefixBytes == 0 && layout.maxRecords > 1)
+            {
+                return std::unexpected(metalSelectionError(
+                    ErrorCode::invalidArgument,
+                    "An indirect call with more than one record must set drawIndexPrefix when the bound pipeline "
+                    "reads the draw index."));
+            }
+            return {};
         }
 
         [[nodiscard]] Status metalValidateIndirectRecordLayout(const MetalIndirectRecordLayout& layout,
@@ -1466,11 +1568,12 @@ namespace rachis::metal
                                                                   std::uint32_t zeroWordCount) noexcept
         {
             return {
-                .sourceAddress = records.argument.gpuAddress + layout.argumentOffset,
+                .sourceAddress = records.argument.gpuAddress + layout.argumentOffset + layout.prefixBytes,
                 .countAddress = records.count.gpuAddress + layout.countOffset,
                 .maxRecords = layout.maxRecords,
                 .strideBytes = layout.stride,
-                .recordWords = layout.recordSize / static_cast<std::uint32_t>(sizeof(std::uint32_t)),
+                .recordWords =
+                    (layout.recordSize - layout.prefixBytes) / static_cast<std::uint32_t>(sizeof(std::uint32_t)),
                 .zeroFirstWord = zeroFirstWord,
                 .zeroWordCount = zeroWordCount,
             };
@@ -1485,7 +1588,8 @@ namespace rachis::metal
         {
             if (records.count == nil)
             {
-                return MetalIndirectRecordSpan{records.argument.gpuAddress + layout.argumentOffset, layout.stride};
+                return MetalIndirectRecordSpan{records.argument.gpuAddress + layout.argumentOffset + layout.prefixBytes,
+                                               layout.stride};
             }
             auto clamped = metalPrepareClampedRecords(
                 device, entry, metalClampRequest(layout, records, 0, sizeof(DispatchIndirectArguments) / 4U));
@@ -1513,7 +1617,8 @@ namespace rachis::metal
         {
             if (records.count == nil)
             {
-                return MetalIndirectRecordSpan{records.argument.gpuAddress + layout.argumentOffset, layout.stride};
+                return MetalIndirectRecordSpan{records.argument.gpuAddress + layout.argumentOffset + layout.prefixBytes,
+                                               layout.stride};
             }
             auto clamped = metalPrepareClampedRecords(
                 device, entry, metalClampRequest(layout, records, zeroFirstWord, zeroWordCount));
@@ -3246,7 +3351,7 @@ namespace rachis::metal
         {
             return std::unexpected(std::move(blocked.error()));
         }
-        const auto layout = metalIndirectRecordLayout(desc, desc.maxDrawCount, sizeof(DrawIndirectArguments));
+        const auto layout = metalPrefixedRecordLayout(desc, desc.maxDrawCount, sizeof(DrawIndirectArguments));
         auto inputs = metalAcquireIndirectDrawInputs(
             mutex_, native_, layout, kMetalDrawRecordMessages, "Metal drawIndirect requires an active device.");
         if (!inputs)
@@ -3278,6 +3383,10 @@ namespace rachis::metal
         {
             return {};
         }
+        if (auto prefixed = metalRequireDrawIndexPrefix(*pipeline, layout); !prefixed)
+        {
+            return prefixed;
+        }
         if (auto kept = metalRetainIndirectRecords(*native, *entry, inputs->records); !kept)
         {
             return kept;
@@ -3294,8 +3403,17 @@ namespace rachis::metal
         const auto primitive = metalPrimitiveType(pipeline->graphicsState->topology);
         for (std::uint32_t record = 0; record < layout.maxRecords; ++record)
         {
+            if (pipeline->readsDrawIndex)
+            {
+                entry->drawIndex = record;
+                if (auto applied = metalApplyGraphicsDrawState(inputs->device, *entry, *pipeline); !applied)
+                {
+                    return applied;
+                }
+            }
             [entry->renderEncoder drawPrimitives:primitive indirectBuffer:span->firstAddress + span->stride * record];
         }
+        metalResetDrawIndex(*entry, *pipeline);
         return {};
     }
 
@@ -3306,7 +3424,7 @@ namespace rachis::metal
         {
             return std::unexpected(std::move(blocked.error()));
         }
-        const auto layout = metalIndirectRecordLayout(desc, desc.maxDrawCount, sizeof(DrawIndexedIndirectArguments));
+        const auto layout = metalPrefixedRecordLayout(desc, desc.maxDrawCount, sizeof(DrawIndexedIndirectArguments));
         auto inputs = metalAcquireIndirectDrawInputs(
             mutex_, native_, layout, kMetalDrawRecordMessages, "Metal drawIndexedIndirect requires an active device.");
         if (!inputs)
@@ -3342,6 +3460,10 @@ namespace rachis::metal
         {
             return {};
         }
+        if (auto prefixed = metalRequireDrawIndexPrefix(*pipeline, layout); !prefixed)
+        {
+            return prefixed;
+        }
         if (auto kept = metalRetainIndirectRecords(*native, *entry, inputs->records); !kept)
         {
             return kept;
@@ -3363,12 +3485,21 @@ namespace rachis::metal
         const auto indexAddress = entry->indexBuffer.buffer.gpuAddress + entry->indexBuffer.offset;
         for (std::uint32_t record = 0; record < layout.maxRecords; ++record)
         {
+            if (pipeline->readsDrawIndex)
+            {
+                entry->drawIndex = record;
+                if (auto applied = metalApplyGraphicsDrawState(inputs->device, *entry, *pipeline); !applied)
+                {
+                    return applied;
+                }
+            }
             [entry->renderEncoder drawIndexedPrimitives:primitive
                                               indexType:indexType
                                             indexBuffer:indexAddress
                                       indexBufferLength:static_cast<NSUInteger>(alignedRemaining)
                                          indirectBuffer:span->firstAddress + span->stride * record];
         }
+        metalResetDrawIndex(*entry, *pipeline);
         return {};
     }
 
@@ -3477,7 +3608,7 @@ namespace rachis::metal
             .invalidCountBuffer =
                 "The indirect mesh count buffer requires indirect usage and an aligned in-bounds uint32 count.",
         };
-        const auto layout = metalIndirectRecordLayout(desc, desc.maxDispatchCount, sizeof(DispatchIndirectArguments));
+        const auto layout = metalPrefixedRecordLayout(desc, desc.maxDispatchCount, sizeof(DispatchIndirectArguments));
         auto inputs = metalAcquireIndirectDrawInputs(
             mutex_, native_, layout, messages, "Metal dispatchMeshIndirect requires an active device.");
         if (!inputs)
@@ -3504,6 +3635,10 @@ namespace rachis::metal
         {
             return {};
         }
+        if (auto prefixed = metalRequireDrawIndexPrefix(*pipeline, layout); !prefixed)
+        {
+            return prefixed;
+        }
         if (auto kept = metalRetainIndirectRecords(*native, *entry, inputs->records); !kept)
         {
             return kept;
@@ -3525,10 +3660,19 @@ namespace rachis::metal
         }
         for (std::uint32_t record = 0; record < layout.maxRecords; ++record)
         {
+            if (pipeline->readsDrawIndex)
+            {
+                entry->drawIndex = record;
+                if (auto applied = metalApplyGraphicsDrawState(inputs->device, *entry, *pipeline); !applied)
+                {
+                    return applied;
+                }
+            }
             [entry->renderEncoder drawMeshThreadgroupsWithIndirectBuffer:span->firstAddress + span->stride * record
                                              threadsPerObjectThreadgroup:pipeline->objectThreadgroupSize
                                                threadsPerMeshThreadgroup:pipeline->meshThreadgroupSize];
         }
+        metalResetDrawIndex(*entry, *pipeline);
         return {};
     }
 

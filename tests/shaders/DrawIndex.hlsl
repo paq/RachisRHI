@@ -39,13 +39,12 @@ void drawIndexMesh(uint3 groupId : SV_GroupID, out vertices DrawIndexVertex vert
     const float left = -1.0F + 0.4F * float(column) + 0.05F;
     const float right = left + 0.3F;
     SetMeshOutputCounts(4, 2);
-    vertices[0].position = float4(left, -0.8F, 0.0F, 1.0F);
-    vertices[1].position = float4(left, 0.8F, 0.0F, 1.0F);
-    vertices[2].position = float4(right, -0.8F, 0.0F, 1.0F);
-    vertices[3].position = float4(right, 0.8F, 0.0F, 1.0F);
     for (uint index = 0; index < 4; ++index)
     {
-        vertices[index].drawIndex = drawIndex;
+        DrawIndexVertex vertex;
+        vertex.position = float4((index & 2U) != 0 ? right : left, (index & 1U) != 0 ? 0.8F : -0.8F, 0.0F, 1.0F);
+        vertex.drawIndex = drawIndex;
+        vertices[index] = vertex;
     }
     triangles[0] = uint3(0, 1, 2);
     triangles[1] = uint3(2, 1, 3);

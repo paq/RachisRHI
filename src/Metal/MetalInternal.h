@@ -499,6 +499,7 @@ namespace rachis::metal
         std::uint32_t pushConstantMetalIndex = 0;
         std::uint32_t vertexStageBufferSlots = 0;
         bool reservePushConstantBuffer = false;
+        bool drawIndex = false;
         std::string label;
     };
 
@@ -550,6 +551,7 @@ namespace rachis::metal
         MetalResolvedStageBindings objectStageBindings{};
         MetalResolvedStageBindings meshStageBindings{};
         bool hasPixelShader = false;
+        bool readsDrawIndex = false;
         bool mesh = false;
         bool hasObjectShader = false;
         MTLSize objectThreadgroupSize{1, 1, 1};
@@ -748,6 +750,10 @@ namespace rachis::metal
 
         std::vector<id<MTLBuffer>> pushConstantPages;
         std::vector<id<MTLBuffer>> indirectScratchBuffers;
+        std::uint32_t drawIndex = 0;
+        std::uint64_t drawIndexAddress = 0;
+        __strong id<MTLBuffer> drawIndexTable;
+        std::uint32_t drawIndexTableCapacity = 0;
         std::size_t pushConstantPageIndex = 0;
         std::uint32_t pushConstantPageOffset = 0;
         std::shared_ptr<MetalPipelineRecord> boundComputePipeline;

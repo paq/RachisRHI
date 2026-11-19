@@ -1327,6 +1327,38 @@ if(RACHIS_ENABLE_METAL AND rachis_build_tests)
     rachis_rhi_slang_metallib(MetalBindingArrays.cs.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalBindingArrays.slang" bindingArraysMain)
     rachis_rhi_slang_metallib(MetalUpdateAfterBind.cs.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalUpdateAfterBind.slang" updateAfterBindMain)
     rachis_cook_slang_metallib(
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/DrawIndex.hlsl"
+        ENTRY drawIndexVertex
+        STAGE vertex
+        OUTPUT "${rachis_rhi_metallib_dir}/DrawIndex.vs.metallib"
+        INCLUDE_DIRECTORIES "${rachis_rhi_public_include_dir}"
+        COMMENT "Cooking Metal metallib DrawIndex.vs"
+    )
+    rachis_cook_slang_metallib(
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/DrawIndex.hlsl"
+        ENTRY plainVertex
+        STAGE vertex
+        OUTPUT "${rachis_rhi_metallib_dir}/DrawIndex.plain.vs.metallib"
+        INCLUDE_DIRECTORIES "${rachis_rhi_public_include_dir}"
+        COMMENT "Cooking Metal metallib DrawIndex.plain.vs"
+    )
+    rachis_cook_slang_metallib(
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/DrawIndex.hlsl"
+        ENTRY drawIndexMesh
+        STAGE mesh
+        OUTPUT "${rachis_rhi_metallib_dir}/DrawIndex.ms.metallib"
+        INCLUDE_DIRECTORIES "${rachis_rhi_public_include_dir}"
+        COMMENT "Cooking Metal metallib DrawIndex.ms"
+    )
+    rachis_cook_slang_metallib(
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/DrawIndex.hlsl"
+        ENTRY recordPixel
+        STAGE pixel
+        OUTPUT "${rachis_rhi_metallib_dir}/DrawIndex.ps.metallib"
+        INCLUDE_DIRECTORIES "${rachis_rhi_public_include_dir}"
+        COMMENT "Cooking Metal metallib DrawIndex.ps"
+    )
+    rachis_cook_slang_metallib(
         SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/GraphicsTriangle.hlsl"
         ENTRY inputVertex
         STAGE vertex
@@ -1358,6 +1390,14 @@ if(RACHIS_ENABLE_METAL AND rachis_build_tests)
             "${rachis_rhi_metallib_dir}/MetalBindingArrays.cs.pnms"
             "${rachis_rhi_metallib_dir}/MetalUpdateAfterBind.cs.metallib"
             "${rachis_rhi_metallib_dir}/MetalUpdateAfterBind.cs.pnms"
+            "${rachis_rhi_metallib_dir}/DrawIndex.vs.metallib"
+            "${rachis_rhi_metallib_dir}/DrawIndex.vs.pnms"
+            "${rachis_rhi_metallib_dir}/DrawIndex.plain.vs.metallib"
+            "${rachis_rhi_metallib_dir}/DrawIndex.plain.vs.pnms"
+            "${rachis_rhi_metallib_dir}/DrawIndex.ms.metallib"
+            "${rachis_rhi_metallib_dir}/DrawIndex.ms.pnms"
+            "${rachis_rhi_metallib_dir}/DrawIndex.ps.metallib"
+            "${rachis_rhi_metallib_dir}/DrawIndex.ps.pnms"
             "${rachis_rhi_metallib_dir}/GraphicsTriangle.input.vs.metallib"
             "${rachis_rhi_metallib_dir}/GraphicsTriangle.input.vs.pnms"
             "${rachis_rhi_metallib_dir}/GraphicsTriangle.ps.metallib"
@@ -2881,6 +2921,7 @@ if(rachis_build_tests)
             tests/metal/queries/MetalQueryContractTests.cpp
             tests/metal/raytracing/MetalRayTracingContractTests.cpp
             tests/metal/rendering/MetalHeadlessParityContractTests.cpp
+            tests/metal/rendering/MetalDrawIndexContractTests.cpp
             tests/metal/rendering/MetalIndirectContractTests.cpp
             tests/metal/rendering/MetalLayeredRenderingContractTests.cpp
             tests/metal/rendering/MetalMeshShaderContractTests.cpp
@@ -3018,29 +3059,26 @@ if(rachis_build_tests)
                     REFLECT)
             endforeach()
         endif()
-        if(NOT RACHIS_ENABLE_METAL)
-            # Shaders that include Rachis/DrawIndex.hlsli through the include directory rachis_add_shader passes.
-            # Metal cannot read the draw index yet, so Metal builds leave them out.
-            rachis_add_shader(RachisRHITests
-                NAME GeneratedDrawIndexVertex
-                SOURCE tests/shaders/DrawIndex.hlsl
-                ENTRY drawIndexVertex
-                STAGE vertex
-                REFLECT)
-            rachis_add_shader(RachisRHITests
-                NAME GeneratedDrawIndexVertexSlang
-                SOURCE tests/shaders/DrawIndex.hlsl
-                LANGUAGE SLANG
-                ENTRY drawIndexVertex
-                STAGE vertex
-                REFLECT)
-            rachis_add_shader(RachisRHITests
-                NAME GeneratedDrawIndexPixel
-                SOURCE tests/shaders/DrawIndex.hlsl
-                ENTRY recordPixel
-                STAGE pixel
-                REFLECT)
-        endif()
+        # Shaders that include Rachis/DrawIndex.hlsli through the include directory rachis_add_shader passes.
+        rachis_add_shader(RachisRHITests
+            NAME GeneratedDrawIndexVertex
+            SOURCE tests/shaders/DrawIndex.hlsl
+            ENTRY drawIndexVertex
+            STAGE vertex
+            REFLECT)
+        rachis_add_shader(RachisRHITests
+            NAME GeneratedDrawIndexVertexSlang
+            SOURCE tests/shaders/DrawIndex.hlsl
+            LANGUAGE SLANG
+            ENTRY drawIndexVertex
+            STAGE vertex
+            REFLECT)
+        rachis_add_shader(RachisRHITests
+            NAME GeneratedDrawIndexPixel
+            SOURCE tests/shaders/DrawIndex.hlsl
+            ENTRY recordPixel
+            STAGE pixel
+            REFLECT)
         add_executable(RachisFakeSlangc tests/support/FakeSlangc.cpp)
         rachis_configure_rhi_target(RachisFakeSlangc)
         set_target_properties(RachisFakeSlangc PROPERTIES

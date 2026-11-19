@@ -409,6 +409,7 @@ function(rachis_add_shader target)
                 "${SHADER_ENTRY}" "${SHADER_STAGE}" "${binary_stem}" "RACHIS_METAL=1;${SHADER_DEFINES}" "${shader_includes}"
                 layout)
             list(APPEND layouts "metal=${layout}")
+            list(APPEND bytecodes "metal=${binary_stem}.pnms")
         endif()
         list(APPEND headers "${header}")
         string(APPEND includes "#include \"${SHADER_NAME}.metal.h\"\n")

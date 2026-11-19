@@ -1430,18 +1430,15 @@ namespace rachis::metal
             }
             for (const auto& write : writes)
             {
-                const auto index = metalSlotIndex(current->layout->entries,
-                                                  version->variableDescriptorCount,
-                                                  write.binding,
-                                                  write.arrayElement);
+                const auto index = metalSlotIndex(
+                    current->layout->entries, version->variableDescriptorCount, write.binding, write.arrayElement);
                 if (index.has_value())
                 {
                     metalWriteArgumentBufferElement(*version, version->slots[*index]);
                 }
             }
             [version->argumentResidency commit];
-            metalPublishStatistics(
-                *native_, prepared.resource, prepared.sampler, prepared.resource, prepared.sampler);
+            metalPublishStatistics(*native_, prepared.resource, prepared.sampler, prepared.resource, prepared.sampler);
             current->version = std::move(version);
             return {};
         }

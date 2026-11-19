@@ -81,6 +81,12 @@ namespace rachis::metal
         [[nodiscard]] Status metalValidatePipelineShaderInterface(const ShaderInterfaceSnapshot& shader,
                                                                   const MetalPipelineLayoutRecord& layout)
         {
+            if (shader.drawIndex && !layout.drawIndex)
+            {
+                return std::unexpected(
+                    metalSelectionError(ErrorCode::validationError,
+                                        "A shader reads the draw index, but the pipeline layout does not reserve it."));
+            }
             for (const auto& binding : shader.bindings)
             {
                 if (binding.set >= layout.sets.size())
@@ -1626,6 +1632,7 @@ namespace rachis::metal
                                                         desc.shaderInterface.vertexInputLocations.end());
             record.snapshot.workgroupSize = desc.shaderInterface.workgroupSize;
             record.snapshot.shaderRecordConstants = desc.shaderInterface.shaderRecordConstants;
+            record.snapshot.drawIndex = desc.shaderInterface.drawIndex;
             return record;
         }
 
@@ -1886,6 +1893,7 @@ namespace rachis::metal
         record->pushConstantRanges.assign(desc.pushConstantRanges.begin(), desc.pushConstantRanges.end());
         record->pushConstantBytes = *pushConstantSize;
         record->reservePushConstantBuffer = record->pushConstantBytes > 0;
+        record->drawIndex = desc.drawIndex;
         std::scoped_lock const lock(mutex_);
         if (native_ == nullptr)
         {
@@ -2767,6 +2775,10 @@ namespace rachis::metal
             {
                 vertexBufferBaseIndex = std::max(vertexBufferBaseIndex, vertexBindings.pushConstantMetalIndex + 1U);
             }
+            if (vertexBindings.usesDrawIndex)
+            {
+                vertexBufferBaseIndex = std::max(vertexBufferBaseIndex, vertexBindings.drawIndexMetalIndex + 1U);
+            }
             for (const auto& res : vertexBindings.resources)
             {
                 if (res.argumentBuffer)
@@ -3164,6 +3176,9 @@ namespace rachis::metal
             {
                 record->pixelStageBindings = inputs.pixel.stageBindings;
             }
+            record->readsDrawIndex = record->vertexStageBindings.usesDrawIndex ||
+                                     record->objectStageBindings.usesDrawIndex ||
+                                     record->meshStageBindings.usesDrawIndex;
             record->pushConstantBytes = record->layout->pushConstantBytes;
             record->reservePushConstantBuffer = record->layout->reservePushConstantBuffer;
             record->graphicsState = metalMakeGraphicsPipelineState(
