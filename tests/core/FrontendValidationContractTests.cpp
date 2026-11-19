@@ -1119,6 +1119,19 @@ TEST_CASE("Device frontend allows only draws, dispatches, and state commands ins
         device.updateBottomLevelAccelerationStructure(cb, rachis::BottomLevelAccelerationStructureUpdateDesc{}));
     expectRejected("updateTopLevelAccelerationStructure",
                    device.updateTopLevelAccelerationStructure(cb, rachis::TopLevelAccelerationStructureUpdateDesc{}));
+    expectRejected("buildTopLevelAccelerationStructureFromBuffer",
+                   device.buildTopLevelAccelerationStructureFromBuffer(
+                       cb, rachis::TopLevelAccelerationStructureBufferBuildDesc{}));
+    expectRejected("updateTopLevelAccelerationStructureFromBuffer",
+                   device.updateTopLevelAccelerationStructureFromBuffer(
+                       cb, rachis::TopLevelAccelerationStructureBufferUpdateDesc{}));
+    expectRejected("updateTopLevelAccelerationStructureInPlaceFromBuffer",
+                   device.updateTopLevelAccelerationStructureInPlaceFromBuffer(
+                       cb, rachis::TopLevelAccelerationStructureBufferInPlaceUpdateDesc{}));
+    expectRejected("fillBuffer", device.fillBuffer(cb, {}, 0, 16, 0));
+    expectRejected("clearStorageTexture",
+                   device.clearStorageTexture(
+                       cb, {}, rachis::StorageTextureClearValue{.type = rachis::StorageTextureClearType::uint32}));
     expectRejected("compactAccelerationStructure",
                    device.compactAccelerationStructure(cb, rachis::AccelerationStructureCompactionDesc{}));
     expectRejected("serializeAccelerationStructure",

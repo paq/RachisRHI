@@ -1108,6 +1108,14 @@ namespace rachis
             {
                 return std::unexpected(detail::preferDeviceLossError(*backend_, std::move(ready.error())));
             }
+            if (auto unconditional = rejectInsideConditionalExecution(
+                    *backend_,
+                    *commandBuffer.backend_,
+                    "Buffer fills cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
+            }
             if (auto valid = detail::validateBufferFillRequest(offset, size); !valid)
             {
                 return std::unexpected(detail::preferDeviceLossError(*backend_, std::move(valid.error())));
@@ -1427,6 +1435,14 @@ namespace rachis
             {
                 return valid;
             }
+            if (auto unconditional = rejectInsideConditionalExecution(
+                    *backend_,
+                    *commandBuffer.backend_,
+                    "Acceleration-structure builds cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
+            }
             if (auto valid = validateTopLevelInstanceBufferRange(
                     *backend_, desc.instanceBuffer, desc.instanceOffset, desc.instanceCount);
                 !valid)
@@ -1448,6 +1464,14 @@ namespace rachis
                 !valid)
             {
                 return valid;
+            }
+            if (auto unconditional = rejectInsideConditionalExecution(
+                    *backend_,
+                    *commandBuffer.backend_,
+                    "Acceleration-structure updates cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
             }
             if (auto valid = validateTopLevelInstanceBufferRange(
                     *backend_, desc.instanceBuffer, desc.instanceOffset, desc.instanceCount);
@@ -1481,6 +1505,14 @@ namespace rachis
                 !valid)
             {
                 return valid;
+            }
+            if (auto unconditional = rejectInsideConditionalExecution(
+                    *backend_,
+                    *commandBuffer.backend_,
+                    "Acceleration-structure updates cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
             }
             if (auto valid = validateTopLevelInstanceBufferRange(
                     *backend_, desc.instanceBuffer, desc.instanceOffset, desc.instanceCount);
@@ -2160,6 +2192,14 @@ namespace rachis
                 !ready)
             {
                 return std::unexpected(detail::preferDeviceLossError(*backend_, std::move(ready.error())));
+            }
+            if (auto unconditional = rejectInsideConditionalExecution(
+                    *backend_,
+                    *commandBuffer.backend_,
+                    "Storage-texture clears cannot be recorded inside conditional execution.");
+                !unconditional)
+            {
+                return unconditional;
             }
             if (auto valid = detail::validateStorageTextureClearValue(value); !valid)
             {
