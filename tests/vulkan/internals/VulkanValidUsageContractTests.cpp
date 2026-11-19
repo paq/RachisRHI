@@ -642,6 +642,7 @@ namespace
         std::size_t queryPoolNameLength = 0;
         VkResult fenceStatus = VK_SUCCESS;
         std::size_t fenceResets = 0;
+        std::size_t clearColorImages = 0;
     };
 
     thread_local MockVulkanDispatch* gMock = nullptr;
@@ -913,6 +914,16 @@ namespace
                                                 const VkImageCopy*)
     {
         gMock->timelineEvents.push_back({.kind = CommandOpKind::copyImage, .command = commandBuffer});
+    }
+
+    VKAPI_ATTR void VKAPI_CALL mockCmdClearColorImage(VkCommandBuffer,
+                                                      VkImage,
+                                                      VkImageLayout,
+                                                      const VkClearColorValue*,
+                                                      std::uint32_t,
+                                                      const VkImageSubresourceRange*)
+    {
+        ++gMock->clearColorImages;
     }
 
     VKAPI_ATTR void VKAPI_CALL mockCmdResolveImage(VkCommandBuffer commandBuffer,
@@ -1272,6 +1283,7 @@ namespace
         table.vkCmdPipelineBarrier2 = &mockCmdPipelineBarrier2;
         table.vkCmdCopyImage = &mockCmdCopyImage;
         table.vkCmdResolveImage = &mockCmdResolveImage;
+        table.vkCmdClearColorImage = &mockCmdClearColorImage;
         table.vkCreateImageView = &mockCreateImageView;
         table.vkDestroyImageView = &mockDestroyImageView;
         table.vkCmdBeginRendering = &mockCmdBeginRendering;
@@ -4887,6 +4899,8 @@ namespace
             return {rachis::PipelineStage::pixelShader, rachis::Access::shaderResource};
         case rachis::TextureLayout::unorderedAccess:
             return {rachis::PipelineStage::computeShader, rachis::Access::unorderedAccess};
+        case rachis::TextureLayout::renderTarget:
+            return {rachis::PipelineStage::renderTarget, rachis::Access::renderTarget};
         default:
             return {};
         }
@@ -5146,5 +5160,181 @@ TEST_CASE("Vulkan texture barriers must name the current layout of every subreso
     commands.shutdown();
     resources.shutdown();
     gMock = nullptr;
+}
+
+namespace
+{
+
+    struct MockStorageClearFixture final
+    {
+        MockVulkanDispatch mock;
+        VolkDeviceTable table = makeMockDeviceTable();
+        rachis::vulkan::VulkanInstanceTable instanceTable{};
+        rachis::vulkan::VulkanResourceAllocator resources;
+        rachis::vulkan::VulkanCommandAllocator commands;
+        rachis::vulkan::VulkanQueueManager queueManager;
+        rachis::CommandPoolHandle pool{};
+        rachis::TextureHandle texture{};
+        rachis::TextureHandle other{};
+        rachis::TextureViewHandle view{};
+
+        MockStorageClearFixture()
+        {
+            gMock = &mock;
+            instanceTable.vkGetPhysicalDeviceFormatProperties = &mockGetPhysicalDeviceFormatProperties;
+            instanceTable.vkGetPhysicalDeviceImageFormatProperties = &mockGetPhysicalDeviceImageFormatProperties;
+            const auto physical = fakeHandle<VkPhysicalDevice>(0x13);
+            const auto device = fakeHandle<VkDevice>(0x24);
+            const rachis::vulkan::VulkanQueueFamilies families{.graphics = 0, .compute = 0, .transfer = 0};
+            const rachis::vulkan::VulkanQueueHandles queueHandles{
+                .graphics = fakeHandle<VkQueue>(0x34),
+                .compute = fakeHandle<VkQueue>(0x34),
+                .copy = fakeHandle<VkQueue>(0x34),
+                .families = families,
+            };
+            resources.initializeDispatchForTesting(device, &table, &instanceTable, physical, families);
+            constexpr std::uint64_t kDeviceToken = 0xABC4;
+            commands.initialize(device, &table, queueHandles, kDeviceToken, &resources);
+            REQUIRE(queueManager.initialize(device, &table, queueHandles, kDeviceToken).has_value());
+            auto created =
+                commands.createCommandPool({.queueType = rachis::QueueType::graphics, .maxCommandBuffers = 16});
+            REQUIRE(created.has_value());
+            pool = *created;
+            auto adopted = resources.adoptSwapchainImage(
+                fakeHandle<VkImage>(0x7101),
+                {
+                    .width = 8,
+                    .height = 8,
+                    .depthOrArrayLayers = 2,
+                    .format = rachis::Format::rgba8Unorm,
+                    .usage = rachis::TextureUsage::copyDestination | rachis::TextureUsage::storage |
+                             rachis::TextureUsage::sampled | rachis::TextureUsage::renderTarget,
+                });
+            REQUIRE(adopted.has_value());
+            texture = *adopted;
+            auto unrelated = resources.adoptSwapchainImage(fakeHandle<VkImage>(0x7102),
+                                                           {.width = 4,
+                                                            .height = 4,
+                                                            .format = rachis::Format::rgba8Unorm,
+                                                            .usage = rachis::TextureUsage::storage});
+            REQUIRE(unrelated.has_value());
+            other = *unrelated;
+            auto storage = resources.createTextureView({
+                .texture = texture,
+                .usage = rachis::TextureViewUsage::storage,
+                .dimension = rachis::TextureViewDimension::texture2DArray,
+            });
+            REQUIRE(storage.has_value());
+            view = *storage;
+        }
+
+        MockStorageClearFixture(const MockStorageClearFixture&) = delete;
+        MockStorageClearFixture& operator=(const MockStorageClearFixture&) = delete;
+        MockStorageClearFixture(MockStorageClearFixture&&) = delete;
+        MockStorageClearFixture& operator=(MockStorageClearFixture&&) = delete;
+
+        ~MockStorageClearFixture()
+        {
+            queueManager.shutdown();
+            commands.shutdown();
+            resources.shutdown();
+            gMock = nullptr;
+        }
+
+        [[nodiscard]] auto acquire()
+        {
+            auto acquired = commands.acquireCommandBuffer(pool);
+            REQUIRE(acquired.has_value());
+            return std::move(*acquired);
+        }
+
+        [[nodiscard]] static VkCommandBuffer native(const auto& commandBuffer) noexcept
+        {
+            return static_cast<rachis::vulkan::VulkanCommandBuffer&>(*commandBuffer).native();
+        }
+
+        [[nodiscard]] bool transition(const auto& commandBuffer,
+                                      rachis::TextureLayout before,
+                                      rachis::TextureLayout after,
+                                      rachis::TextureHandle target = {})
+        {
+            return resources
+                .textureBarrier(native(commandBuffer),
+                                rachis::QueueType::graphics,
+                                layoutBarrier(target.isValid() ? target : texture, before, after))
+                .has_value();
+        }
+
+        [[nodiscard]] rachis::Status clear(const auto& commandBuffer)
+        {
+            return resources.clearStorageTexture(native(commandBuffer),
+                                                 view,
+                                                 rachis::StorageTextureClearValue{
+                                                     .type = rachis::StorageTextureClearType::float32,
+                                                     .float32 = {1.0F, 0.5F, 0.25F, 1.0F},
+                                                 },
+                                                 nullptr);
+        }
+
+        template<typename CommandBuffer>
+        [[nodiscard]] bool submit(CommandBuffer commandBuffer)
+        {
+            std::array batch{std::move(commandBuffer)};
+            return queueManager.submit(batch, {}).has_value();
+        }
+    };
+
+} // namespace
+
+TEST_CASE("Vulkan storage clears that fail to allocate leave no layout requirements in the command buffer",
+          "[size:small][rhi][vulkan][vuid][layouts-mock][fill-and-clear]")
+{
+    using rachis::TextureLayout;
+    MockStorageClearFixture fixture;
+    {
+        auto initial = fixture.acquire();
+        REQUIRE(fixture.transition(initial, TextureLayout::undefined, TextureLayout::unorderedAccess));
+        REQUIRE(fixture.submit(std::move(initial)));
+    }
+
+    bool recorded = false;
+    std::uint32_t injectedFailures = 0;
+    for (std::uint32_t failAt = 1; failAt < 256 && !recorded; ++failAt)
+    {
+        auto failed = fixture.acquire();
+        auto followed = fixture.acquire();
+        REQUIRE(fixture.transition(failed, TextureLayout::undefined, TextureLayout::unorderedAccess, fixture.other));
+        const auto clearsBefore = fixture.mock.clearColorImages;
+        gHostAllocationsUntilFailure = failAt;
+        bool threw = false;
+        try
+        {
+            static_cast<void>(fixture.clear(failed));
+        }
+        catch (const std::bad_alloc&)
+        {
+            threw = true;
+        }
+        gHostAllocationsUntilFailure = 0;
+        const bool injected = std::exchange(gHostAllocationFailureInjected, false);
+        if (!injected)
+        {
+            CHECK_FALSE(threw);
+            CHECK(fixture.mock.clearColorImages == clearsBefore + 1);
+            REQUIRE(fixture.submit(std::move(failed)));
+            recorded = true;
+            continue;
+        }
+        REQUIRE(threw);
+        ++injectedFailures;
+        CHECK(fixture.mock.clearColorImages == clearsBefore);
+
+        REQUIRE(fixture.transition(failed, TextureLayout::undefined, TextureLayout::unorderedAccess));
+        REQUIRE(fixture.transition(followed, TextureLayout::unorderedAccess, TextureLayout::shaderResource));
+        REQUIRE(fixture.submit(std::move(followed)));
+        CHECK(fixture.submit(std::move(failed)));
+    }
+    CHECK(recorded);
+    CHECK(injectedFailures > 1);
 }
 #endif

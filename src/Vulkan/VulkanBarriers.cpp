@@ -1561,7 +1561,6 @@ namespace rachis::vulkan
             subresource.aspect == TextureAspect::stencil
                 ? VK_IMAGE_ASPECT_STENCIL_BIT
                 : (subresource.aspect == TextureAspect::depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT);
-        state.transferIndex.emplace(cell, state.transfers.size());
         state.transfers.push_back(LayoutRequirement{
             .submitted = record.submittedLayouts,
             .keepAlive = record.keepAlive,
@@ -1575,6 +1574,51 @@ namespace rachis::vulkan
             .hasSubsequentBarrier = false,
             .firstBarrierOldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
         });
+        try
+        {
+            state.transferIndex.emplace(cell, state.transfers.size() - 1U);
+        }
+        catch (...)
+        {
+            state.transfers.pop_back();
+            throw;
+        }
+    }
+
+    VulkanResourceAllocator::CommandLayoutMark VulkanResourceAllocator::markCommandLayoutsLocked(
+        VkCommandBuffer command) const noexcept
+    {
+        const auto* state = commandLayoutState(command);
+        if (state == nullptr)
+        {
+            return {};
+        }
+        return CommandLayoutMark{.transfers = state->transfers.size(), .entries = state->entries.size()};
+    }
+
+    void VulkanResourceAllocator::rollBackCommandLayoutsLocked(VkCommandBuffer command,
+                                                               const CommandLayoutMark& mark) noexcept
+    {
+        const auto found = commandLayouts_.find(command);
+        if (found == commandLayouts_.end())
+        {
+            return;
+        }
+        auto& state = found->second;
+        for (auto index = mark.transfers; index < state.transfers.size(); ++index)
+        {
+            const auto& transfer = state.transfers[index];
+            state.transferIndex.erase(LayoutCell{transfer.submitted.get(), transfer.index});
+        }
+        if (mark.transfers < state.transfers.size())
+        {
+            state.transfers.erase(state.transfers.begin() + static_cast<std::ptrdiff_t>(mark.transfers),
+                                  state.transfers.end());
+        }
+        if (mark.entries < state.entries.size())
+        {
+            state.entries.erase(state.entries.begin() + static_cast<std::ptrdiff_t>(mark.entries), state.entries.end());
+        }
     }
 
     void VulkanResourceAllocator::recordSubresourceTransferRequirement(VkCommandBuffer command,

@@ -728,7 +728,14 @@ namespace rachis::vulkan
             std::unordered_map<LayoutCell, std::size_t, LayoutCellHash> transferIndex;
             std::vector<LayoutEntryRequirement> entries;
         };
+        struct CommandLayoutMark final
+        {
+            std::size_t transfers = 0;
+            std::size_t entries = 0;
+        };
         [[nodiscard]] const CommandLayoutState* commandLayoutState(VkCommandBuffer command) const noexcept;
+        [[nodiscard]] CommandLayoutMark markCommandLayoutsLocked(VkCommandBuffer command) const noexcept;
+        void rollBackCommandLayoutsLocked(VkCommandBuffer command, const CommandLayoutMark& mark) noexcept;
         [[nodiscard]] static std::optional<TextureLayout> commandPublicLayout(const CommandLayoutState* state,
                                                                               const LayoutCell& cell) noexcept;
         static void stageLayoutWrite(CommandLayoutState& state, const LayoutWrite& write);

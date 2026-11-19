@@ -1,3 +1,4 @@
+#include "Common/VectorReserve.h"
 #include "Internal/FillAndClearValidation.h"
 #include "Internal/VulkanBufferBarriers.h"
 #include "Internal/VulkanDiagnostics.h"
@@ -1390,34 +1391,47 @@ namespace rachis::vulkan
                 });
             }
         }
+        if (retained != nullptr)
+        {
+            detail::reserveAdditional(*retained, 2U);
+        }
+        ensureTrackedLayouts(*texture);
+        const auto mark = markCommandLayoutsLocked(command);
+        try
+        {
+            auto& commandState = commandLayouts_[command];
+            for (std::uint32_t layer = range.baseArrayLayer; layer < range.baseArrayLayer + range.layerCount; ++layer)
+            {
+                const TextureSubresource subresource{.mipLevel = range.baseMipLevel, .arrayLayer = layer};
+                const auto cell = static_cast<std::size_t>(layer) * texture->desc.mipLevels + range.baseMipLevel;
+                if (cell < texture->submittedLayouts->size() &&
+                    !commandPublicLayout(&commandState, LayoutCell{texture->submittedLayouts.get(), cell}).has_value())
+                {
+                    commandState.entries.push_back(LayoutEntryRequirement{
+                        .submittedPublic = texture->submittedPublicLayouts,
+                        .index = cell,
+                        .layout = TextureLayout::unorderedAccess,
+                        .subresource = subresource,
+                        .entryLayoutUnknown = texture->shared,
+                    });
+                }
+                recordTransferRequirementLocked(command,
+                                                *texture,
+                                                subresource,
+                                                VK_IMAGE_LAYOUT_GENERAL,
+                                                validation_detail::SubresourceTransferUse::copyDestination);
+            }
+        }
+        catch (...)
+        {
+            rollBackCommandLayoutsLocked(command, mark);
+            throw;
+        }
         const std::array swapchainLeases{texture->swapchainLease};
         if (auto referenced = retainSwapchainImagesLocked(command, swapchainLeases); !referenced)
         {
+            rollBackCommandLayoutsLocked(command, mark);
             return referenced;
-        }
-
-        ensureTrackedLayouts(*texture);
-        auto& commandState = commandLayouts_[command];
-        for (std::uint32_t layer = range.baseArrayLayer; layer < range.baseArrayLayer + range.layerCount; ++layer)
-        {
-            const TextureSubresource subresource{.mipLevel = range.baseMipLevel, .arrayLayer = layer};
-            const auto cell = static_cast<std::size_t>(layer) * texture->desc.mipLevels + range.baseMipLevel;
-            if (cell < texture->submittedLayouts->size() &&
-                !commandPublicLayout(&commandState, LayoutCell{texture->submittedLayouts.get(), cell}).has_value())
-            {
-                commandState.entries.push_back(LayoutEntryRequirement{
-                    .submittedPublic = texture->submittedPublicLayouts,
-                    .index = cell,
-                    .layout = TextureLayout::unorderedAccess,
-                    .subresource = subresource,
-                    .entryLayoutUnknown = texture->shared,
-                });
-            }
-            recordTransferRequirementLocked(command,
-                                            *texture,
-                                            subresource,
-                                            VK_IMAGE_LAYOUT_GENERAL,
-                                            validation_detail::SubresourceTransferUse::copyDestination);
         }
         retainKeepAlive(retained, view->keepAlive);
         retainKeepAlive(retained, texture->keepAlive);
