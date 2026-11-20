@@ -2359,6 +2359,7 @@ namespace rachis::d3d12
             std::shared_ptr<CpuDescriptorLease> staging;
             D3D12_CPU_DESCRIPTOR_HANDLE handle{};
             std::shared_ptr<ResourceDescriptorSource> replaced;
+            std::uint64_t replacedEpoch = 0;
         };
 
         [[nodiscard]] Result<InPlaceWrite> prepareInPlaceWrite(const BindingSourceManagers& managers,
@@ -2493,11 +2494,18 @@ namespace rachis::d3d12
             return {};
         }
 
+        struct RetainingInPlaceEpoch final
+        {
+            std::uint64_t index = 0;
+            std::shared_ptr<InPlaceDescriptorEpoch> epoch;
+            std::size_t additions = 0;
+        };
+
         struct StagedInPlaceRetention final
         {
             InPlaceResidencyUses residencyAdditions;
             std::shared_ptr<InPlaceDescriptorEpoch> nextEpoch;
-            std::shared_ptr<InPlaceDescriptorEpoch> retainingEpoch;
+            SmallVector<RetainingInPlaceEpoch, 2> retainingEpochs;
         };
 
         [[nodiscard]] Result<StagedInPlaceRetention> stageInPlaceRetention(const BindingSetRecord& record,
@@ -2507,25 +2515,45 @@ namespace rachis::d3d12
             StagedInPlaceRetention staged;
             const bool advance = publication.epoch->observed.load(std::memory_order_acquire);
             const auto writeEpoch = advance ? publication.epochIndex + 1 : publication.epochIndex;
-            staged.retainingEpoch = advance ? publication.epoch : publication.previous.lock();
             try
             {
                 if (advance)
                 {
                     staged.nextEpoch = std::make_shared<InPlaceDescriptorEpoch>();
+                    detail::reserveAdditional(publication.observedEpochs, 1);
                 }
-                std::size_t visible = 0;
-                if (staged.retainingEpoch != nullptr)
+                for (const auto& observed : publication.observedEpochs)
                 {
-                    for (auto& write : writes)
+                    if (auto epoch = observed.epoch.lock(); epoch != nullptr)
                     {
-                        if (record.sourceEpochs[write.offset] < writeEpoch)
+                        staged.retainingEpochs.push_back({.index = observed.index, .epoch = std::move(epoch)});
+                    }
+                }
+                if (advance)
+                {
+                    staged.retainingEpochs.push_back({.index = publication.epochIndex, .epoch = publication.epoch});
+                }
+                for (auto& write : writes)
+                {
+                    const auto sourceEpoch = record.sourceEpochs[write.offset];
+                    bool retained = false;
+                    for (auto& retaining : staged.retainingEpochs)
+                    {
+                        if (sourceEpoch < writeEpoch && retaining.index >= sourceEpoch)
                         {
-                            write.replaced = std::make_shared<ResourceDescriptorSource>();
-                            ++visible;
+                            ++retaining.additions;
+                            retained = true;
                         }
                     }
-                    detail::reserveAdditional(staged.retainingEpoch->replaced, visible);
+                    if (retained)
+                    {
+                        write.replaced = std::make_shared<ResourceDescriptorSource>();
+                        write.replacedEpoch = sourceEpoch;
+                    }
+                }
+                for (auto& retaining : staged.retainingEpochs)
+                {
+                    detail::reserveAdditional(retaining.epoch->replaced, retaining.additions);
                 }
                 for (const auto& write : writes)
                 {
@@ -2599,8 +2627,9 @@ namespace rachis::d3d12
             auto& publication = *inPlace.publication;
             if (staged.nextEpoch != nullptr)
             {
-                publication.epoch->newer = staged.nextEpoch;
-                publication.previous = publication.epoch;
+                std::erase_if(publication.observedEpochs,
+                              [](const ObservedInPlaceDescriptorEpoch& observed) { return observed.epoch.expired(); });
+                publication.observedEpochs.push_back({.index = publication.epochIndex, .epoch = publication.epoch});
                 publication.epoch = std::move(staged.nextEpoch);
                 ++publication.epochIndex;
             }
@@ -2618,14 +2647,22 @@ namespace rachis::d3d12
                 if (write.replaced != nullptr)
                 {
                     *write.replaced = std::move(write.source);
-                    staged.retainingEpoch->replaced.push_back(std::move(write.replaced));
+                    for (auto& retaining : staged.retainingEpochs)
+                    {
+                        if (retaining.index >= write.replacedEpoch)
+                        {
+                            retaining.epoch->replaced.push_back(write.replaced);
+                        }
+                    }
+                    write.replaced.reset();
                 }
             }
-            if (staged.retainingEpoch != nullptr)
+            if (!staged.retainingEpochs.empty())
             {
+                const auto& replaced = staged.retainingEpochs.back().epoch->replaced;
                 test::lastInPlaceReplacedStorage() = {
-                    .count = staged.retainingEpoch->replaced.size(),
-                    .capacity = staged.retainingEpoch->replaced.capacity(),
+                    .count = replaced.size(),
+                    .capacity = replaced.capacity(),
                 };
             }
             ++inPlace.writeGeneration;

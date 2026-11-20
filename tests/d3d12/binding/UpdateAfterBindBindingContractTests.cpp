@@ -308,9 +308,10 @@ namespace
             return *buffer;
         }
 
-        [[nodiscard]] rachis::CommandBuffer record(std::span<const Selection> selections)
+        [[nodiscard]] rachis::CommandBuffer record(std::span<const Selection> selections,
+                                                   rachis::QueueType queue = rachis::QueueType::compute)
         {
-            auto command = rachis::test::acquireCommandBuffer(device_, rachis::QueueType::compute);
+            auto command = rachis::test::acquireCommandBuffer(device_, queue);
             REQUIRE(command.has_value());
             recordInto(*command, selections);
             return std::move(*command);
@@ -484,7 +485,7 @@ namespace
     class QueueBlocker final
     {
     public:
-        explicit QueueBlocker(rachis::Device& device)
+        explicit QueueBlocker(rachis::Device& device, rachis::QueueType queue = rachis::QueueType::compute)
         {
             REQUIRE(rachis::test::requireCapabilities(device).sharedTimelineHandles);
             Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
@@ -503,7 +504,7 @@ namespace
                     },
                 .value = 1,
             };
-            auto waited = device.enqueueSharedTimelineWait(rachis::QueueType::compute, point);
+            auto waited = device.enqueueSharedTimelineWait(queue, point);
             if (!waited)
             {
                 UNSCOPED_INFO(waited.error().message);
@@ -840,6 +841,54 @@ TEST_CASE("update-after-bind elements that no submission saw are released when t
     CHECK_FALSE(memoryEntry(device, labels.back()).has_value());
     CHECK(fixture.result(0) == sliceValues[0]);
 
+    checkCleanDiagnostics(device);
+}
+
+TEST_CASE("work in flight keeps alive only the update-after-bind elements it could have seen",
+          "[size:medium][rhi][binding][compute][lifetime][warp]")
+{
+    auto device = createWarpDevice();
+    REQUIRE(rachis::test::requireCapabilities(device).updateAfterBindBindingArrays);
+    LargeArrayFixture fixture(device, rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind);
+    constexpr std::string_view seenLabel = "Element seen by stalled work";
+    const auto seen = fixture.createValueBuffer(replacementValues, seenLabel);
+    REQUIRE(update(device, fixture.set(), 1, 1, slice(seen, 0)).has_value());
+
+    QueueBlocker blocker(device, rachis::QueueType::graphics);
+    const std::array stalledSelections{Selection{.element = 0, .slot = 0}};
+    auto stalled = device.submit(fixture.record(stalledSelections, rachis::QueueType::graphics));
+    REQUIRE(stalled.has_value());
+
+    constexpr std::array<std::string_view, 4> labels{
+        "Streamed after stalled work 0",
+        "Streamed after stalled work 1",
+        "Streamed after stalled work 2",
+        "Streamed after stalled work 3",
+    };
+    for (const auto label : labels)
+    {
+        const auto streamed = fixture.createValueBuffer(replacementValues, label);
+        REQUIRE(update(device, fixture.set(), 1, 1, slice(streamed, 0)).has_value());
+        const std::array selections{Selection{.element = 1, .slot = 1}};
+        auto reading = device.submit(fixture.record(selections));
+        REQUIRE(reading.has_value());
+        REQUIRE(device.wait(*reading).has_value());
+        device.collectGarbage();
+        REQUIRE(device.destroyBuffer(streamed).has_value());
+    }
+    REQUIRE(device.destroyBuffer(seen).has_value());
+    checkRetainedAfterDestruction(device, seenLabel);
+    for (std::size_t index = 0; index + 1 < labels.size(); ++index)
+    {
+        CAPTURE(labels[index]);
+        CHECK_FALSE(memoryEntry(device, labels[index]).has_value());
+    }
+    checkRetainedAfterDestruction(device, labels.back());
+
+    blocker.release();
+    REQUIRE(device.wait(*stalled).has_value());
+    device.collectGarbage();
+    CHECK_FALSE(memoryEntry(device, seenLabel).has_value());
     checkCleanDiagnostics(device);
 }
 

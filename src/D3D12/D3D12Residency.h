@@ -74,7 +74,7 @@ namespace rachis::d3d12
     {
     public:
         InPlaceDescriptorEpoch() = default;
-        ~InPlaceDescriptorEpoch();
+        ~InPlaceDescriptorEpoch() = default;
 
         InPlaceDescriptorEpoch(const InPlaceDescriptorEpoch&) = delete;
         InPlaceDescriptorEpoch& operator=(const InPlaceDescriptorEpoch&) = delete;
@@ -83,7 +83,12 @@ namespace rachis::d3d12
 
         std::atomic_bool observed = false;
         std::vector<std::shared_ptr<void>> replaced;
-        std::shared_ptr<InPlaceDescriptorEpoch> newer;
+    };
+
+    struct ObservedInPlaceDescriptorEpoch final
+    {
+        std::uint64_t index = 0;
+        std::weak_ptr<InPlaceDescriptorEpoch> epoch;
     };
 
     struct InPlaceDescriptorPublication final
@@ -106,7 +111,7 @@ namespace rachis::d3d12
         mutable std::atomic_uint32_t submissions = 0;
         InPlaceResidencyUses residencies;
         std::shared_ptr<InPlaceDescriptorEpoch> epoch = std::make_shared<InPlaceDescriptorEpoch>();
-        std::weak_ptr<InPlaceDescriptorEpoch> previous;
+        std::vector<ObservedInPlaceDescriptorEpoch> observedEpochs;
         std::uint64_t epochIndex = 0;
     };
 
