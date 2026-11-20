@@ -940,6 +940,147 @@ TEST_CASE("Metal submissions keep folded binding arrays locked until they commit
     REQUIRE(device.destroyShaderModule(*shader).has_value());
 }
 
+TEST_CASE("Metal releases a folded binding array's element retentions when submit fails to close",
+          "[size:large][rhi][metal][binding]")
+{
+    auto created = rachis::createDevice(metalDesc());
+    REQUIRE(created);
+    auto device = std::move(*created);
+    REQUIRE(rachis::test::requireCapabilities(device).updateAfterBindBindingArrays);
+    constexpr std::uint32_t setCount = 29;
+
+    const auto shaderBytes = loadPnms("MetalUpdateAfterBind.cs.pnms");
+    REQUIRE_FALSE(shaderBytes.empty());
+    const std::array requirements{
+        rachis::ShaderBindingRequirement{0, 0, rachis::ShaderResourceType::storageBuffer, 1},
+        rachis::ShaderBindingRequirement{
+            0, 1, rachis::ShaderResourceType::readOnlyStorageBuffer, rachis::unboundedBindingCount},
+    };
+    const std::array push{rachis::ShaderPushConstantRequirement{0, 2 * sizeof(std::uint32_t)}};
+    auto shader = device.createShaderModule({
+        .stage = rachis::ShaderStage::compute,
+        .bytecode = shaderBytes,
+        .entryPoint = "updateAfterBindMain",
+        .shaderInterface = rachis::test::computeShaderInterface({1, 1, 1}, requirements, push),
+    });
+    REQUIRE(shader.has_value());
+    const std::array entries{
+        rachis::BindingLayoutEntry{0, rachis::BindingType::storageBuffer, rachis::ShaderStage::compute, 1},
+        rachis::BindingLayoutEntry{
+            .binding = 1,
+            .type = rachis::BindingType::readOnlyStorageBuffer,
+            .visibility = rachis::ShaderStage::compute,
+            .count = rachis::unboundedBindingCount,
+            .flags = rachis::BindingFlag::variableDescriptorCount | rachis::BindingFlag::partiallyBound |
+                     rachis::BindingFlag::updateAfterBind,
+        },
+    };
+    auto layout = device.createBindingLayout({.entries = entries});
+    REQUIRE(layout.has_value());
+    const std::array layouts{*layout};
+    const std::array pushRanges{rachis::PushConstantRange{rachis::ShaderStage::compute, 0, 2 * sizeof(std::uint32_t)}};
+    auto pipelineLayout = device.createPipelineLayout({.bindingLayouts = layouts, .pushConstantRanges = pushRanges});
+    REQUIRE(pipelineLayout.has_value());
+    auto pipeline = device.createComputePipeline({.layout = *pipelineLayout, .computeShader = *shader});
+    REQUIRE(pipeline.has_value());
+
+    const std::vector<std::byte> zeros(static_cast<std::size_t>(setCount) * sizeof(std::uint32_t));
+    const auto results = createFilledBuffer(device, zeros, rachis::BufferUsage::storage);
+    std::vector<rachis::BufferHandle> values;
+    std::vector<rachis::BindingSetHandle> sets;
+    for (std::uint32_t index = 0; index < setCount; ++index)
+    {
+        const std::array<std::uint32_t, 1> value{3000 + index};
+        values.push_back(createFilledBuffer(device, std::as_bytes(std::span(value)), rachis::BufferUsage::storage));
+        const std::array writes{
+            rachis::BindingWrite{
+                .binding = 0,
+                .resource = rachis::BufferBinding{.buffer = results, .structureByteStride = sizeof(std::uint32_t)},
+            },
+            rachis::BindingWrite{
+                .binding = 1,
+                .resource =
+                    rachis::BufferBinding{.buffer = values.back(), .structureByteStride = sizeof(std::uint32_t)},
+            },
+        };
+        auto set =
+            rachis::test::createBindingSet(device, {.layout = *layout, .writes = writes, .variableDescriptorCount = 1});
+        REQUIRE(set.has_value());
+        sets.push_back(*set);
+    }
+    const std::array<std::uint32_t, 1> replacementValue{4000};
+    const auto replacement =
+        createFilledBuffer(device, std::as_bytes(std::span(replacementValue)), rachis::BufferUsage::storage);
+
+    const auto record = [&](rachis::CommandBuffer& command, std::uint32_t index) {
+        REQUIRE(device.bindComputeBindingSet(command, 0, sets[index]).has_value());
+        const std::array<std::uint32_t, 2> read{0, index};
+        REQUIRE(device.setComputePushConstants(command, 0, std::as_bytes(std::span(read))).has_value());
+        REQUIRE(device.dispatch(command, 1).has_value());
+    };
+    auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+    REQUIRE(command.has_value());
+    REQUIRE(device.bindComputePipeline(*command, *pipeline).has_value());
+    for (std::uint32_t index = 0; index < setCount; ++index)
+    {
+        record(*command, index);
+    }
+    const std::array replace{rachis::BindingWrite{
+        .binding = 1,
+        .resource = rachis::BufferBinding{.buffer = replacement, .structureByteStride = sizeof(std::uint32_t)},
+    }};
+    REQUIRE(device.updateBindingSet(sets.back(), replace).has_value());
+    CHECK(rachis::metal::boundBindingSetStorage(sets.back()).replacedCount == 1);
+    record(*command, setCount - 1);
+
+    {
+        struct ScopedCloseFailure final
+        {
+            ScopedCloseFailure() noexcept
+            {
+                rachis::metal::test::nextSubmitCloseFailure().store(true, std::memory_order_relaxed);
+            }
+            ~ScopedCloseFailure()
+            {
+                rachis::metal::test::nextSubmitCloseFailure().store(false, std::memory_order_relaxed);
+            }
+        } const guard;
+        auto failed = device.submit(std::move(*command));
+        REQUIRE_FALSE(failed.has_value());
+        CHECK(failed.error().code == rachis::ErrorCode::validationError);
+    }
+    CHECK_FALSE(rachis::metal::boundBindingSetStorage(sets.back()).contentsLocked);
+
+    auto retry = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+    REQUIRE(retry.has_value());
+    REQUIRE(device.bindComputePipeline(*retry, *pipeline).has_value());
+    record(*retry, setCount - 1);
+    auto submitted = device.submit(std::move(*retry));
+    REQUIRE(submitted.has_value());
+    REQUIRE(device.wait(*submitted).has_value());
+    auto mapped = device.mapBuffer(results);
+    REQUIRE(mapped.has_value());
+    std::vector<std::uint32_t> observed(setCount);
+    std::memcpy(observed.data(), mapped->data, observed.size() * sizeof(std::uint32_t));
+    REQUIRE(device.unmapBuffer(results).has_value());
+    CHECK(observed[setCount - 1] == 4000);
+
+    REQUIRE(device.destroyPipeline(*pipeline).has_value());
+    REQUIRE(device.destroyPipelineLayout(*pipelineLayout).has_value());
+    for (const auto set : sets)
+    {
+        REQUIRE(device.destroyBindingSet(set).has_value());
+    }
+    REQUIRE(device.destroyBindingLayout(*layout).has_value());
+    for (const auto value : values)
+    {
+        REQUIRE(device.destroyBuffer(value).has_value());
+    }
+    REQUIRE(device.destroyBuffer(replacement).has_value());
+    REQUIRE(device.destroyBuffer(results).has_value());
+    REQUIRE(device.destroyShaderModule(*shader).has_value());
+}
+
 TEST_CASE("Metal validates bound binding arrays of draws that an empty scissor skips",
           "[size:large][rhi][metal][binding]")
 {

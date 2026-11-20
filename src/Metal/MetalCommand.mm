@@ -1744,14 +1744,17 @@ namespace rachis::metal
         }
 
 #ifdef RACHIS_TESTING
-        [[nodiscard]] Status rollBackInjectedMetalSubmitCloseFailure(MetalQueueTimeline& state,
-                                                                     const MetalSubmissionBatch& batch,
-                                                                     std::uint64_t submittedValue)
+        [[nodiscard]] Status rollBackInjectedMetalSubmitCloseFailure(
+            MetalQueueTimeline& state,
+            const MetalSubmissionBatch& batch,
+            std::uint64_t submittedValue,
+            std::vector<std::unique_lock<std::mutex>>& foldedLocks)
         {
             if (!rachis::metal::test::nextSubmitCloseFailure().exchange(false, std::memory_order_relaxed))
             {
                 return {};
             }
+            foldedLocks.clear();
             state.feedback.complete(submittedValue);
             for (std::size_t index = 0; index < batch.entries.size(); ++index)
             {
@@ -1946,7 +1949,7 @@ namespace rachis::metal
         }
 #ifdef RACHIS_TESTING
         waitAtMetalSubmitAfterResidencyFold();
-        if (auto closed = rollBackInjectedMetalSubmitCloseFailure(state, batch, submittedValue); !closed)
+        if (auto closed = rollBackInjectedMetalSubmitCloseFailure(state, batch, submittedValue, foldedLocks); !closed)
         {
             return std::unexpected(std::move(closed.error()));
         }
