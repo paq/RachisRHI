@@ -290,6 +290,68 @@ TEST_CASE("Shader interface reflection keeps the resources an entry point declar
     CHECK(loose.error().find("entry-point parameter 'scale' is a loose uniform") != std::string::npos);
 }
 
+TEST_CASE("Shader interface reflection reads an entry-point parameter that the entry's scope repeats once",
+          "[size:small][rhi][tooling][shader-interface]")
+{
+    constexpr std::string_view repeatedInScope = R"({
+        "parameters": [
+            {"name": "outputs", "binding": {"kind": "unorderedAccess", "space": 1, "index": 0},
+             "type": {"kind": "resource", "baseShape": "structuredBuffer", "access": "readWrite"}}
+        ],
+        "entryPoints": [
+            {"name": "entryArrayMain", "stage": "compute", "threadGroupSize": [1, 1, 1],
+             "scope": {"kind": "none", "parameters": [
+                {"name": "threadId", "semanticName": "SV_DISPATCHTHREADID",
+                 "type": {"kind": "vector", "elementCount": 3, "elementType": {"kind": "scalar"}}},
+                {"name": "values", "binding": {"kind": "shaderResource", "index": 0},
+                 "type": {"kind": "array", "elementCount": 0,
+                          "elementType": {"kind": "resource", "baseShape": "structuredBuffer"}}}
+             ]},
+             "parameters": [
+                {"name": "threadId", "semanticName": "SV_DISPATCHTHREADID",
+                 "type": {"kind": "vector", "elementCount": 3, "elementType": {"kind": "scalar"}}},
+                {"name": "values", "binding": {"kind": "shaderResource", "index": 0},
+                 "type": {"kind": "array", "elementCount": 0,
+                          "elementType": {"kind": "resource", "baseShape": "structuredBuffer"}}}
+             ]}
+        ]
+    })";
+    constexpr std::string_view onlyInScope = R"({
+        "parameters": [
+            {"name": "outputs", "binding": {"kind": "unorderedAccess", "space": 1, "index": 0},
+             "type": {"kind": "resource", "baseShape": "structuredBuffer", "access": "readWrite"}}
+        ],
+        "entryPoints": [
+            {"name": "entryArrayMain", "stage": "compute", "threadGroupSize": [1, 1, 1],
+             "scope": {"kind": "none", "parameters": [
+                {"name": "values", "binding": {"kind": "shaderResource", "index": 0},
+                 "type": {"kind": "array", "elementCount": 0,
+                          "elementType": {"kind": "resource", "baseShape": "structuredBuffer"}}}
+             ]}}
+        ]
+    })";
+    const std::vector<ReflectedBinding> expected{
+        {.name = "values",
+         .set = 0,
+         .binding = 0,
+         .type = "readOnlyStorageBuffer",
+         .count = rachis::shader_tool::unboundedResourceCount,
+         .entryParameter = true},
+        {.name = "outputs", .set = 1, .binding = 0, .type = "storageBuffer", .count = 1},
+    };
+    for (const auto json : {repeatedInScope, onlyInScope})
+    {
+        for (const auto backend : {InterfaceBackend::d3d12, InterfaceBackend::vulkan, InterfaceBackend::metal})
+        {
+            INFO("backend " << rachis::shader_tool::interfaceBackendName(backend));
+            const auto reflected = reflectShaderInterface(json, backend, "entryArrayMain", InterfaceStage::compute);
+            INFO((reflected ? std::string{} : reflected.error()));
+            REQUIRE(reflected.has_value());
+            CHECK(reflected->bindings == expected);
+        }
+    }
+}
+
 TEST_CASE("Shader interface reflection reads vertex input locations per backend",
           "[size:small][rhi][tooling][shader-interface]")
 {

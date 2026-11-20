@@ -282,9 +282,26 @@ namespace rachis::shader_tool
                 return parameters;
             }
             appendParameters(entry->find("parameters"), true, parameters);
-            if (const auto* scope = entry->find("scope"); scope != nullptr)
+            const auto entryCount = parameters.size();
+            const auto* scope = entry->find("scope");
+            const auto* scopeList = scope != nullptr ? scope->find("parameters") : nullptr;
+            if (scopeList == nullptr || scopeList->asArray() == nullptr)
             {
-                appendParameters(scope->find("parameters"), true, parameters);
+                return parameters;
+            }
+            for (const auto& parameter : *scopeList->asArray())
+            {
+                const auto name = jsonString(parameter.find("name"));
+                const auto listed =
+                    !name.empty() && std::ranges::any_of(std::span(parameters).subspan(0, entryCount),
+                                                         [&](const InterfaceParameter& existing) {
+                                                             return existing.entryParameter &&
+                                                                    jsonString(existing.node->find("name")) == name;
+                                                         });
+                if (!listed)
+                {
+                    parameters.push_back(InterfaceParameter{.node = &parameter, .entryParameter = true});
+                }
             }
             return parameters;
         }
