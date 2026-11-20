@@ -462,6 +462,27 @@ namespace rachis::vulkan
             return {};
         }
 
+        [[nodiscard]] Status retainBindingSetLeases(VulkanResourceAllocator& resources,
+                                                    VulkanCommandBuffer& commandBuffer,
+                                                    std::span<const VulkanNativeBindingSet> resolvedSets)
+        {
+            if (std::ranges::all_of(resolvedSets, [](const auto& set) noexcept { return set.swapchainLeases.empty(); }))
+            {
+                return retainAccelerationStructureConsumers(commandBuffer, resolvedSets);
+            }
+            const auto mark = resources.swapchainImageReferenceMark(commandBuffer.native());
+            auto retained = retainSwapchainImageLeases(resources, commandBuffer, resolvedSets);
+            if (retained)
+            {
+                retained = retainAccelerationStructureConsumers(commandBuffer, resolvedSets);
+            }
+            if (!retained)
+            {
+                resources.rollBackSwapchainImages(commandBuffer.native(), mark);
+            }
+            return retained;
+        }
+
         [[nodiscard]] Result<VulkanCommandUses*> reserveBindingSetUses(VulkanCommandBuffer& commandBuffer,
                                                                        std::size_t setCount)
         {
@@ -548,13 +569,9 @@ namespace rachis::vulkan
             {
                 return std::unexpected(std::move(uses.error()));
             }
-            if (auto leases = retainSwapchainImageLeases(*resources, commandBuffer, scratch.resolvedSets); !leases)
+            if (auto leases = retainBindingSetLeases(*resources, commandBuffer, scratch.resolvedSets); !leases)
             {
                 return leases;
-            }
-            if (auto consumers = retainAccelerationStructureConsumers(commandBuffer, scratch.resolvedSets); !consumers)
-            {
-                return consumers;
             }
             retainBindingSetUses(**uses, scratch.resolvedSets);
 
