@@ -392,12 +392,11 @@ namespace rachis::vulkan
         {
             std::uint32_t domainCount = 0;
             auto counted = getCalibrateableDomains(physical, &domainCount, nullptr);
-            std::vector<VkTimeDomainEXT> domains;
-            if (counted == VK_SUCCESS && domainCount > 0)
+            std::vector<VkTimeDomainEXT> domains(counted == VK_SUCCESS ? domainCount : 0U);
+            if (!domains.empty())
             {
-                domains.resize(domainCount);
                 counted = getCalibrateableDomains(physical, &domainCount, domains.data());
-                domains.resize(counted == VK_SUCCESS || counted == VK_INCOMPLETE ? domainCount : 0);
+                domains.resize(counted == VK_SUCCESS || counted == VK_INCOMPLETE ? domainCount : 0U);
             }
             const bool hasDevice = std::ranges::find(domains, VK_TIME_DOMAIN_DEVICE_EXT) != domains.end();
             const bool hasHost = std::ranges::find(domains, hostDomain) != domains.end();
