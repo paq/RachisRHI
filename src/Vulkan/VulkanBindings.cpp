@@ -2763,6 +2763,7 @@ namespace rachis::vulkan
             .setLayout = (*found)->keepAlive != nullptr ? (*found)->keepAlive->setLayout : VK_NULL_HANDLE,
             .entries = (*found)->entries,
             .dynamicBufferCount = (*found)->dynamicBufferCount,
+            .variableDescriptorCapacity = (*found)->variableDescriptorCapacity,
         };
     }
 
@@ -2854,6 +2855,7 @@ namespace rachis::vulkan
                 .setLayout = set->keepAlive != nullptr ? set->keepAlive->setLayout : VK_NULL_HANDLE,
                 .entries = set->entries,
                 .dynamicBufferCount = set->dynamicBufferCount,
+                .variableDescriptorCapacity = set->variableDescriptorCapacity,
             });
         }
         native.drawIndex = (*found)->drawIndex;

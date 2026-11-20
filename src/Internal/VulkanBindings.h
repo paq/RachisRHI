@@ -67,6 +67,7 @@ namespace rachis::vulkan
         VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
         std::vector<BindingLayoutEntry> entries;
         std::uint32_t dynamicBufferCount = 0;
+        std::uint32_t variableDescriptorCapacity = 0;
     };
 
     struct VulkanNativeBindingSet final
