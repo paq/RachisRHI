@@ -5049,6 +5049,58 @@ TEST_CASE("Vulkan pipeline layouts hold update-after-bind sets to the update-aft
     gDescriptorMock = nullptr;
 }
 
+TEST_CASE("Vulkan pipeline layouts with update-after-bind sets hold dynamic buffers to the larger dynamic limit",
+          "[size:small][rhi][vulkan][vuid][bindings-mock]")
+{
+    MockDescriptorDispatch mock;
+    gDescriptorMock = &mock;
+    const auto table = makeMockDescriptorTable();
+    rachis::DeviceCapabilities caps{};
+    caps.partiallyBoundBindingArrays = true;
+    caps.updateAfterBindBindingArrays = true;
+    const rachis::vulkan::VulkanDescriptorLimits regular{
+        .maxDescriptorSetUniformBuffersDynamic = 2,
+        .maxDescriptorSetStorageBuffersDynamic = 2,
+    };
+    const rachis::vulkan::VulkanDescriptorLimits noUpdateAfterBindDynamic{
+        .maxDescriptorSetUniformBuffersDynamic = 0,
+        .maxDescriptorSetStorageBuffersDynamic = 0,
+    };
+    const rachis::vulkan::VulkanDescriptorLimits largerUpdateAfterBindDynamic{
+        .maxDescriptorSetUniformBuffersDynamic = 8,
+        .maxDescriptorSetStorageBuffersDynamic = 8,
+    };
+    const auto updateAfterBindFlags = rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind;
+
+    const auto check = [&](const rachis::vulkan::VulkanDescriptorLimits& updateAfterBind,
+                           rachis::BindingType type,
+                           std::uint32_t count) {
+        rachis::vulkan::VulkanBindingManager bindings;
+        bindings.initialize(fakeHandle<VkDevice>(0x47), &table, caps, nullptr, {}, regular, updateAfterBind);
+        const std::array dynamicEntries{rachis::BindingLayoutEntry{0, type, rachis::ShaderStage::compute, count}};
+        auto dynamicLayout = bindings.createBindingLayout({.entries = dynamicEntries});
+        REQUIRE(dynamicLayout.has_value());
+        const std::array textureEntries{rachis::BindingLayoutEntry{
+            0, rachis::BindingType::sampledTexture, rachis::ShaderStage::compute, 4, updateAfterBindFlags}};
+        auto textureLayout = bindings.createBindingLayout({.entries = textureEntries});
+        REQUIRE(textureLayout.has_value());
+        const std::array sets{*dynamicLayout, *textureLayout};
+        auto created = bindings.createPipelineLayout({.bindingLayouts = sets});
+        bindings.shutdown();
+        return created.has_value() ? std::optional<rachis::ErrorCode>{} : std::optional{created.error().code};
+    };
+
+    for (const auto type : {rachis::BindingType::dynamicUniformBuffer, rachis::BindingType::dynamicStorageBuffer})
+    {
+        INFO("binding type " << static_cast<int>(type));
+        CHECK_FALSE(check(noUpdateAfterBindDynamic, type, 2).has_value());
+        CHECK(check(noUpdateAfterBindDynamic, type, 3) == rachis::ErrorCode::unsupported);
+        CHECK_FALSE(check(largerUpdateAfterBindDynamic, type, 2).has_value());
+        CHECK(check(largerUpdateAfterBindDynamic, type, 3) == rachis::ErrorCode::unsupported);
+    }
+    gDescriptorMock = nullptr;
+}
+
 namespace
 {
 

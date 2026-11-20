@@ -813,6 +813,19 @@ namespace rachis::vulkan
                                        [&](std::uint64_t count) { return count <= limits.maxPerStageResources; });
         }
 
+        [[nodiscard]] constexpr VulkanDescriptorLimits allSetsUpdateAfterBindLimits(
+            const VulkanDescriptorLimits& regular, const VulkanDescriptorLimits& updateAfterBind) noexcept
+        {
+            auto limits = updateAfterBind;
+            limits.maxDescriptorSetUniformBuffersDynamic =
+                (std::max)(regular.maxDescriptorSetUniformBuffersDynamic,
+                           updateAfterBind.maxDescriptorSetUniformBuffersDynamic);
+            limits.maxDescriptorSetStorageBuffersDynamic =
+                (std::max)(regular.maxDescriptorSetStorageBuffersDynamic,
+                           updateAfterBind.maxDescriptorSetStorageBuffersDynamic);
+            return limits;
+        }
+
         [[nodiscard]] constexpr std::uint64_t remainingDescriptors(std::uint32_t limit, std::uint64_t used) noexcept
         {
             return used >= limit ? 0 : limit - used;
@@ -2639,10 +2652,12 @@ namespace rachis::vulkan
                 }
             }
         }
-        const bool withinLimits = anyUpdateAfterBind
-                                      ? withinDescriptorLimits(withoutUpdateAfterBind, descriptorLimits_) &&
-                                            withinDescriptorLimits(totals, updateAfterBindLimits_)
-                                      : withinDescriptorLimits(totals, descriptorLimits_);
+        const bool withinLimits =
+            anyUpdateAfterBind
+                ? withinDescriptorLimits(withoutUpdateAfterBind, descriptorLimits_) &&
+                      withinDescriptorLimits(totals,
+                                             allSetsUpdateAfterBindLimits(descriptorLimits_, updateAfterBindLimits_))
+                : withinDescriptorLimits(totals, descriptorLimits_);
         if (!withinLimits)
         {
             return std::unexpected(Error{
