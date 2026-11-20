@@ -2264,6 +2264,44 @@ using namespace metal;
     CHECK(plain.error().contains("The resource 'farTexture' is in binding set 6"));
 }
 
+TEST_CASE("ShaderBinaryTool finds Metal vertex functions only in code, not in #line file names or comments",
+          "[size:small][rhi][shader][tooling]")
+{
+    constexpr std::string_view compute = R"msl(#include <metal_stdlib>
+using namespace metal;
+#line 1 "probe[[vertex]](draft).slang"
+// [[vertex]] Out_0 fake(uint id_0 [[vertex_id]]).
+static_assert(sizeof(uint) == 4, "[[vertex]](x).");
+[[kernel]] void probeMain(uint device* outputs_0 [[buffer(0)]])
+{
+    *outputs_0 = 1U;
+}
+)msl";
+    const auto unchanged = rachis::shader_tool::rebaseMetalVertexIds(compute);
+    INFO((unchanged.has_value() ? std::string{} : unchanged.error()));
+    REQUIRE(unchanged.has_value());
+    CHECK_FALSE(unchanged->has_value());
+
+    constexpr std::string_view vertex = "#line 1 \"probe[[vertex]](draft).slang\"\n"
+                                        "[[vertex]] Out_0 drawMain(uint vertexId_0 [[vertex_id]])\n"
+                                        "{\n"
+                                        "#line 3 \"probe[[vertex]](draft).slang\"\n"
+                                        "    return Out_0{float(vertexId_0)};\n"
+                                        "}\n";
+    const auto rebased = rachis::shader_tool::rebaseMetalVertexIds(vertex);
+    INFO((rebased.has_value() ? std::string{} : rebased.error()));
+    REQUIRE(rebased.has_value());
+    REQUIRE(rebased->has_value());
+    CHECK(**rebased == "#line 1 \"probe[[vertex]](draft).slang\"\n"
+                       "[[vertex]] Out_0 drawMain(uint rachis_vertex_id [[vertex_id]], uint rachis_base_vertex "
+                       "[[base_vertex]])\n"
+                       "{\n"
+                       "    uint vertexId_0 = rachis_vertex_id - rachis_base_vertex;\n"
+                       "#line 3 \"probe[[vertex]](draft).slang\"\n"
+                       "    return Out_0{float(vertexId_0)};\n"
+                       "}\n");
+}
+
 TEST_CASE("ShaderBinaryTool gives an unbounded array the buffer slot its reflection reports",
           "[size:small][rhi][shader][tooling]")
 {
