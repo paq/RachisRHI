@@ -148,6 +148,7 @@ namespace
     constexpr std::uint32_t spirvOpSpecConstantTrue = 48;
     constexpr std::uint32_t spirvOpSpecConstant = 50;
     constexpr std::uint32_t spirvOpSpecConstantComposite = 51;
+    constexpr std::uint32_t spirvOpSpecConstantOp = 52;
     constexpr std::uint32_t spirvOpFunction = 54;
     constexpr std::uint32_t spirvOpFunctionEnd = 56;
     constexpr std::uint32_t spirvOpFunctionCall = 57;
@@ -162,6 +163,7 @@ namespace
     constexpr std::uint32_t spirvOpConvertFToU = 109;
     constexpr std::uint32_t spirvOpUConvert = 113;
     constexpr std::uint32_t spirvOpBitcast = 124;
+    constexpr std::uint32_t spirvOpIAdd = 128;
     constexpr std::uint32_t spirvOpFAdd = 129;
     constexpr std::uint32_t spirvOpSelect = 169;
     constexpr std::uint32_t spirvOpAtomicIAdd = 234;
@@ -424,6 +426,45 @@ namespace
             spirvInstruction(specialized ? spirvOpSpecConstant : spirvOpConstant, {uintTypeId, widthId, 8U}),
             spirvInstruction(specialized ? spirvOpSpecConstantComposite : spirvOpConstantComposite,
                              {uint3TypeId, workgroupSizeId, widthId, oneId, oneId}),
+            emptyComputeFunction(voidTypeId, mainId, functionTypeId, labelId),
+        });
+    }
+
+    [[nodiscard]] std::vector<std::byte> computeModuleWithVectorWorkgroupSizeOperation()
+    {
+        constexpr std::uint32_t mainId = 1;
+        constexpr std::uint32_t voidTypeId = 2;
+        constexpr std::uint32_t functionTypeId = 3;
+        constexpr std::uint32_t labelId = 4;
+        constexpr std::uint32_t uintTypeId = 5;
+        constexpr std::uint32_t uint3TypeId = 6;
+        constexpr std::uint32_t zeroId = 7;
+        constexpr std::uint32_t oneId = 8;
+        constexpr std::uint32_t widthId = 9;
+        constexpr std::uint32_t baseId = 10;
+        constexpr std::uint32_t offsetId = 11;
+        constexpr std::uint32_t workgroupSizeId = 12;
+        constexpr std::uint32_t idBound = 13;
+        constexpr std::uint32_t spirvBuiltInWorkgroupSize = 25;
+        const std::vector<std::uint32_t> header{spirvMagicNumber, spirvVersion1_0, 0U, idBound, 0U};
+        return joinSpirvBytes({
+            header,
+            spirvInstruction(spirvOpCapability, {spirvCapabilityShader}),
+            spirvInstruction(spirvOpMemoryModel, {spirvAddressingLogical, spirvMemoryModelGlsl450}),
+            spirvInstructionWithString(spirvOpEntryPoint, {spirvExecutionModelGlCompute, mainId}, "main"),
+            spirvInstruction(spirvOpExecutionMode, {mainId, spirvExecutionModeLocalSize, 17U, 1U, 1U}),
+            spirvInstruction(spirvOpDecorate, {widthId, spirvDecorationSpecId, 0U}),
+            spirvInstruction(spirvOpDecorate, {workgroupSizeId, spirvDecorationBuiltIn, spirvBuiltInWorkgroupSize}),
+            spirvInstruction(spirvOpTypeVoid, {voidTypeId}),
+            spirvInstruction(spirvOpTypeFunction, {functionTypeId, voidTypeId}),
+            spirvInstruction(spirvOpTypeInt, {uintTypeId, 32U, 0U}),
+            spirvInstruction(spirvOpTypeVector, {uint3TypeId, uintTypeId, 3U}),
+            spirvInstruction(spirvOpConstant, {uintTypeId, zeroId, 0U}),
+            spirvInstruction(spirvOpConstant, {uintTypeId, oneId, 1U}),
+            spirvInstruction(spirvOpSpecConstant, {uintTypeId, widthId, 16U}),
+            spirvInstruction(spirvOpSpecConstantComposite, {uint3TypeId, baseId, widthId, oneId, oneId}),
+            spirvInstruction(spirvOpConstantComposite, {uint3TypeId, offsetId, oneId, zeroId, zeroId}),
+            spirvInstruction(spirvOpSpecConstantOp, {uint3TypeId, workgroupSizeId, spirvOpIAdd, baseId, offsetId}),
             emptyComputeFunction(voidTypeId, mainId, functionTypeId, labelId),
         });
     }
@@ -1525,6 +1566,29 @@ TEST_CASE("Vulkan shader reflection gives the WorkgroupSize built-in precedence 
         UNSCOPED_INFO(effective.error().message);
     }
     CHECK(effective.has_value());
+}
+
+TEST_CASE("Vulkan shader reflection evaluates a WorkgroupSize built-in computed by a vector OpSpecConstantOp",
+          "[size:small][rhi][vulkan][shader][module][reflection]")
+{
+    rachis::DeviceCapabilities capabilities{};
+    capabilities.limits.maxComputeWorkgroupSize = {1024, 1024, 64};
+    capabilities.limits.maxComputeWorkgroupInvocations = 1024;
+    const auto bytecode = computeModuleWithVectorWorkgroupSizeOperation();
+
+    auto matching = createWithoutDevice(
+        bytecode, capabilities, rachis::ShaderStage::compute, {.workgroupSize = rachis::ShaderWorkgroupSize{17, 1, 1}});
+    if (!matching)
+    {
+        UNSCOPED_INFO(matching.error().message);
+    }
+    CHECK(matching.has_value());
+
+    auto mismatched = createWithoutDevice(
+        bytecode, capabilities, rachis::ShaderStage::compute, {.workgroupSize = rachis::ShaderWorkgroupSize{16, 1, 1}});
+    REQUIRE_FALSE(mismatched.has_value());
+    CHECK(mismatched.error().code == rachis::ErrorCode::invalidArgument);
+    CHECK(mismatched.error().message.find("workgroup size") != std::string::npos);
 }
 
 TEST_CASE("Vulkan shader modules need the descriptor-indexing features their array capabilities use",
