@@ -555,6 +555,51 @@ TEST_CASE("D3D12 copies need a copy layout or common on every texture subresourc
     CHECK(counts.corruptions == 0);
 }
 
+TEST_CASE("D3D12 a legacy-barrier mipmap generation that runs out of memory leaves no layout tracking behind",
+          "[size:medium][rhi][d3d12][warp][barrier][layout][mipmap][failure]")
+{
+    const ForceLegacyBarriers forced(true);
+    auto desc = rachis::test::d3d12WarpDeviceDesc();
+    desc.diagnosticCallback = &printDiagnostic;
+    auto created = rachis::createDevice(desc);
+    REQUIRE(created.has_value());
+    auto device = std::move(*created);
+    REQUIRE_FALSE(rachis::test::requireCapabilities(device).enhancedBarriers);
+
+    auto texture = device.createTexture({
+        .width = 8,
+        .height = 8,
+        .mipLevels = 2,
+        .format = rachis::Format::rgba8Unorm,
+        .usage = rachis::TextureUsage::copySource | rachis::TextureUsage::copyDestination |
+                 rachis::TextureUsage::sampled | rachis::TextureUsage::storage,
+        .label = "D3D12 failed mipmap texture",
+    });
+    REQUIRE(texture.has_value());
+    const rachis::TextureMipmapGeneration generation{
+        .texture = *texture,
+        .baseLayout = TextureLayout::common,
+        .finalLayout = TextureLayout::shaderResource,
+    };
+
+    auto command = acquire(device);
+    const auto before = rachis::d3d12::test::commandDependencySnapshot(command);
+    REQUIRE(before.has_value());
+    rachis::d3d12::test::nextLegacyOrderedStateCopyFailure().store(true, std::memory_order_relaxed);
+    const auto failed = device.generateMipmaps(command, generation);
+    rachis::d3d12::test::nextLegacyOrderedStateCopyFailure().store(false, std::memory_order_relaxed);
+    REQUIRE_FALSE(failed.has_value());
+    CHECK(failed.error().code == rachis::ErrorCode::outOfMemory);
+    CHECK(rachis::d3d12::test::commandDependencySnapshot(command) == before);
+
+    REQUIRE(device.generateMipmaps(command, generation).has_value());
+    submitAndWait(device, std::move(command));
+    REQUIRE(device.destroyTexture(*texture).has_value());
+    const auto counts = device.diagnosticCounts();
+    CHECK(counts.errors == 0);
+    CHECK(counts.corruptions == 0);
+}
+
 TEST_CASE("D3D12 a discard recorded after a storage clear starts from the clear's layout",
           "[size:medium][rhi][d3d12][warp][barrier][layout][clear]")
 {

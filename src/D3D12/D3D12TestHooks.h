@@ -146,6 +146,12 @@ namespace rachis::d3d12::test
         return s_value;
     }
 
+    [[nodiscard]] inline std::atomic_bool& nextLegacyOrderedStateCopyFailure() noexcept
+    {
+        static std::atomic_bool s_value = false;
+        return s_value;
+    }
+
     [[nodiscard]] inline std::atomic_bool& nextPipelineCacheWithoutLibrary1() noexcept
     {
         static std::atomic_bool s_value = false;

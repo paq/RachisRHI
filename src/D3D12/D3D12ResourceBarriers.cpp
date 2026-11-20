@@ -1732,6 +1732,10 @@ namespace rachis::d3d12
                 auto found = pending_.find(useIndex);
                 if (found == pending_.end())
                 {
+                    if (test::nextLegacyOrderedStateCopyFailure().exchange(false, std::memory_order_relaxed))
+                    {
+                        throw std::bad_alloc{};
+                    }
                     found = pending_.emplace(useIndex, (*recording_)[useIndex]).first;
                 }
                 auto change = trackedLegacyStateChange(barrier, texture, range, queueType, found->second, useIndex);
@@ -2649,6 +2653,7 @@ namespace rachis::d3d12
         }
         catch (const std::bad_alloc&)
         {
+            result.impl_->insertedTo = (**layoutRecording).uses().size();
             return std::unexpected(Error{
                 ErrorCode::outOfMemory,
                 0,
