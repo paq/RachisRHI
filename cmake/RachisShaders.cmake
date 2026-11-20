@@ -59,7 +59,10 @@
 #                                                     PipelineLayoutDesc::drawIndex
 #   ShaderModuleDesc moduleDesc(Backend, label)       stage, bytecode, entry point, interface
 #
-# and the same data per backend in its d3d12, vulkan, and metal namespaces. Each backend namespace
+# and the same data per backend in its d3d12, vulkan, and metal namespaces. Resources declared as
+# entry-point parameters are part of the interface. Slang reflects their bindings from the start of
+# the entry point's own parameters, so keep global resources out of the set they start in; on
+# Direct3D 12 their register space comes from the DXIL. Each backend namespace
 # also has a C++ struct for every constant buffer, push-constant block, and structured-buffer
 # element the shader uses, laid out as that backend lays it out, with static_assert checks of
 # every member's offset and of the size and alignment. Direct3D 12 and Metal layouts come from

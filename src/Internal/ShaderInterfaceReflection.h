@@ -49,6 +49,7 @@ namespace rachis::shader_tool
         std::uint32_t binding = 0;
         std::string_view type;
         std::uint32_t count = 1;
+        bool entryParameter = false;
 
         [[nodiscard]] bool operator==(const ReflectedBinding&) const = default;
     };
@@ -140,6 +141,12 @@ namespace rachis::shader_tool
         return "compute";
     }
 
+    [[nodiscard]] inline std::string drawIndexStageError(InterfaceStage stage, std::string_view entryPoint)
+    {
+        return "The " + std::string(interfaceStageName(stage)) + " entry point '" + std::string(entryPoint) +
+               "' reads the draw index, which only vertex, task, and mesh shaders can read.";
+    }
+
     [[nodiscard]] constexpr std::string_view interfaceBackendName(InterfaceBackend backend) noexcept
     {
         switch (backend)
@@ -193,38 +200,104 @@ namespace rachis::shader_tool
             {
                 return nullptr;
             }
-            const auto& list = *entries->asArray();
-            for (const auto& entry : list)
+            for (const auto& entry : *entries->asArray())
             {
                 if (jsonString(entry.find("name")) == entryPoint)
                 {
                     return &entry;
                 }
             }
-            return list.size() == 1 ? &list.front() : nullptr;
+            return nullptr;
         }
 
-        [[nodiscard]] inline std::optional<std::vector<std::string>> usedParameterNames(const JsonValue& entry)
+        [[nodiscard]] inline bool isUsedRecord(const JsonValue& record)
+        {
+            const auto* used = record.find("used");
+            if (used == nullptr)
+            {
+                return false;
+            }
+            if (const auto* flag = used->asBool(); flag != nullptr)
+            {
+                return *flag;
+            }
+            const auto value = used->asUint32();
+            return value.has_value() && *value != 0;
+        }
+
+        struct ParameterUsage final
+        {
+            std::vector<std::string> listed;
+            std::vector<std::string> used;
+        };
+
+        [[nodiscard]] inline std::optional<ParameterUsage> parameterUsage(const JsonValue& entry)
         {
             const auto* bindings = entry.find("bindings");
             if (bindings == nullptr || bindings->asArray() == nullptr)
             {
                 return std::nullopt;
             }
-            std::vector<std::string> used;
+            ParameterUsage usage;
             for (const auto& item : *bindings->asArray())
             {
+                const auto name = jsonString(item.find("name"));
+                usage.listed.emplace_back(name);
                 const auto records = bindingRecords(item);
-                const bool isUsed = std::ranges::any_of(records, [](const JsonValue* record) {
-                    const auto flag = jsonUint32(*record, "used");
-                    return flag.has_value() && *flag != 0;
-                });
-                if (isUsed)
+                if (std::ranges::any_of(records, [](const JsonValue* record) { return isUsedRecord(*record); }))
                 {
-                    used.emplace_back(jsonString(item.find("name")));
+                    usage.used.emplace_back(name);
                 }
             }
-            return used;
+            return usage;
+        }
+
+        struct InterfaceParameter final
+        {
+            const JsonValue* node = nullptr;
+            bool entryParameter = false;
+        };
+
+        inline void appendParameters(const JsonValue* list,
+                                     bool entryParameter,
+                                     std::vector<InterfaceParameter>& parameters)
+        {
+            if (list == nullptr || list->asArray() == nullptr)
+            {
+                return;
+            }
+            for (const auto& parameter : *list->asArray())
+            {
+                parameters.push_back(InterfaceParameter{.node = &parameter, .entryParameter = entryParameter});
+            }
+        }
+
+        [[nodiscard]] inline std::vector<InterfaceParameter> interfaceParameters(const JsonValue& root,
+                                                                                 const JsonValue* entry)
+        {
+            std::vector<InterfaceParameter> parameters;
+            appendParameters(root.find("parameters"), false, parameters);
+            if (entry == nullptr)
+            {
+                return parameters;
+            }
+            appendParameters(entry->find("parameters"), true, parameters);
+            if (const auto* scope = entry->find("scope"); scope != nullptr)
+            {
+                appendParameters(scope->find("parameters"), true, parameters);
+            }
+            return parameters;
+        }
+
+        [[nodiscard]] inline bool isParameterUsed(const std::optional<ParameterUsage>& usage,
+                                                  const std::string& name,
+                                                  bool entryParameter)
+        {
+            if (!usage.has_value() || std::ranges::find(usage->used, name) != usage->used.end())
+            {
+                return true;
+            }
+            return entryParameter && std::ranges::find(usage->listed, name) == usage->listed.end();
         }
 
         [[nodiscard]] inline bool isPushConstantParameter(const JsonValue& parameter, InterfaceBackend backend)
@@ -511,9 +584,14 @@ namespace rachis::shader_tool
                 const auto& current = bindings[index];
                 if (previous.set == current.set && previous.binding == current.binding)
                 {
-                    return std::unexpected("The resources '" + previous.name + "' and '" + current.name +
-                                           "' share set " + std::to_string(current.set) + " binding " +
-                                           std::to_string(current.binding) + ".");
+                    return std::unexpected(
+                        "The resources '" + previous.name + "' and '" + current.name + "' share set " +
+                        std::to_string(current.set) + " binding " + std::to_string(current.binding) + "." +
+                        (previous.entryParameter || current.entryParameter
+                             ? " Slang reflects the bindings of entry-point parameters from the start of the entry "
+                               "point's own parameters, so keep global resources out of that set or declare the "
+                               "resource at global scope."
+                             : ""));
                 }
             }
             return {};
@@ -534,78 +612,78 @@ namespace rachis::shader_tool
         {
             return std::unexpected("The Slang reflection JSON has no entry point '" + std::string(entryPoint) + "'.");
         }
-        const auto used = detail::usedParameterNames(*entry);
+        const auto usage = detail::parameterUsage(*entry);
 
         ReflectedInterface reflected;
-        if (const auto* parameters = root->find("parameters");
-            parameters != nullptr && parameters->asArray() != nullptr)
+        for (const auto& [node, entryParameter] : detail::interfaceParameters(*root, entry))
         {
-            for (const auto& parameter : *parameters->asArray())
+            const auto& parameter = *node;
+            const std::string name(detail::jsonString(parameter.find("name")));
+            if (!detail::isParameterUsed(usage, name, entryParameter))
             {
-                const std::string name(detail::jsonString(parameter.find("name")));
-                if (used.has_value() && std::ranges::find(*used, name) == used->end())
+                continue;
+            }
+            if (detail::isPushConstantParameter(parameter, backend))
+            {
+                auto bytes = detail::pushConstantBlockBytes(parameter);
+                if (!bytes)
                 {
-                    continue;
+                    return std::unexpected(std::move(bytes.error()));
                 }
-                if (detail::isPushConstantParameter(parameter, backend))
-                {
-                    auto bytes = detail::pushConstantBlockBytes(parameter);
-                    if (!bytes)
-                    {
-                        return std::unexpected(std::move(bytes.error()));
-                    }
-                    reflected.pushConstantBytes = std::max(reflected.pushConstantBytes, *bytes);
-                    reflected.dataResources.push_back(DataResource{
-                        .name = name,
-                        .typeName = detail::dataTypeName(parameter, name),
-                        .usage = DataUsage::pushConstants,
-                    });
-                    continue;
-                }
-                const auto slot = detail::resourceSlot(parameter, backend);
-                const auto drawIndex = detail::classifyDrawIndexSpace(parameter, backend, slot);
-                if (!drawIndex)
-                {
-                    return std::unexpected(drawIndex.error());
-                }
-                if (*drawIndex)
-                {
-                    reflected.drawIndex = true;
-                    continue;
-                }
-                if (!slot.has_value())
-                {
-                    if (const auto* binding = parameter.find("binding");
-                        binding != nullptr && detail::jsonString(binding->find("kind")) == "uniform")
-                    {
-                        return std::unexpected("The global '" + name +
-                                               "' is a loose uniform. Put it in a constant buffer.");
-                    }
-                    continue;
-                }
-                auto shape = detail::classifyResource(parameter);
-                if (!shape)
-                {
-                    return std::unexpected(std::move(shape.error()));
-                }
-                reflected.bindings.push_back(ReflectedBinding{
+                reflected.pushConstantBytes = std::max(reflected.pushConstantBytes, *bytes);
+                reflected.dataResources.push_back(DataResource{
                     .name = name,
+                    .typeName = detail::dataTypeName(parameter, name),
+                    .usage = DataUsage::pushConstants,
+                    .entryParameter = entryParameter,
+                });
+                continue;
+            }
+            const auto slot = detail::resourceSlot(parameter, backend);
+            const auto drawIndex = detail::classifyDrawIndexSpace(parameter, backend, slot);
+            if (!drawIndex)
+            {
+                return std::unexpected(drawIndex.error());
+            }
+            if (*drawIndex)
+            {
+                reflected.drawIndex = true;
+                continue;
+            }
+            if (!slot.has_value())
+            {
+                if (const auto* binding = parameter.find("binding");
+                    binding != nullptr && detail::jsonString(binding->find("kind")) == "uniform")
+                {
+                    return std::unexpected(
+                        std::string(entryParameter ? "The entry-point parameter '" : "The global '") + name +
+                        "' is a loose uniform. Put it in a constant buffer.");
+                }
+                continue;
+            }
+            auto shape = detail::classifyResource(parameter);
+            if (!shape)
+            {
+                return std::unexpected(std::move(shape.error()));
+            }
+            reflected.bindings.push_back(ReflectedBinding{
+                .name = name,
+                .set = slot->set,
+                .binding = slot->binding,
+                .type = shape->type,
+                .count = shape->count,
+                .entryParameter = entryParameter,
+            });
+            if (const auto data = detail::dataUsage(parameter, shape->type); data.has_value() && shape->count == 1)
+            {
+                reflected.dataResources.push_back(DataResource{
+                    .name = name,
+                    .typeName = detail::dataTypeName(parameter, name),
+                    .usage = *data,
                     .set = slot->set,
                     .binding = slot->binding,
-                    .type = shape->type,
-                    .count = shape->count,
+                    .entryParameter = entryParameter,
                 });
-                if (const auto usage = detail::dataUsage(parameter, shape->type);
-                    usage.has_value() && shape->count == 1)
-                {
-                    reflected.dataResources.push_back(DataResource{
-                        .name = name,
-                        .typeName = detail::dataTypeName(parameter, name),
-                        .usage = *usage,
-                        .set = slot->set,
-                        .binding = slot->binding,
-                    });
-                }
             }
         }
         if (auto sorted = detail::sortBindings(reflected.bindings); !sorted)
@@ -682,6 +760,7 @@ namespace rachis::shader_tool
 
     [[nodiscard]] inline std::expected<void, std::string> attachSlangDataLayouts(ReflectedInterface& reflected,
                                                                                  std::string_view layoutJson,
+                                                                                 std::string_view entryPoint,
                                                                                  bool metal)
     {
         auto root = detail::JsonParser(layoutJson).parseDocument();
@@ -689,26 +768,18 @@ namespace rachis::shader_tool
         {
             return std::unexpected("The Slang layout reflection does not parse: " + root.error());
         }
-        const auto* parameters = root->find("parameters");
+        const auto parameters = detail::interfaceParameters(*root, detail::selectEntryPoint(*root, entryPoint));
         for (const auto& resource : reflected.dataResources)
         {
-            const detail::JsonValue* match = nullptr;
-            if (parameters != nullptr && parameters->asArray() != nullptr)
-            {
-                for (const auto& parameter : *parameters->asArray())
-                {
-                    if (detail::jsonString(parameter.find("name")) == resource.name)
-                    {
-                        match = &parameter;
-                        break;
-                    }
-                }
-            }
-            if (match == nullptr)
+            const auto match = std::ranges::find_if(parameters, [&](const detail::InterfaceParameter& parameter) {
+                return parameter.entryParameter == resource.entryParameter &&
+                       detail::jsonString(parameter.node->find("name")) == resource.name;
+            });
+            if (match == parameters.end())
             {
                 return std::unexpected("The layout reflection has no resource '" + resource.name + "'.");
             }
-            auto block = slangDataBlock(*match, resource, metal);
+            auto block = slangDataBlock(*match->node, resource, metal);
             if (!block)
             {
                 return std::unexpected(std::move(block.error()));
@@ -732,10 +803,26 @@ namespace rachis::shader_tool
         return {};
     }
 
-    [[nodiscard]] inline std::expected<bool, std::string> dxilReadsDrawIndex(std::span<const std::byte> container)
+    struct DxilResourceRange final
+    {
+        std::uint32_t type = 0;
+        std::uint32_t space = 0;
+        std::uint32_t lowerBound = 0;
+        std::uint32_t upperBound = 0;
+    };
+
+    inline constexpr std::uint32_t dxilSamplerType = 1;
+    inline constexpr std::uint32_t dxilConstantBufferType = 2;
+    inline constexpr std::uint32_t dxilFirstShaderResourceType = 3;
+    inline constexpr std::uint32_t dxilLastShaderResourceType = 5;
+    inline constexpr std::uint32_t dxilFirstUnorderedAccessType = 6;
+    inline constexpr std::uint32_t dxilLastUnorderedAccessType = 9;
+    inline constexpr std::uint32_t dxilUnboundedUpperBound = 0xFFFFFFFFU;
+
+    [[nodiscard]] inline std::expected<std::vector<DxilResourceRange>, std::string> dxilResourceRanges(
+        std::span<const std::byte> container)
     {
         constexpr std::size_t headerSize = 32;
-        constexpr std::uint32_t constantBufferType = 2;
         constexpr std::uint32_t bindInfoSize = 16;
         const auto readU32 = [](std::span<const std::byte> bytes, std::size_t offset) {
             std::uint32_t value = 0;
@@ -779,9 +866,10 @@ namespace rachis::shader_tool
                 return std::unexpected("The DXIL PSV0 part is truncated.");
             }
             const auto resources = readU32(data, 4 + infoSize);
+            std::vector<DxilResourceRange> ranges;
             if (resources == 0)
             {
-                return false;
+                return ranges;
             }
             const std::size_t table = 4 + infoSize + 4;
             if (data.size() - table < sizeof(std::uint32_t))
@@ -793,18 +881,157 @@ namespace rachis::shader_tool
             {
                 return std::unexpected("The DXIL PSV0 resource table is truncated.");
             }
+            ranges.reserve(resources);
             for (std::uint32_t resource = 0; resource < resources; ++resource)
             {
                 const auto record = table + 4 + resource * recordSize;
-                if (readU32(data, record) == constantBufferType && readU32(data, record + 4) == drawIndexSpace &&
-                    readU32(data, record + 8) <= drawIndexRegister && drawIndexRegister <= readU32(data, record + 12))
-                {
-                    return true;
-                }
+                ranges.push_back(DxilResourceRange{
+                    .type = readU32(data, record),
+                    .space = readU32(data, record + 4),
+                    .lowerBound = readU32(data, record + 8),
+                    .upperBound = readU32(data, record + 12),
+                });
             }
-            return false;
+            return ranges;
         }
         return std::unexpected("The DXIL container has no PSV0 part.");
+    }
+
+    [[nodiscard]] inline std::expected<bool, std::string> dxilReadsDrawIndex(std::span<const std::byte> container)
+    {
+        const auto ranges = dxilResourceRanges(container);
+        if (!ranges)
+        {
+            return std::unexpected(ranges.error());
+        }
+        return std::ranges::any_of(*ranges, [](const DxilResourceRange& range) {
+            return range.type == dxilConstantBufferType && range.space == drawIndexSpace &&
+                   range.lowerBound <= drawIndexRegister && drawIndexRegister <= range.upperBound;
+        });
+    }
+
+    namespace detail
+    {
+        [[nodiscard]] constexpr bool dxilRangeClassMatches(std::uint32_t rangeType, std::string_view type) noexcept
+        {
+            if (type == "uniformBuffer")
+            {
+                return rangeType == dxilConstantBufferType;
+            }
+            if (type == "sampler")
+            {
+                return rangeType == dxilSamplerType;
+            }
+            if (type == "storageBuffer" || type == "storageTexture")
+            {
+                return rangeType >= dxilFirstUnorderedAccessType && rangeType <= dxilLastUnorderedAccessType;
+            }
+            return rangeType >= dxilFirstShaderResourceType && rangeType <= dxilLastShaderResourceType;
+        }
+
+        [[nodiscard]] constexpr bool dxilRangeHolds(const DxilResourceRange& range,
+                                                    const ReflectedBinding& binding,
+                                                    std::uint32_t space) noexcept
+        {
+            if (!dxilRangeClassMatches(range.type, binding.type) || range.space != space ||
+                range.lowerBound != binding.binding || range.upperBound < range.lowerBound)
+            {
+                return false;
+            }
+            return binding.count == unboundedResourceCount ? range.upperBound == dxilUnboundedUpperBound
+                                                           : range.upperBound - range.lowerBound == binding.count - 1;
+        }
+    } // namespace detail
+
+    [[nodiscard]] inline std::expected<void, std::string> placeEntryParametersFromDxil(
+        ReflectedInterface& reflected, std::span<const std::byte> container)
+    {
+        if (std::ranges::none_of(reflected.bindings, &ReflectedBinding::entryParameter))
+        {
+            return {};
+        }
+        const auto ranges = dxilResourceRanges(container);
+        if (!ranges)
+        {
+            return std::unexpected(ranges.error());
+        }
+        std::vector<const DxilResourceRange*> unclaimed;
+        for (const auto& range : *ranges)
+        {
+            const bool reserved = range.space == d3d12PushConstantSpace || range.space == drawIndexSpace;
+            const bool global = std::ranges::any_of(reflected.bindings, [&](const ReflectedBinding& binding) {
+                return !binding.entryParameter && detail::dxilRangeHolds(range, binding, binding.set);
+            });
+            if (!reserved && !global)
+            {
+                unclaimed.push_back(&range);
+            }
+        }
+        std::optional<std::vector<std::uint32_t>> spaces;
+        for (const auto& binding : reflected.bindings)
+        {
+            if (!binding.entryParameter)
+            {
+                continue;
+            }
+            std::vector<std::uint32_t> candidates;
+            for (const auto* range : unclaimed)
+            {
+                if (detail::dxilRangeHolds(*range, binding, range->space))
+                {
+                    candidates.push_back(range->space);
+                }
+            }
+            if (candidates.empty())
+            {
+                continue;
+            }
+            if (!spaces.has_value())
+            {
+                spaces = std::move(candidates);
+            }
+            else
+            {
+                std::erase_if(*spaces, [&](std::uint32_t space) {
+                    return std::ranges::find(candidates, space) == candidates.end();
+                });
+            }
+            std::ranges::sort(*spaces);
+            spaces->erase(std::ranges::unique(*spaces).begin(), spaces->end());
+        }
+        if (!spaces.has_value())
+        {
+            return {};
+        }
+        if (spaces->size() != 1)
+        {
+            return std::unexpected(
+                "The DXIL does not place the entry-point parameters in one register space that their reflection "
+                "matches. Declare the resources at global scope.");
+        }
+        const auto space = spaces->front();
+        for (auto& binding : reflected.bindings)
+        {
+            if (binding.entryParameter)
+            {
+                binding.set = space;
+            }
+        }
+        for (auto& resource : reflected.dataResources)
+        {
+            if (resource.entryParameter && resource.usage != DataUsage::pushConstants)
+            {
+                resource.set = space;
+            }
+        }
+        for (auto& block : reflected.blocks)
+        {
+            if (block.resource.entryParameter && block.resource.usage != DataUsage::pushConstants)
+            {
+                block.resource.set = space;
+            }
+        }
+        return detail::sortBindings(reflected.bindings);
     }
 
     [[nodiscard]] constexpr std::uint32_t spirvExecutionModel(InterfaceStage stage) noexcept
@@ -834,12 +1061,16 @@ namespace rachis::shader_tool
         {
             return std::unexpected(std::move(module.error()));
         }
-        auto found = module->interfaceOf(entryPoint, spirvExecutionModel(stage));
-        if (!found)
+        const auto reads = module->entryReadsDrawIndex(entryPoint, spirvExecutionModel(stage));
+        if (!reads)
         {
-            return std::unexpected(std::move(found.error()));
+            return std::unexpected(reads.error());
         }
-        return found->drawIndex;
+        if (*reads && !interfaceStageReadsDrawIndex(stage))
+        {
+            return std::unexpected(drawIndexStageError(stage, entryPoint));
+        }
+        return *reads;
     }
 
     namespace detail
@@ -982,6 +1213,10 @@ namespace rachis::shader_tool
         if (!found)
         {
             return std::unexpected(std::move(found.error()));
+        }
+        if (found->drawIndex && !interfaceStageReadsDrawIndex(stage))
+        {
+            return std::unexpected(drawIndexStageError(stage, entryPoint));
         }
         ReflectedInterface reflected;
         for (auto& binding : found->bindings)

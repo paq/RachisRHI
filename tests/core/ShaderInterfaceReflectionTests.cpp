@@ -1,4 +1,5 @@
 #include "GeneratedBindingArray.h"
+#include "GeneratedEntryBindingArray.h"
 #include "Internal/PortableValidation.h"
 #include "Internal/ShaderInterfaceReflection.h"
 
@@ -139,6 +140,154 @@ TEST_CASE("Shader interface reflection keeps the resources the entry point uses"
         reflectShaderInterface(computeHlslJson, InterfaceBackend::vulkan, "main", InterfaceStage::compute);
     REQUIRE_FALSE(vulkan.has_value());
     CHECK(vulkan.error().find("'push' is in binding set 4") != std::string::npos);
+}
+
+TEST_CASE("Shader interface reflection reads Boolean used flags like integer flags",
+          "[size:small][rhi][tooling][shader-interface]")
+{
+    constexpr std::string_view json = R"({
+        "parameters": [
+            {"name": "results", "binding": {"kind": "unorderedAccess", "index": 0},
+             "type": {"kind": "resource", "baseShape": "structuredBuffer", "access": "readWrite"}},
+            {"name": "unused", "binding": {"kind": "unorderedAccess", "index": 1},
+             "type": {"kind": "resource", "baseShape": "structuredBuffer", "access": "readWrite"}}
+        ],
+        "entryPoints": [
+            {"name": "main", "stage": "compute", "threadGroupSize": [1, 1, 1],
+             "bindings": [
+                {"name": "results", "binding": {"kind": "unorderedAccess", "index": 0, "used": true}},
+                {"name": "unused", "binding": {"kind": "unorderedAccess", "index": 1, "used": false}}
+             ]}
+        ]
+    })";
+    for (const auto backend : {InterfaceBackend::d3d12, InterfaceBackend::vulkan, InterfaceBackend::metal})
+    {
+        INFO("backend " << rachis::shader_tool::interfaceBackendName(backend));
+        const auto reflected = reflectShaderInterface(json, backend, "main", InterfaceStage::compute);
+        REQUIRE(reflected.has_value());
+        const std::vector<ReflectedBinding> expected{
+            {.name = "results", .set = 0, .binding = 0, .type = "storageBuffer", .count = 1},
+        };
+        CHECK(reflected->bindings == expected);
+    }
+}
+
+TEST_CASE("Shader interface reflection reads only the entry point it is asked for",
+          "[size:small][rhi][tooling][shader-interface]")
+{
+    constexpr std::string_view json = R"({
+        "parameters": [
+            {"name": "results", "binding": {"kind": "unorderedAccess", "index": 0},
+             "type": {"kind": "resource", "baseShape": "structuredBuffer", "access": "readWrite"}}
+        ],
+        "entryPoints": [{"name": "main", "stage": "compute", "threadGroupSize": [8, 1, 1]}]
+    })";
+    const auto found = reflectShaderInterface(json, InterfaceBackend::d3d12, "main", InterfaceStage::compute);
+    REQUIRE(found.has_value());
+    CHECK(found->workgroupSize == std::array<std::uint32_t, 3>{8, 1, 1});
+    for (const auto backend : {InterfaceBackend::d3d12, InterfaceBackend::vulkan, InterfaceBackend::metal})
+    {
+        INFO("backend " << rachis::shader_tool::interfaceBackendName(backend));
+        const auto other = reflectShaderInterface(json, backend, "typo", InterfaceStage::compute);
+        REQUIRE_FALSE(other.has_value());
+        CHECK(other.error().find("no entry point 'typo'") != std::string::npos);
+    }
+}
+
+namespace
+{
+    constexpr std::string_view entryParameterJson = R"({
+        "parameters": [
+            {"name": "outputs", "binding": {"kind": "unorderedAccess", "space": 1, "index": 0},
+             "type": {"kind": "resource", "baseShape": "structuredBuffer", "access": "readWrite",
+                      "resultType": {"kind": "scalar", "scalarType": "uint32"}}},
+            {"name": "unusedGlobal", "binding": {"kind": "shaderResource", "space": 2, "index": 0},
+             "type": {"kind": "resource", "baseShape": "texture2D"}}
+        ],
+        "entryPoints": [
+            {"name": "entryArrayMain", "stage": "compute", "threadGroupSize": [1, 1, 1],
+             "parameters": [
+                {"name": "threadId", "semanticName": "SV_DISPATCHTHREADID",
+                 "type": {"kind": "vector", "elementCount": 3, "elementType": {"kind": "scalar"}}},
+                {"name": "values", "binding": {"kind": "shaderResource", "index": 0},
+                 "type": {"kind": "array", "elementCount": 0,
+                          "elementType": {"kind": "resource", "baseShape": "structuredBuffer",
+                                          "resultType": {"kind": "scalar", "scalarType": "uint32"}}}},
+                {"name": "params", "binding": {"kind": "constantBuffer", "index": 1},
+                 "type": {"kind": "constantBuffer",
+                          "elementVarLayout": {
+                              "type": {"kind": "struct", "name": "Params", "fields": [
+                                  {"name": "scale", "type": {"kind": "scalar", "scalarType": "uint32"},
+                                   "binding": {"kind": "uniform", "offset": 0, "size": 4}}]},
+                              "binding": {"kind": "uniform", "offset": 0, "size": 4}}}},
+                {"name": "skipped", "binding": {"kind": "shaderResource", "index": 2},
+                 "type": {"kind": "resource", "baseShape": "texture2D"}}
+             ],
+             "bindings": [
+                {"name": "outputs", "binding": {"kind": "unorderedAccess", "space": 1, "index": 0, "used": 1}},
+                {"name": "unusedGlobal", "binding": {"kind": "shaderResource", "space": 2, "index": 0, "used": 0}},
+                {"name": "skipped", "binding": {"kind": "shaderResource", "index": 2, "used": 0}}
+             ]}
+        ]
+    })";
+} // namespace
+
+TEST_CASE("Shader interface reflection keeps the resources an entry point declares as parameters",
+          "[size:small][rhi][tooling][shader-interface]")
+{
+    const std::vector<ReflectedBinding> expected{
+        {.name = "values",
+         .set = 0,
+         .binding = 0,
+         .type = "readOnlyStorageBuffer",
+         .count = rachis::shader_tool::unboundedResourceCount,
+         .entryParameter = true},
+        {.name = "params", .set = 0, .binding = 1, .type = "uniformBuffer", .count = 1, .entryParameter = true},
+        {.name = "outputs", .set = 1, .binding = 0, .type = "storageBuffer", .count = 1},
+    };
+    for (const auto backend : {InterfaceBackend::d3d12, InterfaceBackend::vulkan, InterfaceBackend::metal})
+    {
+        INFO("backend " << rachis::shader_tool::interfaceBackendName(backend));
+        auto reflected = reflectShaderInterface(entryParameterJson, backend, "entryArrayMain", InterfaceStage::compute);
+        INFO((reflected ? std::string{} : reflected.error()));
+        REQUIRE(reflected.has_value());
+        CHECK(reflected->bindings == expected);
+        REQUIRE(reflected->dataResources.size() == 1);
+        CHECK(reflected->dataResources[0].name == "params");
+        CHECK(reflected->dataResources[0].typeName == "Params");
+        if (backend != InterfaceBackend::vulkan)
+        {
+            const auto attached = rachis::shader_tool::attachSlangDataLayouts(
+                *reflected, entryParameterJson, "entryArrayMain", backend == InterfaceBackend::metal);
+            INFO((attached ? std::string{} : attached.error()));
+            REQUIRE(attached.has_value());
+            REQUIRE(reflected->blocks.size() == 1);
+            CHECK(reflected->blocks[0].size == 4);
+        }
+    }
+
+    constexpr std::string_view sharedWithGlobal = R"({
+        "parameters": [{"name": "globalBuffer", "binding": {"kind": "shaderResource", "index": 0},
+                        "type": {"kind": "resource", "baseShape": "structuredBuffer"}}],
+        "entryPoints": [{"name": "main", "stage": "compute", "threadGroupSize": [1, 1, 1], "parameters": [
+            {"name": "entryBuffer", "binding": {"kind": "shaderResource", "index": 0},
+             "type": {"kind": "resource", "baseShape": "structuredBuffer"}}]}]
+    })";
+    const auto shared =
+        reflectShaderInterface(sharedWithGlobal, InterfaceBackend::vulkan, "main", InterfaceStage::compute);
+    REQUIRE_FALSE(shared.has_value());
+    CHECK(shared.error().find("share set 0 binding 0") != std::string::npos);
+    CHECK(shared.error().find("entry-point parameters") != std::string::npos);
+
+    constexpr std::string_view looseEntryUniform = R"({
+        "parameters": [],
+        "entryPoints": [{"name": "main", "stage": "compute", "threadGroupSize": [1, 1, 1], "parameters": [
+            {"name": "scale", "binding": {"kind": "uniform", "offset": 0, "size": 4}, "type": {"kind": "scalar"}}]}]
+    })";
+    const auto loose =
+        reflectShaderInterface(looseEntryUniform, InterfaceBackend::d3d12, "main", InterfaceStage::compute);
+    REQUIRE_FALSE(loose.has_value());
+    CHECK(loose.error().find("entry-point parameter 'scale' is a loose uniform") != std::string::npos);
 }
 
 TEST_CASE("Shader interface reflection reads vertex input locations per backend",
@@ -289,7 +438,7 @@ TEST_CASE("Generated shader structs place each member at its reflected offset",
     REQUIRE(reflected->dataResources.size() == 2);
     CHECK(reflected->dataResources[0].typeName == "Constants");
     CHECK(reflected->dataResources[1].typeName == "Element");
-    REQUIRE(rachis::shader_tool::attachSlangDataLayouts(*reflected, layoutHlslJson, false).has_value());
+    REQUIRE(rachis::shader_tool::attachSlangDataLayouts(*reflected, layoutHlslJson, "main", false).has_value());
     REQUIRE(reflected->blocks.size() == 2);
     CHECK(reflected->blocks[1].size == 16);
 
@@ -313,7 +462,7 @@ TEST_CASE("Generated shader structs place each member at its reflected offset",
 
     auto metal = reflectShaderInterface(layoutHlslJson, InterfaceBackend::metal, "main", InterfaceStage::compute);
     REQUIRE(metal.has_value());
-    REQUIRE(rachis::shader_tool::attachSlangDataLayouts(*metal, layoutHlslJson, true).has_value());
+    REQUIRE(rachis::shader_tool::attachSlangDataLayouts(*metal, layoutHlslJson, "main", true).has_value());
     CHECK(metal->blocks[1].size == 16);
 }
 
@@ -324,7 +473,7 @@ TEST_CASE("Generated shader structs reject layouts C++ cannot express", "[size:s
     rowMajor.replace(rowMajor.find(columnMajorSize), columnMajorSize.size(), R"("offset": 64, "size": 28)");
     auto reflected = reflectShaderInterface(rowMajor, InterfaceBackend::d3d12, "main", InterfaceStage::compute);
     REQUIRE(reflected.has_value());
-    const auto attached = rachis::shader_tool::attachSlangDataLayouts(*reflected, rowMajor, false);
+    const auto attached = rachis::shader_tool::attachSlangDataLayouts(*reflected, rowMajor, "main", false);
     REQUIRE_FALSE(attached.has_value());
     CHECK(attached.error().find("row_major") != std::string::npos);
 
@@ -333,7 +482,7 @@ TEST_CASE("Generated shader structs reject layouts C++ cannot express", "[size:s
     overlap.replace(overlap.find(afterOffset), afterOffset.size(), R"("offset": 40, "size": 4)");
     auto overlapping = reflectShaderInterface(overlap, InterfaceBackend::d3d12, "main", InterfaceStage::compute);
     REQUIRE(overlapping.has_value());
-    REQUIRE(rachis::shader_tool::attachSlangDataLayouts(*overlapping, overlap, false).has_value());
+    REQUIRE(rachis::shader_tool::attachSlangDataLayouts(*overlapping, overlap, "main", false).has_value());
     const std::array backends{BackendInterface{.backend = InterfaceBackend::d3d12, .reflected = *overlapping}};
     const auto header =
         rachis::shader_tool::generateShaderInterfaceHeader("Layout", InterfaceStage::compute, "main", backends);
@@ -561,6 +710,167 @@ namespace
         return bytes;
     }
 
+    [[nodiscard]] std::vector<std::byte> wordsAsBytes(const std::vector<std::uint32_t>& words)
+    {
+        std::vector<std::byte> bytes(words.size() * sizeof(std::uint32_t));
+        std::memcpy(bytes.data(), words.data(), bytes.size());
+        return bytes;
+    }
+
+    [[nodiscard]] std::vector<std::byte> vertexModuleWithGroupedLocation()
+    {
+        constexpr std::uint32_t mainName = 0x6E69616DU;
+        return wordsAsBytes({
+            0x07230203U,
+            0x00010600U,
+            0U,
+            11U,
+            0U,
+            (2U << 16U) | 17U,
+            1U,
+            (3U << 16U) | 14U,
+            0U,
+            1U,
+            (6U << 16U) | 15U,
+            0U,
+            1U,
+            mainName,
+            0U,
+            2U,
+            (4U << 16U) | 71U,
+            3U,
+            30U,
+            0U,
+            (2U << 16U) | 73U,
+            3U,
+            (3U << 16U) | 74U,
+            3U,
+            2U,
+            (3U << 16U) | 22U,
+            4U,
+            32U,
+            (4U << 16U) | 23U,
+            5U,
+            4U,
+            4U,
+            (4U << 16U) | 32U,
+            6U,
+            1U,
+            5U,
+            (4U << 16U) | 59U,
+            6U,
+            2U,
+            1U,
+            (2U << 16U) | 19U,
+            7U,
+            (3U << 16U) | 33U,
+            8U,
+            7U,
+            (5U << 16U) | 54U,
+            7U,
+            1U,
+            0U,
+            8U,
+            (2U << 16U) | 248U,
+            9U,
+            (4U << 16U) | 61U,
+            5U,
+            10U,
+            2U,
+            (1U << 16U) | 253U,
+            (1U << 16U) | 56U,
+        });
+    }
+
+    [[nodiscard]] std::vector<std::byte> computeModuleWithGroupedBlock()
+    {
+        constexpr std::uint32_t mainName = 0x6E69616DU;
+        return wordsAsBytes({
+            0x07230203U,
+            0x00010600U,
+            0U,
+            40U,
+            0U,
+            (2U << 16U) | 17U,
+            1U,
+            (3U << 16U) | 14U,
+            0U,
+            1U,
+            (6U << 16U) | 15U,
+            5U,
+            1U,
+            mainName,
+            0U,
+            20U,
+            (6U << 16U) | 16U,
+            1U,
+            17U,
+            1U,
+            1U,
+            1U,
+            (4U << 16U) | 71U,
+            30U,
+            34U,
+            0U,
+            (4U << 16U) | 71U,
+            30U,
+            33U,
+            3U,
+            (3U << 16U) | 71U,
+            32U,
+            2U,
+            (4U << 16U) | 71U,
+            31U,
+            35U,
+            4U,
+            (2U << 16U) | 73U,
+            30U,
+            (2U << 16U) | 73U,
+            31U,
+            (2U << 16U) | 73U,
+            32U,
+            (3U << 16U) | 74U,
+            30U,
+            20U,
+            (3U << 16U) | 74U,
+            32U,
+            21U,
+            (4U << 16U) | 75U,
+            31U,
+            21U,
+            0U,
+            (4U << 16U) | 21U,
+            4U,
+            32U,
+            0U,
+            (3U << 16U) | 30U,
+            21U,
+            4U,
+            (4U << 16U) | 32U,
+            23U,
+            2U,
+            21U,
+            (4U << 16U) | 59U,
+            23U,
+            20U,
+            2U,
+            (2U << 16U) | 19U,
+            7U,
+            (3U << 16U) | 33U,
+            8U,
+            7U,
+            (5U << 16U) | 54U,
+            7U,
+            1U,
+            0U,
+            8U,
+            (2U << 16U) | 248U,
+            9U,
+            (1U << 16U) | 253U,
+            (1U << 16U) | 56U,
+        });
+    }
+
     [[nodiscard]] std::vector<std::byte> pnmsShader(std::string_view json)
     {
         constexpr std::array metallib{std::byte{'M'}, std::byte{'T'}, std::byte{'L'}, std::byte{'B'}, std::byte{0}};
@@ -688,6 +998,46 @@ TEST_CASE("Shader interface reflection reads the draw index from each backend's 
     CHECK(header->find("case rachis::Backend::d3d12:\n            return d3d12::drawIndex;") != std::string::npos);
     CHECK(header->find("RachisDrawIndex") == std::string::npos);
 }
+TEST_CASE("SPIR-V reflection applies decorations from decoration groups",
+          "[size:small][rhi][tooling][shader-interface]")
+{
+    const auto vertex = vertexModuleWithGroupedLocation();
+    const auto reads = rachis::shader_tool::spirvReadsDrawIndex(vertex, "main", InterfaceStage::vertex);
+    INFO((reads ? std::string{} : reads.error()));
+    REQUIRE(reads.has_value());
+    CHECK_FALSE(*reads);
+    const auto vertexInterface =
+        rachis::shader_tool::reflectSpirvShaderInterface(vertex, "main", InterfaceStage::vertex);
+    INFO((vertexInterface ? std::string{} : vertexInterface.error()));
+    REQUIRE(vertexInterface.has_value());
+    CHECK(vertexInterface->vertexInputLocations == std::vector<std::uint32_t>{0});
+
+    const auto compute = rachis::shader_tool::reflectSpirvShaderInterface(
+        computeModuleWithGroupedBlock(), "main", InterfaceStage::compute);
+    INFO((compute ? std::string{} : compute.error()));
+    REQUIRE(compute.has_value());
+    REQUIRE(compute->bindings.size() == 1);
+    CHECK(compute->bindings[0].set == 0);
+    CHECK(compute->bindings[0].binding == 3);
+    CHECK(compute->bindings[0].type == "uniformBuffer");
+    REQUIRE(compute->blocks.size() == 1);
+    REQUIRE(compute->blocks[0].type->fields.size() == 1);
+    CHECK(compute->blocks[0].type->fields[0].offset == 4);
+}
+
+TEST_CASE("SPIR-V reflection rejects a draw-index read in a stage that cannot read it",
+          "[size:small][rhi][tooling][shader-interface][draw-index]")
+{
+    const auto fragment =
+        workgroupModuleWithDrawIndex(rachis::shader_tool::detail::SpirvLayoutModule::executionModelFragment);
+    const auto reads = rachis::shader_tool::spirvReadsDrawIndex(fragment, "main", InterfaceStage::pixel);
+    REQUIRE_FALSE(reads.has_value());
+    CHECK(reads.error().find("pixel entry point 'main' reads the draw index") != std::string::npos);
+    const auto reflected = rachis::shader_tool::reflectSpirvShaderInterface(fragment, "main", InterfaceStage::pixel);
+    REQUIRE_FALSE(reflected.has_value());
+    CHECK(reflected.error().find("pixel entry point 'main' reads the draw index") != std::string::npos);
+}
+
 TEST_CASE("Shader interface reflection reads task and mesh entry points and their draw index",
           "[size:small][rhi][tooling][shader-interface][draw-index]")
 {
@@ -843,6 +1193,60 @@ TEST_CASE("PNMS draw-index reflection checks the envelope and reads only the sel
     CHECK_FALSE(metalManifestReadsDrawIndex(pnmsShader(duplicated), "drawn", InterfaceStage::vertex).has_value());
 }
 
+TEST_CASE("Direct3D 12 interfaces take the register space of entry-point parameters from the DXIL",
+          "[size:small][rhi][tooling][shader-interface]")
+{
+    const auto reflect = [] {
+        auto reflected = reflectShaderInterface(
+            entryParameterJson, InterfaceBackend::d3d12, "entryArrayMain", InterfaceStage::compute);
+        REQUIRE(reflected.has_value());
+        return *reflected;
+    };
+    const auto setOf = [](const rachis::shader_tool::ReflectedInterface& reflected, std::string_view name) {
+        const auto found = std::ranges::find(reflected.bindings, name, &ReflectedBinding::name);
+        REQUIRE(found != reflected.bindings.end());
+        return found->set;
+    };
+
+    constexpr std::uint32_t unbounded = 0xFFFFFFFFU;
+    const std::array placed{std::array<std::uint32_t, 4>{5U, 2U, 0U, unbounded},
+                            std::array<std::uint32_t, 4>{2U, 2U, 1U, 1U},
+                            std::array<std::uint32_t, 4>{8U, 1U, 0U, 0U},
+                            std::array<std::uint32_t, 4>{2U, 4U, 0U, 0U}};
+    auto reflected = reflect();
+    const auto moved = rachis::shader_tool::placeEntryParametersFromDxil(reflected, dxilContainer(placed));
+    INFO((moved ? std::string{} : moved.error()));
+    REQUIRE(moved.has_value());
+    CHECK(setOf(reflected, "values") == 2);
+    CHECK(setOf(reflected, "params") == 2);
+    CHECK(setOf(reflected, "outputs") == 1);
+    REQUIRE(reflected.dataResources.size() == 1);
+    CHECK(reflected.dataResources[0].set == 2);
+    CHECK(std::ranges::is_sorted(reflected.bindings, {}, [](const ReflectedBinding& binding) {
+        return std::pair{binding.set, binding.binding};
+    }));
+
+    const std::array inPlace{std::array<std::uint32_t, 4>{5U, 0U, 0U, unbounded},
+                             std::array<std::uint32_t, 4>{8U, 1U, 0U, 0U}};
+    auto unchanged = reflect();
+    REQUIRE(rachis::shader_tool::placeEntryParametersFromDxil(unchanged, dxilContainer(inPlace)).has_value());
+    CHECK(setOf(unchanged, "values") == 0);
+    CHECK(setOf(unchanged, "params") == 0);
+
+    auto unused = reflect();
+    const std::array<std::array<std::uint32_t, 4>, 1> globalsOnly{{{8U, 1U, 0U, 0U}}};
+    REQUIRE(rachis::shader_tool::placeEntryParametersFromDxil(unused, dxilContainer(globalsOnly)).has_value());
+    CHECK(setOf(unused, "values") == 0);
+
+    const std::array split{std::array<std::uint32_t, 4>{5U, 2U, 0U, unbounded},
+                           std::array<std::uint32_t, 4>{2U, 3U, 1U, 1U},
+                           std::array<std::uint32_t, 4>{8U, 1U, 0U, 0U}};
+    auto ambiguous = reflect();
+    const auto rejected = rachis::shader_tool::placeEntryParametersFromDxil(ambiguous, dxilContainer(split));
+    REQUIRE_FALSE(rejected.has_value());
+    CHECK(rejected.error().find("entry-point parameters") != std::string::npos);
+}
+
 TEST_CASE("Generated binding layouts of unbounded arrays pass binding layout validation",
           "[size:small][rhi][tooling][shader-interface]")
 {
@@ -865,6 +1269,46 @@ TEST_CASE("Generated binding layouts of unbounded arrays pass binding layout val
         INFO((valid ? std::string{} : valid.error().message));
         CHECK(valid.has_value());
         CHECK(generated::bindingPoolSizes(backend, 1).empty());
+    }
+    CHECK(backends > 0);
+}
+
+TEST_CASE("Generated interfaces list the resource arrays an entry point declares as parameters",
+          "[size:small][rhi][tooling][shader-interface]")
+{
+    namespace generated = rachis_shaders::reflection::GeneratedEntryBindingArray;
+    std::size_t backends = 0;
+    for (const auto backend : {rachis::Backend::d3d12, rachis::Backend::vulkan, rachis::Backend::metal})
+    {
+        if (rachis_shaders::GeneratedEntryBindingArray(backend).empty())
+        {
+            continue;
+        }
+        ++backends;
+        INFO("backend " << static_cast<int>(backend));
+        const auto desc = generated::moduleDesc(backend);
+        CHECK(desc.entryPoint == "entryArrayMain");
+        const auto bindings = desc.shaderInterface.bindings;
+        REQUIRE(bindings.size() == 2);
+        const auto values =
+            std::ranges::find(bindings, rachis::unboundedBindingCount, &rachis::ShaderBindingRequirement::count);
+        const auto outputs = std::ranges::find(bindings, 1U, &rachis::ShaderBindingRequirement::count);
+        REQUIRE(values != bindings.end());
+        REQUIRE(outputs != bindings.end());
+        CHECK(values->set == (backend == rachis::Backend::d3d12 ? 2U : 0U));
+        CHECK(values->binding == 0);
+        CHECK(values->type == rachis::ShaderResourceType::readOnlyStorageBuffer);
+        CHECK(outputs->set == 1);
+        CHECK(outputs->binding == 0);
+        CHECK(outputs->type == rachis::ShaderResourceType::storageBuffer);
+        REQUIRE(generated::bindingSetCount(backend) == std::max(values->set, outputs->set) + 1);
+        const auto entries = generated::bindingLayout(backend, values->set);
+        REQUIRE(entries.size() == 1);
+        CHECK(entries[0].count == rachis::unboundedBindingCount);
+        CHECK(entries[0].flags == rachis::BindingFlag::variableDescriptorCount);
+        const auto valid = rachis::detail::validateBindingLayoutDesc(rachis::BindingLayoutDesc{.entries = entries});
+        INFO((valid ? std::string{} : valid.error().message));
+        CHECK(valid.has_value());
     }
     CHECK(backends > 0);
 }

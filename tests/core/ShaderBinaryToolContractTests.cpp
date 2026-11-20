@@ -623,7 +623,175 @@ namespace
             (1U << 16U) | 56U,
         });
     }
+
+    [[nodiscard]] std::vector<std::byte> vertexWithGroupedLocation()
+    {
+        constexpr std::uint32_t mainName = 0x6E69616DU;
+        return wordsAsBytes({
+            0x07230203U,
+            0x00010600U,
+            0U,
+            11U,
+            0U,
+            (2U << 16U) | 17U,
+            1U,
+            (3U << 16U) | 14U,
+            0U,
+            1U,
+            (6U << 16U) | 15U,
+            0U,
+            1U,
+            mainName,
+            0U,
+            2U,
+            (4U << 16U) | 71U,
+            3U,
+            30U,
+            0U,
+            (2U << 16U) | 73U,
+            3U,
+            (3U << 16U) | 74U,
+            3U,
+            2U,
+            (3U << 16U) | 22U,
+            4U,
+            32U,
+            (4U << 16U) | 23U,
+            5U,
+            4U,
+            4U,
+            (4U << 16U) | 32U,
+            6U,
+            1U,
+            5U,
+            (4U << 16U) | 59U,
+            6U,
+            2U,
+            1U,
+            (2U << 16U) | 19U,
+            7U,
+            (3U << 16U) | 33U,
+            8U,
+            7U,
+            (5U << 16U) | 54U,
+            7U,
+            1U,
+            0U,
+            8U,
+            (2U << 16U) | 248U,
+            9U,
+            (4U << 16U) | 61U,
+            5U,
+            10U,
+            2U,
+            (1U << 16U) | 253U,
+            (1U << 16U) | 56U,
+        });
+    }
 } // namespace
+
+TEST_CASE("RachisShaderBinaryTool reflect-interface reads a vertex location from a decoration group",
+          "[size:small][rhi][shader][tooling][draw-index]")
+{
+    ScopedTempDirectory const temp;
+    constexpr std::string_view json = R"({"parameters": [], "entryPoints": [{"name": "main", "stage": "vertex",
+        "parameters": [{"name": "position", "binding": {"kind": "varyingInput", "index": 0},
+                        "semanticName": "TEXCOORD", "type": {"kind": "vector"}}]}]})";
+    const auto reflection = temp.path / "vulkan.json";
+    const auto spirv = temp.path / "grouped.spv";
+    writeBinaryFile(reflection, asBytes(json));
+    writeBinaryFile(spirv, vertexWithGroupedLocation());
+    const auto header = temp.path / "GroupedProbe.interface.h";
+    const auto layout = runShaderBinaryTool(temp.path,
+                                            {"reflect-interface",
+                                             "--name",
+                                             "GroupedProbe",
+                                             "--stage",
+                                             "vertex",
+                                             "--entry",
+                                             "main",
+                                             "--output",
+                                             header.string(),
+                                             "--reflection",
+                                             "vulkan=" + reflection.string(),
+                                             "--layout",
+                                             "vulkan=" + spirv.string()});
+    INFO("stderr=" << layout.stderrText);
+    REQUIRE(layout.status == 0);
+    CHECK(readTextFile(header).contains("inline constexpr bool drawIndex = false;"));
+
+    const auto reflected = runShaderBinaryTool(temp.path,
+                                               {"reflect-interface",
+                                                "--name",
+                                                "GroupedProbe",
+                                                "--stage",
+                                                "vertex",
+                                                "--entry",
+                                                "main",
+                                                "--output",
+                                                header.string(),
+                                                "--spirv-reflection",
+                                                "vulkan=" + spirv.string()});
+    INFO("stderr=" << reflected.stderrText);
+    REQUIRE(reflected.status == 0);
+    CHECK(readTextFile(header).contains("std::array<std::uint32_t, 1> vertexInputLocations{0};"));
+}
+
+TEST_CASE("RachisShaderBinaryTool reflect-interface rejects a draw-index read SPIR-V proves in a pixel shader",
+          "[size:small][rhi][shader][tooling][draw-index]")
+{
+    ScopedTempDirectory const temp;
+    constexpr std::uint32_t fragment = 4;
+    constexpr std::string_view json = R"({"parameters": [], "entryPoints": [{"name": "main", "stage": "fragment"}]})";
+    const auto reflection = temp.path / "vulkan.json";
+    writeBinaryFile(reflection, asBytes(json));
+    const auto header = temp.path / "PixelProbe.interface.h";
+    const auto run = [&](std::uint32_t builtIn, bool layout) {
+        const auto spirv = temp.path / "pixel.spv";
+        writeBinaryFile(spirv, spirvEntryWithBuiltIn(fragment, builtIn));
+        if (layout)
+        {
+            return runShaderBinaryTool(temp.path,
+                                       {"reflect-interface",
+                                        "--name",
+                                        "PixelProbe",
+                                        "--stage",
+                                        "pixel",
+                                        "--entry",
+                                        "main",
+                                        "--output",
+                                        header.string(),
+                                        "--reflection",
+                                        "vulkan=" + reflection.string(),
+                                        "--layout",
+                                        "vulkan=" + spirv.string()});
+        }
+        return runShaderBinaryTool(temp.path,
+                                   {"reflect-interface",
+                                    "--name",
+                                    "PixelProbe",
+                                    "--stage",
+                                    "pixel",
+                                    "--entry",
+                                    "main",
+                                    "--output",
+                                    header.string(),
+                                    "--spirv-reflection",
+                                    "vulkan=" + spirv.string()});
+    };
+    for (const bool layout : {false, true})
+    {
+        INFO((layout ? "--layout" : "--spirv-reflection"));
+        const auto reads = run(4426U, layout);
+        CHECK(reads.status != 0);
+        CHECK(reads.stderrText.contains("pixel entry point 'main' reads the draw index"));
+
+        const auto plain = run(4425U, layout);
+        INFO("stderr=" << plain.stderrText);
+        REQUIRE(plain.status == 0);
+        CHECK(readTextFile(header).contains("inline constexpr bool drawIndex = false;"));
+    }
+}
 
 TEST_CASE("RachisShaderBinaryTool reflect-interface reports the draw index of task and mesh shaders",
           "[size:small][rhi][shader][tooling][draw-index]")
@@ -767,7 +935,7 @@ TEST_CASE("RachisShaderBinaryTool reflect-interface rejects a draw-index read th
     const std::array<std::array<std::uint32_t, 4>, 1> drawIndexResource{{{2U, 5U, 0U, 0U}}};
     const auto reads = run(drawIndexResource);
     CHECK(reads.status != 0);
-    CHECK(reads.stderrText.contains("the pixel entry point 'main' reads the draw index"));
+    CHECK(reads.stderrText.contains("pixel entry point 'main' reads the draw index"));
 
     const std::array<std::array<std::uint32_t, 4>, 1> otherResource{{{2U, 0U, 0U, 0U}}};
     const auto plain = run(otherResource);
@@ -828,7 +996,7 @@ TEST_CASE("RachisShaderBinaryTool reflect-interface rejects a draw-index read a 
     };
     const auto reads = run("1");
     CHECK(reads.status != 0);
-    CHECK(reads.stderrText.contains("the pixel entry point 'main' reads the draw index"));
+    CHECK(reads.stderrText.contains("pixel entry point 'main' reads the draw index"));
 
     const auto plain = run("0");
     INFO("stderr=" << plain.stderrText);

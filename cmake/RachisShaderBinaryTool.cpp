@@ -1518,6 +1518,7 @@ namespace
                                           : rachis::shader_tool::attachSlangDataLayouts(
                                                 *reflected,
                                                 viewAsText(*layoutBytes),
+                                                options->entryPoint,
                                                 backend == rachis::shader_tool::InterfaceBackend::metal);
                 if (!attached.has_value())
                 {
@@ -1591,12 +1592,20 @@ namespace
             }
             if (*drawIndex && !rachis::shader_tool::interfaceStageReadsDrawIndex(options->stage))
             {
-                std::cerr << path << ": the " << rachis::shader_tool::interfaceStageName(options->stage)
-                          << " entry point '" << options->entryPoint
-                          << "' reads the draw index, which only vertex, task, and mesh shaders can read.\n";
+                std::cerr << path << ": "
+                          << rachis::shader_tool::drawIndexStageError(options->stage, options->entryPoint) << '\n';
                 return 1;
             }
             target->reflected.drawIndex = *drawIndex;
+            if (backend == rachis::shader_tool::InterfaceBackend::d3d12)
+            {
+                if (const auto placed = rachis::shader_tool::placeEntryParametersFromDxil(target->reflected, *bytes);
+                    !placed.has_value())
+                {
+                    std::cerr << path << ": " << placed.error() << '\n';
+                    return 1;
+                }
+            }
         }
         const auto header = rachis::shader_tool::generateShaderInterfaceHeader(
             options->name, options->stage, options->entryPoint, backends, options->tag);
