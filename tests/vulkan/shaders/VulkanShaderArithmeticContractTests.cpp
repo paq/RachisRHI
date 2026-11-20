@@ -38,7 +38,8 @@ namespace
 
     constexpr std::uint64_t atomicSum = (64U * 65U) / 2U;
 
-    constexpr std::array<std::uint32_t, 6> subgroupSizes{4, 8, 16, 32, 64, 128};
+    constexpr std::array<std::uint32_t, 8> subgroupSizes{1, 2, 4, 8, 16, 32, 64, 128};
+    constexpr std::uint32_t narrowestSubgroupShaderWidth = 4;
     constexpr std::uint32_t anySizeGroupWidth = 128;
     constexpr std::uint32_t laneCountGroupCount = 2;
 
@@ -221,6 +222,55 @@ namespace
     [[nodiscard]] std::vector<std::byte> loadSpirv(const char* name)
     {
         return loadBytes(std::filesystem::path(RACHIS_SPIRV_DIR) / name);
+    }
+
+    [[nodiscard]] rachis::Status createPipelineWithoutWaveOperations(rachis::Device& device,
+                                                                     std::uint32_t requiredSubgroupSize)
+    {
+        const auto bytecode = loadSpirv("VulkanComputeWrite.spv");
+        REQUIRE_FALSE(bytecode.empty());
+        auto shader = device.createShaderModule({
+            .stage = rachis::ShaderStage::compute,
+            .bytecode = bytecode,
+            .entryPoint = "main",
+            .label = "Vulkan required-size shader without wave operations",
+            .shaderInterface = rachis::test::computeWriteShaderInterface(),
+        });
+        if (!shader)
+        {
+            UNSCOPED_INFO(shader.error().message);
+        }
+        REQUIRE(shader);
+        const std::array entries{
+            rachis::BindingLayoutEntry{0, rachis::BindingType::storageBuffer, rachis::ShaderStage::compute},
+        };
+        auto layout = device.createBindingLayout({.entries = entries});
+        REQUIRE(layout);
+        const std::array layouts{*layout};
+        const std::array pushConstantRanges{
+            rachis::PushConstantRange{rachis::ShaderStage::compute, 0, 2 * sizeof(std::uint32_t)},
+        };
+        auto pipelineLayout =
+            device.createPipelineLayout({.bindingLayouts = layouts, .pushConstantRanges = pushConstantRanges});
+        REQUIRE(pipelineLayout);
+        auto pipeline = device.createComputePipeline({
+            .layout = *pipelineLayout,
+            .computeShader = *shader,
+            .label = "Vulkan required-size pipeline without wave operations",
+            .requiredSubgroupSize = requiredSubgroupSize,
+        });
+        if (pipeline)
+        {
+            CHECK(device.destroyPipeline(*pipeline));
+        }
+        CHECK(device.destroyPipelineLayout(*pipelineLayout));
+        CHECK(device.destroyBindingLayout(*layout));
+        CHECK(device.destroyShaderModule(*shader));
+        if (!pipeline)
+        {
+            return std::unexpected(std::move(pipeline.error()));
+        }
+        return {};
     }
 
     constexpr std::uint32_t typeFeatureElementCount = 8;
@@ -1103,19 +1153,33 @@ TEST_CASE("Vulkan compute pipelines that require a subgroup size run full subgro
     const auto subgroup = capabilities.subgroup;
     if (!rachis::hasAny(subgroup.requiredSizeStages, rachis::ShaderStage::compute))
     {
-        auto rejected = runLaneCountKernel(device, subgroupSizeShader(32), 32, 32);
+        auto rejected = createPipelineWithoutWaveOperations(device, 32);
         REQUIRE_FALSE(rejected.has_value());
         CHECK(rejected.error().code == rachis::ErrorCode::unsupported);
         SKIP("This Vulkan device does not accept a required subgroup size for compute pipelines.");
     }
     CHECK(subgroup.requiredSizeStages == rachis::ShaderStage::compute);
     INFO("Subgroup sizes " << subgroup.minSize << ".." << subgroup.maxSize);
+    if (!capabilities.subgroupOperations)
+    {
+        if (subgroup.minSize <= rachis::test::computeWriteShaderInterface().workgroupSize->x)
+        {
+            const auto accepted = createPipelineWithoutWaveOperations(device, subgroup.minSize);
+            if (!accepted)
+            {
+                UNSCOPED_INFO(accepted.error().message);
+            }
+            CHECK(accepted.has_value());
+        }
+        SKIP("This Vulkan device lacks the subgroup operations that the lane-count shaders use.");
+    }
 
     std::size_t testedSizes = 0;
     for (const auto size : subgroupSizes)
     {
         CAPTURE(size);
-        auto lanes = runLaneCountKernel(device, subgroupSizeShader(size), size, size);
+        const auto groupWidth = (std::max)(size, narrowestSubgroupShaderWidth);
+        auto lanes = runLaneCountKernel(device, subgroupSizeShader(groupWidth), size, groupWidth);
         if (size < subgroup.minSize || size > subgroup.maxSize)
         {
             REQUIRE_FALSE(lanes.has_value());
