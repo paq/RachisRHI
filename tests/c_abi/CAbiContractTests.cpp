@@ -1540,7 +1540,7 @@ TEST_CASE("C ABI counted indirect draws read the draw index and a variable-count
     setDesc.write_count = static_cast<std::uint32_t>(colorWrites.size());
     setDesc.variable_descriptor_count = capabilities.max_variable_buffer_descriptors + 1;
     rachis_handle set = 0;
-    CHECK(rachis_binding_set_create(device.get(), &setDesc, &set, &error) != RACHIS_STATUS_OK);
+    CHECK(rachis_binding_set_create(device.get(), &setDesc, &set, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
     CHECK(set == 0);
     setDesc.variable_descriptor_count = arrayLength;
     requireOk(rachis_binding_set_create(device.get(), &setDesc, &set, &error), error);
