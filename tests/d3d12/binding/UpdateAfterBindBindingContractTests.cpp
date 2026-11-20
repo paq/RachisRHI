@@ -951,6 +951,46 @@ TEST_CASE("a refused submission keeps no residency of update-after-bind elements
     checkCleanDiagnostics(device);
 }
 
+TEST_CASE("a submission gathers the residency of each update-after-bind set once however often it is bound",
+          "[size:medium][rhi][binding][compute][residency][warp]")
+{
+    auto device = createWarpDevice();
+    REQUIRE(rachis::test::requireCapabilities(device).updateAfterBindBindingArrays);
+    REQUIRE(rachis::test::requireCapabilities(device).manualResidency);
+    LargeArrayFixture first(device, rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind);
+    LargeArrayFixture second(device, rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind);
+    const auto firstManual =
+        first.createValueBuffer(replacementValues, replacementLabel, rachis::ResourceAllocationFlag::manualResidency);
+    const auto secondManual = second.createValueBuffer(
+        replacementValues, "Second manual update-after-bind element", rachis::ResourceAllocationFlag::manualResidency);
+    REQUIRE(update(device, first.set(), 1, 1, slice(firstManual, 0)).has_value());
+    REQUIRE(update(device, second.set(), 1, 1, slice(secondManual, 0)).has_value());
+
+    constexpr std::size_t alternations = 32;
+    const std::array selections{Selection{.element = 1, .slot = 0}};
+    auto command = first.record(selections);
+    for (std::size_t index = 0; index < alternations; ++index)
+    {
+        second.recordInto(command, selections);
+        first.recordInto(command, selections);
+    }
+    first.recordReadback(command);
+
+    auto& gathered = rachis::d3d12::test::inPlaceResidencyGatherCount();
+    const auto before = gathered.load(std::memory_order_relaxed);
+    auto submitted = device.submit(std::move(command));
+    REQUIRE(submitted.has_value());
+    CHECK(gathered.load(std::memory_order_relaxed) - before == 2);
+    REQUIRE(device.wait(*submitted).has_value());
+    CHECK(first.result(0) == replacementValues[0]);
+
+    first.destroySet();
+    second.destroySet();
+    REQUIRE(device.destroyBuffer(firstManual).has_value());
+    REQUIRE(device.destroyBuffer(secondManual).has_value());
+    checkCleanDiagnostics(device);
+}
+
 namespace
 {
 
