@@ -769,6 +769,43 @@ TEST_CASE("an update-after-bind element written in place stays alive for submitt
     checkCleanDiagnostics(device);
 }
 
+TEST_CASE("update-after-bind writes grow the elements kept for work in flight geometrically",
+          "[size:medium][rhi][binding][compute][lifetime][warp]")
+{
+    auto device = createWarpDevice();
+    REQUIRE(rachis::test::requireCapabilities(device).updateAfterBindBindingArrays);
+    LargeArrayFixture fixture(device, rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind);
+    QueueBlocker blocker(device);
+
+    const std::array selections{Selection{.element = 0, .slot = 0}};
+    auto command = fixture.record(selections);
+    fixture.recordReadback(command);
+    auto submitted = device.submit(std::move(command));
+    REQUIRE(submitted.has_value());
+
+    constexpr std::uint32_t updates = 1000;
+    std::size_t capacity = 0;
+    std::uint32_t growths = 0;
+    for (std::uint32_t index = 0; index < updates; ++index)
+    {
+        REQUIRE(update(device, fixture.set(), 1, 2 + index, slice(fixture.values(), index % sliceValues.size()))
+                    .has_value());
+        const auto storage = rachis::d3d12::test::lastInPlaceReplacedStorage();
+        REQUIRE(storage.count == index + 1);
+        if (storage.capacity != capacity)
+        {
+            capacity = storage.capacity;
+            ++growths;
+        }
+    }
+    CHECK(growths <= 16);
+
+    blocker.release();
+    REQUIRE(device.wait(*submitted).has_value());
+    CHECK(fixture.result(0) == sliceValues[0]);
+    checkCleanDiagnostics(device);
+}
+
 TEST_CASE("update-after-bind elements that no submission saw are released when they are replaced",
           "[size:medium][rhi][binding][compute][warp]")
 {

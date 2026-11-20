@@ -238,6 +238,18 @@ namespace rachis::d3d12::test
         return s_value;
     }
 
+    struct InPlaceReplacedStorage final
+    {
+        std::size_t count = 0;
+        std::size_t capacity = 0;
+    };
+
+    [[nodiscard]] inline InPlaceReplacedStorage& lastInPlaceReplacedStorage() noexcept
+    {
+        static thread_local InPlaceReplacedStorage s_value;
+        return s_value;
+    }
+
     struct GlobalBarrierSnapshot final
     {
         std::uint32_t syncBefore = 0;

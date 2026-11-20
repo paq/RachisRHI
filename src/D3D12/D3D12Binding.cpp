@@ -1,6 +1,7 @@
 #include "D3D12/D3D12Binding.h"
 
 #include "Common/HandleTable.h"
+#include "Common/VectorReserve.h"
 #include "D3D12/D3D12RuntimePolicies.h"
 #include "D3D12/D3D12TestHooks.h"
 #include "Internal/PortableValidation.h"
@@ -2524,7 +2525,7 @@ namespace rachis::d3d12
                             ++visible;
                         }
                     }
-                    staged.retainingEpoch->replaced.reserve(staged.retainingEpoch->replaced.size() + visible);
+                    detail::reserveAdditional(staged.retainingEpoch->replaced, visible);
                 }
                 for (const auto& write : writes)
                 {
@@ -2619,6 +2620,13 @@ namespace rachis::d3d12
                     *write.replaced = std::move(write.source);
                     staged.retainingEpoch->replaced.push_back(std::move(write.replaced));
                 }
+            }
+            if (staged.retainingEpoch != nullptr)
+            {
+                test::lastInPlaceReplacedStorage() = {
+                    .count = staged.retainingEpoch->replaced.size(),
+                    .capacity = staged.retainingEpoch->replaced.capacity(),
+                };
             }
             ++inPlace.writeGeneration;
         }
