@@ -1885,25 +1885,30 @@ namespace rachis::metal
         {
             return validated;
         }
+        const auto& pipeline = *entry->boundComputePipeline;
+        if (auto valid = metalValidateStageResources(device, pipeline.computeStageBindings, entry->boundComputeVersions);
+            !valid)
+        {
+            return valid;
+        }
         if (layout.maxRecords == 0)
         {
             return {};
-        }
-        if (auto kept = metalRetainIndirectRecords(*native, *entry, records); !kept)
-        {
-            return kept;
         }
         if (auto prepared = native->ensureComputeEncoder(); !prepared)
         {
             return prepared;
         }
-        const auto& pipeline = *entry->boundComputePipeline;
         if (records.count != nil)
         {
             if (auto prepared = metalApplyComputeDispatchState(device, *entry, pipeline); !prepared)
             {
                 return prepared;
             }
+        }
+        if (auto kept = metalRetainIndirectRecords(*native, *entry, records); !kept)
+        {
+            return kept;
         }
         auto span = metalClampComputeRecords(device, *entry, *pipelines, layout, records);
         if (!span)
@@ -3519,13 +3524,13 @@ namespace rachis::metal
         {
             return prefixed;
         }
+        if (auto valid = metalValidateGraphicsResources(inputs->device, *entry, *pipeline); !valid)
+        {
+            return valid;
+        }
         if (layout.maxRecords == 0 || metalDrawScissoredOut(*entry, *pipeline))
         {
-            return metalValidateGraphicsResources(inputs->device, *entry, *pipeline);
-        }
-        if (auto kept = metalRetainIndirectRecords(*native, *entry, inputs->records); !kept)
-        {
-            return kept;
+            return {};
         }
         if (auto reserved = metalReserveDrawIndices(inputs->device, *entry, *pipeline, layout.maxRecords); !reserved)
         {
@@ -3537,6 +3542,10 @@ namespace rachis::metal
             {
                 return prepared;
             }
+        }
+        if (auto kept = metalRetainIndirectRecords(*native, *entry, inputs->records); !kept)
+        {
+            return kept;
         }
         auto span = metalClampRenderRecords(inputs->device, *entry, inputs->pipelines, layout, inputs->records);
         if (!span)
@@ -3607,13 +3616,13 @@ namespace rachis::metal
         {
             return prefixed;
         }
+        if (auto valid = metalValidateGraphicsResources(inputs->device, *entry, *pipeline); !valid)
+        {
+            return valid;
+        }
         if (layout.maxRecords == 0 || metalDrawScissoredOut(*entry, *pipeline))
         {
-            return metalValidateGraphicsResources(inputs->device, *entry, *pipeline);
-        }
-        if (auto kept = metalRetainIndirectRecords(*native, *entry, inputs->records); !kept)
-        {
-            return kept;
+            return {};
         }
         if (auto reserved = metalReserveDrawIndices(inputs->device, *entry, *pipeline, layout.maxRecords); !reserved)
         {
@@ -3625,6 +3634,10 @@ namespace rachis::metal
             {
                 return prepared;
             }
+        }
+        if (auto kept = metalRetainIndirectRecords(*native, *entry, inputs->records); !kept)
+        {
+            return kept;
         }
         auto span = metalClampRenderRecords(inputs->device, *entry, inputs->pipelines, layout, inputs->records);
         if (!span)
@@ -3793,13 +3806,13 @@ namespace rachis::metal
         {
             return prefixed;
         }
+        if (auto valid = metalValidateGraphicsResources(inputs->device, *entry, *pipeline); !valid)
+        {
+            return valid;
+        }
         if (layout.maxRecords == 0 || metalDrawScissoredOut(*entry, *pipeline))
         {
-            return metalValidateGraphicsResources(inputs->device, *entry, *pipeline);
-        }
-        if (auto kept = metalRetainIndirectRecords(*native, *entry, inputs->records); !kept)
-        {
-            return kept;
+            return {};
         }
         if (auto reserved = metalReserveDrawIndices(inputs->device, *entry, *pipeline, layout.maxRecords); !reserved)
         {
@@ -3811,6 +3824,10 @@ namespace rachis::metal
             {
                 return prepared;
             }
+        }
+        if (auto kept = metalRetainIndirectRecords(*native, *entry, inputs->records); !kept)
+        {
+            return kept;
         }
         auto span = metalClampRenderRecords(inputs->device, *entry, inputs->pipelines, layout, inputs->records);
         if (!span)

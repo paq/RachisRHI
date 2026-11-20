@@ -654,6 +654,47 @@ TEST_CASE("Metal rejects a bound binding array larger than the shader's compiled
     REQUIRE(dispatchWith(compiledCapacity, true).has_value());
     CHECK(rachis::metal::recordingTelemetry().indirectClampEncodeCount == 1);
 
+    {
+        auto set = rachis::test::createBindingSet(
+            device, {.layout = *layout, .writes = writes, .variableDescriptorCount = compiledCapacity * 2});
+        REQUIRE(set.has_value());
+        const auto rejectedArguments =
+            createFilledBuffer(device, std::as_bytes(std::span(dispatchArguments)), rachis::BufferUsage::indirect);
+        const auto rejectedCount =
+            createFilledBuffer(device, std::as_bytes(std::span(dispatchCount)), rachis::BufferUsage::indirect);
+        const auto argumentOwner = rachis::metal::boundBufferOwnerObserver(rejectedArguments);
+        const auto countOwner = rachis::metal::boundBufferOwnerObserver(rejectedCount);
+        REQUIRE_FALSE(argumentOwner.expired());
+        REQUIRE_FALSE(countOwner.expired());
+        auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+        REQUIRE(command.has_value());
+        REQUIRE(device.bindComputePipeline(*command, *pipeline).has_value());
+        REQUIRE(device.bindComputeBindingSet(*command, 0, *set).has_value());
+        const std::array<std::uint32_t, 2> read{0, 0};
+        REQUIRE(device.setComputePushConstants(*command, 0, std::as_bytes(std::span(read))).has_value());
+        const std::array rejectedCalls{
+            rachis::IndirectDispatchDesc{
+                .argumentBuffer = rejectedArguments, .maxDispatchCount = 1, .countBuffer = rejectedCount},
+            rachis::IndirectDispatchDesc{.argumentBuffer = rejectedArguments, .maxDispatchCount = 1},
+            rachis::IndirectDispatchDesc{.argumentBuffer = rejectedArguments, .maxDispatchCount = 0},
+        };
+        for (const auto& call : rejectedCalls)
+        {
+            CAPTURE(call.maxDispatchCount, call.countBuffer.isValid());
+            const auto rejected = device.dispatchIndirect(*command, call);
+            CHECK_FALSE(rejected.has_value());
+            CHECK((!rejected.has_value() && rejected.error().code == rachis::ErrorCode::invalidArgument));
+        }
+        REQUIRE(device.destroyBuffer(rejectedCount).has_value());
+        REQUIRE(device.destroyBuffer(rejectedArguments).has_value());
+        CHECK(argumentOwner.expired());
+        CHECK(countOwner.expired());
+        auto submitted = device.submit(std::move(*command));
+        REQUIRE(submitted.has_value());
+        REQUIRE(device.wait(*submitted).has_value());
+        REQUIRE(device.destroyBindingSet(*set).has_value());
+    }
+
     REQUIRE(device.destroyPipeline(*pipeline).has_value());
     REQUIRE(device.destroyPipelineLayout(*pipelineLayout).has_value());
     REQUIRE(device.destroyBindingLayout(*layout).has_value());
@@ -1034,6 +1075,65 @@ TEST_CASE("Metal validates bound binding arrays of draws that an empty scissor s
             CHECK(oversized.error().code == rachis::ErrorCode::invalidArgument);
             CHECK(drawWith(compiledCapacity, emptyScissor, indirect).has_value());
         }
+    }
+
+    {
+        auto set = rachis::test::createBindingSet(
+            device, {.layout = *layout, .writes = writes, .variableDescriptorCount = compiledCapacity * 2});
+        REQUIRE(set.has_value());
+        const auto rejectedArguments =
+            createFilledBuffer(device, std::as_bytes(std::span(drawArguments)), rachis::BufferUsage::indirect);
+        const std::array<std::uint32_t, 1> drawCount{1};
+        const auto rejectedCount =
+            createFilledBuffer(device, std::as_bytes(std::span(drawCount)), rachis::BufferUsage::indirect);
+        const auto argumentOwner = rachis::metal::boundBufferOwnerObserver(rejectedArguments);
+        const auto countOwner = rachis::metal::boundBufferOwnerObserver(rejectedCount);
+        REQUIRE_FALSE(argumentOwner.expired());
+        REQUIRE_FALSE(countOwner.expired());
+        auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::graphics);
+        REQUIRE(command.has_value());
+        REQUIRE(device
+                    .textureBarrier(*command,
+                                    {
+                                        .texture = *target,
+                                        .stagesAfter = rachis::PipelineStage::renderTarget,
+                                        .accessAfter = rachis::Access::renderTarget,
+                                        .layoutAfter = rachis::TextureLayout::renderTarget,
+                                    })
+                    .has_value());
+        const std::array attachments{rachis::ColorAttachment{
+            .view = *targetView,
+            .loadOperation = rachis::LoadOperation::clear,
+        }};
+        REQUIRE(device.beginRendering(*command, {.colorAttachments = attachments}).has_value());
+        REQUIRE(device.bindGraphicsPipeline(*command, *pipeline).has_value());
+        REQUIRE(device.bindGraphicsBindingSet(*command, 0, *set).has_value());
+        REQUIRE(device
+                    .setViewport(*command,
+                                 {
+                                     .width = static_cast<float>(targetSize),
+                                     .height = static_cast<float>(targetSize),
+                                     .maxDepth = 1.0F,
+                                 })
+                    .has_value());
+        REQUIRE(device.setScissor(*command, {.width = targetSize, .height = targetSize}).has_value());
+        for (const auto countBuffer : {rejectedCount, rachis::BufferHandle{}})
+        {
+            CAPTURE(countBuffer.isValid());
+            const auto rejected = device.drawIndirect(
+                *command, {.argumentBuffer = rejectedArguments, .maxDrawCount = 1, .countBuffer = countBuffer});
+            CHECK_FALSE(rejected.has_value());
+            CHECK((!rejected.has_value() && rejected.error().code == rachis::ErrorCode::invalidArgument));
+        }
+        REQUIRE(device.endRendering(*command).has_value());
+        REQUIRE(device.destroyBuffer(rejectedCount).has_value());
+        REQUIRE(device.destroyBuffer(rejectedArguments).has_value());
+        CHECK(argumentOwner.expired());
+        CHECK(countOwner.expired());
+        auto submitted = device.submit(std::move(*command));
+        REQUIRE(submitted.has_value());
+        REQUIRE(device.wait(*submitted).has_value());
+        REQUIRE(device.destroyBindingSet(*set).has_value());
     }
     CHECK(device.diagnosticCounts().errors == 0);
 
