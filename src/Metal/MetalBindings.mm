@@ -869,7 +869,54 @@ namespace rachis::metal
             return {};
         }
 
-        [[nodiscard]] Result<std::shared_ptr<MetalBindingLayoutRecord>> metalBuildLayout(const BindingLayoutDesc& desc)
+        [[nodiscard]] Status metalValidateLayoutStageSlots(const MetalBindingLayoutRecord& record,
+                                                           const DeviceCapabilities& capabilities)
+        {
+            constexpr std::array<ShaderStage, 5> stages{
+                ShaderStage::compute,
+                ShaderStage::vertex,
+                ShaderStage::pixel,
+                ShaderStage::task,
+                ShaderStage::mesh,
+            };
+            constexpr std::array<std::uint64_t, 3> limits{
+                metalMaxBufferArguments,
+                metalMaxTextureArguments,
+                metalMaxSamplerArguments,
+            };
+            for (const ShaderStage stage : stages)
+            {
+                if ((stage == ShaderStage::task && !capabilities.taskShaders) ||
+                    (stage == ShaderStage::mesh && !capabilities.meshShaders))
+                {
+                    continue;
+                }
+                std::array<std::uint64_t, 3> slots{};
+                for (const auto& entry : record.entries)
+                {
+                    if (!hasAny(entry.visibility, stage))
+                    {
+                        continue;
+                    }
+                    const bool unbounded = entry.count == unboundedBindingCount;
+                    slots[unbounded ? 0U : metalRangeClassIndex(entry.type)] += unbounded ? 1U : entry.count;
+                }
+                for (std::size_t kind = 0; kind < slots.size(); ++kind)
+                {
+                    if (slots[kind] > limits[kind])
+                    {
+                        return std::unexpected(metalSelectionError(
+                            ErrorCode::invalidArgument,
+                            "The binding layout exceeds Metal's per-stage argument-table capacity; a variable-count "
+                            "array takes one buffer slot."));
+                    }
+                }
+            }
+            return {};
+        }
+
+        [[nodiscard]] Result<std::shared_ptr<MetalBindingLayoutRecord>> metalBuildLayout(
+            const BindingLayoutDesc& desc, const DeviceCapabilities& capabilities)
         {
             auto record = std::make_shared<MetalBindingLayoutRecord>();
             record->label = std::string(desc.label);
@@ -891,6 +938,10 @@ namespace rachis::metal
             if (auto ranges = metalValidateLayoutRanges(*record); !ranges)
             {
                 return std::unexpected(std::move(ranges.error()));
+            }
+            if (auto slots = metalValidateLayoutStageSlots(*record, capabilities); !slots)
+            {
+                return std::unexpected(std::move(slots.error()));
             }
             return record;
         }
@@ -1125,7 +1176,7 @@ namespace rachis::metal
         {
             return std::unexpected(std::move(blocked.error()));
         }
-        auto record = metalBuildLayout(desc);
+        auto record = metalBuildLayout(desc, capabilities_);
         if (!record)
         {
             return std::unexpected(std::move(record.error()));
