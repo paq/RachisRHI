@@ -462,6 +462,27 @@ namespace rachis::vulkan
             return {};
         }
 
+        [[nodiscard]] Status retainBindingSetLeases(VulkanResourceAllocator& resources,
+                                                    VulkanCommandBuffer& commandBuffer,
+                                                    std::span<const VulkanNativeBindingSet> resolvedSets)
+        {
+            if (std::ranges::all_of(resolvedSets, [](const auto& set) noexcept { return set.swapchainLeases.empty(); }))
+            {
+                return retainAccelerationStructureConsumers(commandBuffer, resolvedSets);
+            }
+            const auto mark = resources.swapchainImageReferenceMark(commandBuffer.native());
+            auto retained = retainSwapchainImageLeases(resources, commandBuffer, resolvedSets);
+            if (retained)
+            {
+                retained = retainAccelerationStructureConsumers(commandBuffer, resolvedSets);
+            }
+            if (!retained)
+            {
+                resources.rollBackSwapchainImages(commandBuffer.native(), mark);
+            }
+            return retained;
+        }
+
         [[nodiscard]] Result<VulkanCommandUses*> reserveBindingSetUses(VulkanCommandBuffer& commandBuffer,
                                                                        std::size_t setCount)
         {
@@ -548,13 +569,9 @@ namespace rachis::vulkan
             {
                 return std::unexpected(std::move(uses.error()));
             }
-            if (auto leases = retainSwapchainImageLeases(*resources, commandBuffer, scratch.resolvedSets); !leases)
+            if (auto leases = retainBindingSetLeases(*resources, commandBuffer, scratch.resolvedSets); !leases)
             {
                 return leases;
-            }
-            if (auto consumers = retainAccelerationStructureConsumers(commandBuffer, scratch.resolvedSets); !consumers)
-            {
-                return consumers;
             }
             retainBindingSetUses(**uses, scratch.resolvedSets);
 
@@ -2556,12 +2573,15 @@ namespace rachis::vulkan
             return {};
         }
 
-        if (arguments->argumentAddress == 0 || arguments->countAddress == 0)
+        if (arguments->argumentAddress == 0 || arguments->countAddress == 0 ||
+            (arguments->argumentAddress + desc.argumentOffset) % indirectArgumentAlignment != 0 ||
+            (arguments->countAddress + desc.countOffset) % indirectArgumentAlignment != 0)
         {
             return std::unexpected(Error{
                 ErrorCode::unsupported,
                 0,
-                "GPU-counted indirect dispatch requires device-addressable argument and count buffers.",
+                "GPU-counted indirect dispatch requires device-addressable argument and count buffers whose "
+                "records start at 4-byte aligned device addresses.",
             });
         }
         const auto queueType = commandBuffer.queueType();
@@ -3455,7 +3475,8 @@ namespace rachis::vulkan
         }
         auto arguments = resources_->resolveBindingBuffer(desc.argumentBuffer);
         if (!arguments || !hasAny(arguments->desc.usage, BufferUsage::indirect) || arguments->deviceAddress == 0 ||
-            desc.argumentOffset % 4 != 0 || desc.argumentOffset > arguments->desc.size ||
+            desc.argumentOffset % 4 != 0 || (arguments->deviceAddress + desc.argumentOffset) % 4 != 0 ||
+            desc.argumentOffset > arguments->desc.size ||
             sizeof(DispatchIndirectArguments) > arguments->desc.size - desc.argumentOffset)
         {
             return std::unexpected(Error{

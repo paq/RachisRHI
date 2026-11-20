@@ -615,6 +615,7 @@ namespace rachis::vulkan
         formatCache_.reset();
         activeFormatCache_ = sharedFormatCache != nullptr ? sharedFormatCache : &formatCache_;
         maxComputeWorkgroupSubgroups_ = 0;
+        maxFragmentCombinedOutputResources_ = std::numeric_limits<std::uint32_t>::max();
         if (physical != VK_NULL_HANDLE && instanceTable != nullptr)
         {
             VkPhysicalDeviceVulkan13Properties v13{};
@@ -636,6 +637,10 @@ namespace rachis::vulkan
             std::memcpy(deviceUuid_.data(), id.deviceUUID, VK_UUID_SIZE);
             std::memcpy(driverUuid_.data(), id.driverUUID, VK_UUID_SIZE);
             maxComputeWorkgroupSubgroups_ = v13.maxComputeWorkgroupSubgroups;
+            if (const auto combined = properties2.properties.limits.maxFragmentCombinedOutputResources; combined != 0)
+            {
+                maxFragmentCombinedOutputResources_ = combined;
+            }
         }
         if (device_ != VK_NULL_HANDLE && table_ != nullptr)
         {
@@ -1697,6 +1702,38 @@ namespace rachis::vulkan
 
     } // namespace
 
+    namespace
+    {
+
+        [[nodiscard]] std::uint64_t fragmentStorageOutputs(const VulkanShaderManager::NativeShaderModule& pixel,
+                                                           const std::optional<VulkanNativePipelineLayout>& layout)
+        {
+            std::uint64_t outputs = 0;
+            for (const auto& binding : pixel.bindings)
+            {
+                if (binding.type != ShaderResourceType::storageBuffer &&
+                    binding.type != ShaderResourceType::storageTexture)
+                {
+                    continue;
+                }
+                if (binding.count != unboundedBindingCount)
+                {
+                    outputs += binding.count;
+                }
+                else if (layout.has_value() && binding.set < layout->sets.size())
+                {
+                    outputs += layout->sets[binding.set].variableDescriptorCapacity;
+                }
+                else
+                {
+                    outputs += 1;
+                }
+            }
+            return outputs;
+        }
+
+    } // namespace
+
     Status VulkanPipelineManager::resolveGraphicsShaders(const GraphicsPipelineDesc& desc,
                                                          PreparedGraphicsCompilation& prepared) const
     {
@@ -1802,6 +1839,17 @@ namespace rachis::vulkan
         if (auto resolved = resolveGraphicsShaders(desc, prepared); !resolved)
         {
             return std::unexpected(std::move(resolved.error()));
+        }
+        if (prepared.pixelShader.has_value() &&
+            fragmentStorageOutputs(*prepared.pixelShader, prepared.layout) + desc.colorTargets.size() >
+                maxFragmentCombinedOutputResources_)
+        {
+            return std::unexpected(Error{
+                ErrorCode::unsupported,
+                0,
+                "The color attachments of this graphics pipeline and the storage buffers and storage textures of its "
+                "pixel shader exceed the device's maxFragmentCombinedOutputResources limit.",
+            });
         }
         if (auto copied = copyVariableSizeState(desc, prepared.desc); !copied)
         {

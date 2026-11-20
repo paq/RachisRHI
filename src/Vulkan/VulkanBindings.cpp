@@ -7,6 +7,7 @@
 #include "Internal/VulkanImageBarriers.h"
 #include "Internal/VulkanStageSupport.h"
 #include "Internal/VulkanValidationHelpers.h"
+#include "Vulkan/VulkanTestHooks.h"
 
 #include <algorithm>
 #include <cstring>
@@ -813,6 +814,19 @@ namespace rachis::vulkan
                                        [&](std::uint64_t count) { return count <= limits.maxPerStageResources; });
         }
 
+        [[nodiscard]] constexpr VulkanDescriptorLimits allSetsUpdateAfterBindLimits(
+            const VulkanDescriptorLimits& regular, const VulkanDescriptorLimits& updateAfterBind) noexcept
+        {
+            auto limits = updateAfterBind;
+            limits.maxDescriptorSetUniformBuffersDynamic =
+                (std::max)(regular.maxDescriptorSetUniformBuffersDynamic,
+                           updateAfterBind.maxDescriptorSetUniformBuffersDynamic);
+            limits.maxDescriptorSetStorageBuffersDynamic =
+                (std::max)(regular.maxDescriptorSetStorageBuffersDynamic,
+                           updateAfterBind.maxDescriptorSetStorageBuffersDynamic);
+            return limits;
+        }
+
         [[nodiscard]] constexpr std::uint64_t remainingDescriptors(std::uint32_t limit, std::uint64_t used) noexcept
         {
             return used >= limit ? 0 : limit - used;
@@ -1338,6 +1352,16 @@ namespace rachis::vulkan
             std::shared_ptr<VulkanSwapchainImageLease> lease;
         };
 
+        [[nodiscard]] std::shared_ptr<VulkanSwapchainImageLease> swapchainViewLease(
+            const VulkanBindingManager::BindingSlot& slot)
+        {
+            if (!slot.swapchainView || slot.keepAlive == nullptr)
+            {
+                return nullptr;
+            }
+            return static_cast<const SwapchainViewBinding*>(slot.keepAlive.get())->lease;
+        }
+
         [[nodiscard]] Status bindTextureView(VulkanResourceAllocator& resources,
                                              const BindingWrite& write,
                                              VulkanBindingManager::BindingSlot& slot)
@@ -1618,53 +1642,64 @@ namespace rachis::vulkan
             return std::make_shared<const std::vector<VulkanAccelerationStructureUse>>(std::move(uses));
         }
 
-        [[nodiscard]] std::shared_ptr<const VulkanBindingManager::SwapchainViewSlots> collectSwapchainViews(
+        [[nodiscard]] std::shared_ptr<const VulkanBindingManager::SwapchainViewLeases> collectSwapchainViews(
             const std::vector<VulkanBindingManager::BindingSlot>& slots)
         {
-            VulkanBindingManager::SwapchainViewSlots views;
-            for (std::size_t index = 0; index < slots.size(); ++index)
+            VulkanBindingManager::SwapchainViewLeases views;
+            for (const auto& slot : slots)
             {
-                const auto& slot = slots[index];
-                if (!slot.swapchainView || slot.keepAlive == nullptr)
+                const auto lease = swapchainViewLease(slot);
+                if (lease == nullptr)
                 {
                     continue;
                 }
-                views.slots.push_back(index);
-                views.leases.push_back(static_cast<const SwapchainViewBinding*>(slot.keepAlive.get())->lease);
+                if (const auto found = std::ranges::find(views.leases, lease); found != views.leases.end())
+                {
+                    ++views.slotCounts[static_cast<std::size_t>(found - views.leases.begin())];
+                    continue;
+                }
+                views.leases.push_back(lease);
+                views.slotCounts.push_back(1);
             }
-            if (views.slots.empty())
+            if (views.leases.empty())
             {
                 return nullptr;
             }
-            return std::make_shared<const VulkanBindingManager::SwapchainViewSlots>(std::move(views));
+            return std::make_shared<const VulkanBindingManager::SwapchainViewLeases>(std::move(views));
         }
 
-        [[nodiscard]] std::shared_ptr<const VulkanBindingManager::SwapchainViewSlots> swapchainViewsAfterInPlaceWrites(
-            const std::shared_ptr<const VulkanBindingManager::SwapchainViewSlots>& current,
+        [[nodiscard]] std::shared_ptr<const VulkanBindingManager::SwapchainViewLeases> swapchainViewsAfterInPlaceWrites(
+            const std::shared_ptr<const VulkanBindingManager::SwapchainViewLeases>& current,
             std::span<const VulkanBindingManager::StagedSlot> staged)
         {
-            if (current == nullptr || std::ranges::none_of(staged, [&](const VulkanBindingManager::StagedSlot& write) {
-                    return std::ranges::binary_search(current->slots, write.index);
-                }))
+            if (current == nullptr ||
+                std::ranges::all_of(staged, [](const auto& write) { return write.replacedSwapchainLease == nullptr; }))
             {
                 return current;
             }
-            VulkanBindingManager::SwapchainViewSlots kept;
-            for (std::size_t index = 0; index < current->slots.size(); ++index)
+            auto kept = *current;
+#ifdef RACHIS_TESTING
+            test::inPlaceSwapchainLeaseCopies().fetch_add(kept.leases.size(), std::memory_order_relaxed);
+#endif
+            for (const auto& write : staged)
             {
-                const auto slot = current->slots[index];
-                if (std::ranges::binary_search(staged, slot, {}, &VulkanBindingManager::StagedSlot::index))
+                const auto found = std::ranges::find(kept.leases, write.replacedSwapchainLease);
+                if (write.replacedSwapchainLease == nullptr || found == kept.leases.end())
                 {
                     continue;
                 }
-                kept.slots.push_back(slot);
-                kept.leases.push_back(current->leases[index]);
+                const auto index = static_cast<std::size_t>(found - kept.leases.begin());
+                if (--kept.slotCounts[index] == 0)
+                {
+                    kept.leases.erase(found);
+                    kept.slotCounts.erase(kept.slotCounts.begin() + static_cast<std::ptrdiff_t>(index));
+                }
             }
-            if (kept.slots.empty())
+            if (kept.leases.empty())
             {
                 return nullptr;
             }
-            return std::make_shared<const VulkanBindingManager::SwapchainViewSlots>(std::move(kept));
+            return std::make_shared<const VulkanBindingManager::SwapchainViewLeases>(std::move(kept));
         }
 
         [[nodiscard]] std::vector<VulkanBindingManager::BindingSlot> makeSlots(
@@ -2306,6 +2341,7 @@ namespace rachis::vulkan
             for (auto& slot : staged)
             {
                 slot.slot = table[slot.index];
+                slot.replacedSwapchainLease = swapchainViewLease(slot.slot);
             }
         }
         const BindingResourceSources sources{
@@ -2639,10 +2675,12 @@ namespace rachis::vulkan
                 }
             }
         }
-        const bool withinLimits = anyUpdateAfterBind
-                                      ? withinDescriptorLimits(withoutUpdateAfterBind, descriptorLimits_) &&
-                                            withinDescriptorLimits(totals, updateAfterBindLimits_)
-                                      : withinDescriptorLimits(totals, descriptorLimits_);
+        const bool withinLimits =
+            anyUpdateAfterBind
+                ? withinDescriptorLimits(withoutUpdateAfterBind, descriptorLimits_) &&
+                      withinDescriptorLimits(totals,
+                                             allSetsUpdateAfterBindLimits(descriptorLimits_, updateAfterBindLimits_))
+                : withinDescriptorLimits(totals, descriptorLimits_);
         if (!withinLimits)
         {
             return std::unexpected(Error{
@@ -2725,6 +2763,7 @@ namespace rachis::vulkan
             .setLayout = (*found)->keepAlive != nullptr ? (*found)->keepAlive->setLayout : VK_NULL_HANDLE,
             .entries = (*found)->entries,
             .dynamicBufferCount = (*found)->dynamicBufferCount,
+            .variableDescriptorCapacity = (*found)->variableDescriptorCapacity,
         };
     }
 
@@ -2816,6 +2855,7 @@ namespace rachis::vulkan
                 .setLayout = set->keepAlive != nullptr ? set->keepAlive->setLayout : VK_NULL_HANDLE,
                 .entries = set->entries,
                 .dynamicBufferCount = set->dynamicBufferCount,
+                .variableDescriptorCapacity = set->variableDescriptorCapacity,
             });
         }
         native.drawIndex = (*found)->drawIndex;

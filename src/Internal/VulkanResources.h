@@ -161,6 +161,10 @@ namespace rachis::vulkan
         {
             alignment = std::max(alignment, accelerationStructureInstanceAddressAlignment);
         }
+        if (hasAny(usage, BufferUsage::indirect))
+        {
+            alignment = std::max(alignment, VkDeviceSize{indirectArgumentAlignment});
+        }
         return alignment;
     }
 
@@ -359,6 +363,8 @@ namespace rachis::vulkan
         [[nodiscard]] Result<ResolvedRenderAttachment> resolveRenderAttachment(TextureViewHandle view) const;
         [[nodiscard]] Status retainSwapchainImages(VkCommandBuffer command,
                                                    std::span<const std::shared_ptr<VulkanSwapchainImageLease>> leases);
+        [[nodiscard]] std::size_t swapchainImageReferenceMark(VkCommandBuffer command) const;
+        void rollBackSwapchainImages(VkCommandBuffer command, std::size_t mark) noexcept;
         [[nodiscard]] Status bufferBarrier(VkCommandBuffer command,
                                            QueueType queueType,
                                            const BufferBarrier& barrier,
@@ -774,6 +780,7 @@ namespace rachis::vulkan
         std::unordered_map<VkCommandBuffer, CommandLayoutState> commandLayouts_;
         [[nodiscard]] Status retainSwapchainImagesLocked(
             VkCommandBuffer command, std::span<const std::shared_ptr<VulkanSwapchainImageLease>> leases);
+        void rollBackSwapchainImagesLocked(VkCommandBuffer command, std::size_t mark) noexcept;
         void releaseSwapchainImagesLocked(VkCommandBuffer command) noexcept;
         std::unordered_map<VkCommandBuffer, std::vector<std::shared_ptr<VulkanSwapchainImageLease>>>
             recordedSwapchainImages_;

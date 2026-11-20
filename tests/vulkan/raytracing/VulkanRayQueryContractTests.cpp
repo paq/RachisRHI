@@ -863,7 +863,14 @@ TEST_CASE("Vulkan TLAS builds and updates reject CPU instances whose fields do n
     notANumber.transform[3] = nan;
     auto infinite = valid;
     infinite.transform[0] = infinity;
-    const std::array invalid{wideId, wideMask, wideOffset, bothOpacities, unknownFlag, notANumber, infinite};
+    auto flattened = valid;
+    flattened.transform[0] = 0.0F;
+    auto repeatedRows = valid;
+    repeatedRows.transform = {1.0F, 2.0F, 3.0F, 5.0F, 2.0F, 4.0F, 6.0F, -1.0F, 0.0F, 1.0F, 0.0F, 7.0F};
+    const std::array invalid{
+        wideId, wideMask, wideOffset, bothOpacities, unknownFlag, notANumber, infinite, flattened, repeatedRows};
+    auto rotatedAndScaled = valid;
+    rotatedAndScaled.transform = {0.0F, -2.0F, 0.0F, 4.0F, 0.5F, 0.0F, 0.0F, -3.0F, 0.0F, 0.0F, 3.0F, 1.0F};
 
     auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
     REQUIRE(command.has_value());
@@ -918,7 +925,7 @@ TEST_CASE("Vulkan TLAS builds and updates reject CPU instances whose fields do n
                     *update,
                     {
                         .target = *topLevel,
-                        .instances = std::span(&valid, 1),
+                        .instances = std::span(&rotatedAndScaled, 1),
                         .flags = rachis::AccelerationStructureBuildFlag::allowUpdate,
                         .scratch = *scratch,
                     })

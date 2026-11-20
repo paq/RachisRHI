@@ -20,7 +20,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -316,11 +315,8 @@ namespace
 
         [[nodiscard]] std::uint32_t result(std::uint64_t offset)
         {
-            auto mapped = device_.mapBuffer(readback_);
-            REQUIRE(mapped.has_value());
             std::uint32_t value = 0;
-            std::memcpy(&value, mapped->data + offset, sizeof(value));
-            REQUIRE(device_.unmapBuffer(readback_).has_value());
+            REQUIRE(device_.readBuffer(readback_, offset, std::as_writable_bytes(std::span(&value, 1))).has_value());
             return value;
         }
 

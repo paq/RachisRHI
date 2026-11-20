@@ -1032,6 +1032,7 @@ namespace rachis::vulkan
             std::unordered_map<std::uint32_t, std::uint32_t> scalars;
             std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> composites;
             std::unordered_map<std::uint32_t, std::uint32_t> valueTypeIds;
+            std::uint32_t nextSyntheticId = 0x8000'0000U;
         };
 
         void recordSpecConstantOpDependencies(
@@ -1190,19 +1191,16 @@ namespace rachis::vulkan
             return copy;
         }
 
-        void evaluateSpecConstantCompositeInsert(
-            const SpecConstantOpRecord& specOp,
-            std::unordered_map<std::uint32_t, std::vector<std::uint32_t>>& compositeConstants)
+        void evaluateSpecConstantCompositeInsert(const SpecConstantOpRecord& specOp, SpirvConstantTable& constants)
         {
-            std::uint32_t nextSyntheticId = 0x8000'0000U + static_cast<std::uint32_t>(compositeConstants.size());
             const auto objectId = specOp.operands[0];
             const auto compositeId = specOp.operands[1];
             const auto indexPath = std::span<const std::uint32_t>(specOp.operands).subspan(2);
-            auto updated =
-                cloneCompositeWithInsertedObject(compositeConstants, compositeId, indexPath, objectId, nextSyntheticId);
+            auto updated = cloneCompositeWithInsertedObject(
+                constants.composites, compositeId, indexPath, objectId, constants.nextSyntheticId);
             if (updated.has_value())
             {
-                compositeConstants[specOp.resultId] = std::move(*updated);
+                constants.composites[specOp.resultId] = std::move(*updated);
             }
         }
 
@@ -1415,6 +1413,80 @@ namespace rachis::vulkan
             }
         }
 
+        [[nodiscard]] std::optional<std::uint32_t> evaluateScalarSpecConstantOp(
+            std::uint32_t innerOpcode,
+            std::span<const std::uint32_t> operandIds,
+            std::uint32_t resultMask,
+            const std::unordered_map<std::uint32_t, TypeInfo>& types,
+            const SpirvConstantTable& constants)
+        {
+            if (operandIds.size() == 1)
+            {
+                const auto operand = findScalarConstant(constants.scalars, operandIds[0]);
+                if (!operand.has_value())
+                {
+                    return std::nullopt;
+                }
+                const auto operandBytes = constantByteWidth(types, constants.valueTypeIds, operandIds[0]);
+                return evaluateUnarySpecConstantOp(innerOpcode, *operand, operandBytes, resultMask);
+            }
+            if (operandIds.size() == 2)
+            {
+                const auto lhs = findScalarConstant(constants.scalars, operandIds[0]);
+                const auto rhs = findScalarConstant(constants.scalars, operandIds[1]);
+                if (lhs.has_value() && rhs.has_value())
+                {
+                    return evaluateBinarySpecConstantOp(innerOpcode, *lhs, *rhs, resultMask);
+                }
+            }
+            return std::nullopt;
+        }
+
+        void evaluateVectorSpecConstantOp(const SpecConstantOpRecord& specOp,
+                                          std::uint32_t componentTypeId,
+                                          const std::unordered_map<std::uint32_t, TypeInfo>& types,
+                                          SpirvConstantTable& constants)
+        {
+            const auto& operands = specOp.operands;
+            if (operands.empty() || operands.size() > 2)
+            {
+                return;
+            }
+            std::array<std::vector<std::uint32_t>, 2> components;
+            for (std::size_t index = 0; index < operands.size(); ++index)
+            {
+                const auto composite = constants.composites.find(operands[index]);
+                if (composite == constants.composites.end())
+                {
+                    return;
+                }
+                components[index] = composite->second;
+            }
+            if (operands.size() == 2 && components[0].size() != components[1].size())
+            {
+                return;
+            }
+            const auto resultMask = scalarWidthMask(scalarByteWidth(types, componentTypeId));
+            std::vector<std::uint32_t> result;
+            result.reserve(components[0].size());
+            for (std::size_t component = 0; component < components[0].size(); ++component)
+            {
+                const std::array operandIds{components[0][component],
+                                            operands.size() == 2 ? components[1][component] : 0U};
+                const auto value = evaluateScalarSpecConstantOp(
+                    specOp.innerOpcode, std::span(operandIds).first(operands.size()), resultMask, types, constants);
+                if (!value.has_value())
+                {
+                    return;
+                }
+                const auto id = constants.nextSyntheticId++;
+                constants.scalars[id] = *value;
+                constants.valueTypeIds[id] = componentTypeId;
+                result.push_back(id);
+            }
+            constants.composites[specOp.resultId] = std::move(result);
+        }
+
         void evaluateSpecConstantOp(const SpecConstantOpRecord& specOp,
                                     const std::unordered_map<std::uint32_t, TypeInfo>& types,
                                     SpirvConstantTable& constants)
@@ -1428,7 +1500,7 @@ namespace rachis::vulkan
             }
             if (innerOpcode == spirvOpCompositeInsert && operands.size() >= 3)
             {
-                evaluateSpecConstantCompositeInsert(specOp, constants.composites);
+                evaluateSpecConstantCompositeInsert(specOp, constants);
                 return;
             }
             if (innerOpcode == spirvOpCompositeExtract && operands.size() >= 2)
@@ -1442,26 +1514,15 @@ namespace rachis::vulkan
                 return;
             }
 
+            if (const auto resultType = types.find(specOp.resultTypeId);
+                resultType != types.end() && resultType->second.kind == TypeInfo::Kind::vector)
+            {
+                evaluateVectorSpecConstantOp(specOp, resultType->second.element, types, constants);
+                return;
+            }
             const auto resultMask = scalarWidthMask(scalarByteWidth(types, specOp.resultTypeId));
-            std::optional<std::uint32_t> resolved;
-            if (operands.size() == 1)
-            {
-                if (const auto operand = findScalarConstant(constants.scalars, operands[0]); operand.has_value())
-                {
-                    const auto operandBytes = constantByteWidth(types, constants.valueTypeIds, operands[0]);
-                    resolved = evaluateUnarySpecConstantOp(innerOpcode, *operand, operandBytes, resultMask);
-                }
-            }
-            else if (operands.size() == 2)
-            {
-                const auto lhs = findScalarConstant(constants.scalars, operands[0]);
-                const auto rhs = findScalarConstant(constants.scalars, operands[1]);
-                if (lhs.has_value() && rhs.has_value())
-                {
-                    resolved = evaluateBinarySpecConstantOp(innerOpcode, *lhs, *rhs, resultMask);
-                }
-            }
-            if (resolved.has_value())
+            if (const auto resolved = evaluateScalarSpecConstantOp(innerOpcode, operands, resultMask, types, constants);
+                resolved.has_value())
             {
                 constants.scalars[specOp.resultId] = *resolved;
             }

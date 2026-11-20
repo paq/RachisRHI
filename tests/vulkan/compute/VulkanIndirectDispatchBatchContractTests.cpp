@@ -323,12 +323,8 @@ namespace
             REQUIRE(submitted.has_value());
             REQUIRE(device_.wait(*submitted).has_value());
             device_.collectGarbage();
-            auto mapped = device_.mapBuffer(readback_);
-            REQUIRE(mapped.has_value());
-            REQUIRE(mapped->size == outputSize);
             std::array<std::uint32_t, valueCount> values{};
-            std::memcpy(values.data(), mapped->data, sizeof(values));
-            REQUIRE(device_.unmapBuffer(readback_).has_value());
+            REQUIRE(device_.readBuffer(readback_, 0, std::as_writable_bytes(std::span(values))).has_value());
             return values;
         }
 
@@ -729,6 +725,11 @@ TEST_CASE("Vulkan GPU-counted indirect dispatch clamps the count to maxDispatchC
         .usage = rachis::BufferUsage::copySource,
         .memoryType = rachis::MemoryType::upload,
     });
+    auto smallCountSeed = device.createBuffer({
+        .size = sizeof(std::uint32_t),
+        .usage = rachis::BufferUsage::copySource,
+        .memoryType = rachis::MemoryType::upload,
+    });
     auto output = device.createBuffer({
         .size = outputSize,
         .usage = rachis::BufferUsage::storage | rachis::BufferUsage::copySource | rachis::BufferUsage::copyDestination,
@@ -747,6 +748,7 @@ TEST_CASE("Vulkan GPU-counted indirect dispatch clamps the count to maxDispatchC
     REQUIRE(argumentBuffer.has_value());
     REQUIRE(countBuffer.has_value());
     REQUIRE(countSeed.has_value());
+    REQUIRE(smallCountSeed.has_value());
     REQUIRE(output.has_value());
     REQUIRE(outputSeed.has_value());
     REQUIRE(readback.has_value());
@@ -755,6 +757,8 @@ TEST_CASE("Vulkan GPU-counted indirect dispatch clamps the count to maxDispatchC
     REQUIRE(device.writeBuffer(*argumentBuffer, 0, std::as_bytes(std::span(records))).has_value());
     constexpr std::uint32_t largeCount = 100;
     REQUIRE(device.writeBuffer(*countSeed, 0, std::as_bytes(std::span(&largeCount, 1))).has_value());
+    constexpr std::uint32_t smallCount = 1;
+    REQUIRE(device.writeBuffer(*smallCountSeed, 0, std::as_bytes(std::span(&smallCount, 1))).has_value());
 
     const std::array bindingEntries{
         rachis::BindingLayoutEntry{0, rachis::BindingType::storageBuffer, rachis::ShaderStage::compute},
@@ -848,14 +852,46 @@ TEST_CASE("Vulkan GPU-counted indirect dispatch clamps the count to maxDispatchC
     REQUIRE(device.bindComputeBindingSet(*command, 0, *bindingSet).has_value());
     const std::array constants{0U, 1U};
     REQUIRE(device.setComputePushConstants(*command, 0, std::as_bytes(std::span(constants))).has_value());
+    const rachis::IndirectDispatchDesc countedDispatch{
+        .argumentBuffer = *argumentBuffer,
+        .maxDispatchCount = 3,
+        .countBuffer = *countBuffer,
+    };
+    REQUIRE(device.dispatchIndirect(*command, countedDispatch).has_value());
     REQUIRE(device
-                .dispatchIndirect(*command,
-                                  {
-                                      .argumentBuffer = *argumentBuffer,
-                                      .maxDispatchCount = 3,
-                                      .countBuffer = *countBuffer,
-                                  })
+                .bufferBarrier(*command,
+                               {
+                                   .buffer = *countBuffer,
+                                   .stagesBefore = rachis::PipelineStage::all,
+                                   .stagesAfter = rachis::PipelineStage::copy,
+                                   .accessBefore = rachis::Access::indirectArgument,
+                                   .accessAfter = rachis::Access::copyDestination,
+                               })
                 .has_value());
+    REQUIRE(device
+                .copyBuffer(*command,
+                            {
+                                .source = *smallCountSeed,
+                                .destination = *countBuffer,
+                                .size = sizeof(std::uint32_t),
+                            })
+                .has_value());
+    REQUIRE(device
+                .bufferBarrier(*command,
+                               {
+                                   .buffer = *countBuffer,
+                                   .stagesBefore = rachis::PipelineStage::copy,
+                                   .stagesAfter = rachis::PipelineStage::indirect,
+                                   .accessBefore = rachis::Access::copyDestination,
+                                   .accessAfter = rachis::Access::indirectArgument,
+                               })
+                .has_value());
+    REQUIRE(
+        device
+            .bufferBarrier(
+                *command, outputBarrier(*output, rachis::PipelineStage::computeShader, rachis::Access::unorderedAccess))
+            .has_value());
+    REQUIRE(device.dispatchIndirect(*command, countedDispatch).has_value());
     REQUIRE(
         device.bufferBarrier(*command, outputBarrier(*output, rachis::PipelineStage::copy, rachis::Access::copySource))
             .has_value());
@@ -871,13 +907,10 @@ TEST_CASE("Vulkan GPU-counted indirect dispatch clamps the count to maxDispatchC
     REQUIRE(submitted.has_value());
     REQUIRE(device.wait(*submitted).has_value());
 
-    auto mapped = device.mapBuffer(*readback);
-    REQUIRE(mapped.has_value());
     std::array<std::uint32_t, valueCount> values{};
-    std::memcpy(values.data(), mapped->data, sizeof(values));
-    CHECK(values.front() == 3);
-    CHECK(values.back() == 3);
-    REQUIRE(device.unmapBuffer(*readback).has_value());
+    REQUIRE(device.readBuffer(*readback, 0, std::as_writable_bytes(std::span(values))).has_value());
+    CHECK(values.front() == 4);
+    CHECK(values.back() == 4);
 
     REQUIRE(device.destroyPipeline(*pipeline).has_value());
     REQUIRE(device.destroyPipelineLayout(*pipelineLayout).has_value());
@@ -887,6 +920,7 @@ TEST_CASE("Vulkan GPU-counted indirect dispatch clamps the count to maxDispatchC
     REQUIRE(device.destroyBuffer(*argumentBuffer).has_value());
     REQUIRE(device.destroyBuffer(*countBuffer).has_value());
     REQUIRE(device.destroyBuffer(*countSeed).has_value());
+    REQUIRE(device.destroyBuffer(*smallCountSeed).has_value());
     REQUIRE(device.destroyBuffer(*output).has_value());
     REQUIRE(device.destroyBuffer(*outputSeed).has_value());
     REQUIRE(device.destroyBuffer(*readback).has_value());

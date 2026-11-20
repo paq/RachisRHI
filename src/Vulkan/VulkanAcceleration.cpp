@@ -179,11 +179,23 @@ namespace rachis::vulkan
                      hasAny(flags, AccelerationStructureInstanceFlag::forceNonOpaque));
         }
 
+        [[nodiscard]] bool invertibleLinearPart(const std::array<float, 12>& transform) noexcept
+        {
+            const auto at = [&](std::size_t row, std::size_t column) {
+                return static_cast<double>(transform[(row * 4U) + column]);
+            };
+            const double determinant = at(0, 0) * ((at(1, 1) * at(2, 2)) - (at(1, 2) * at(2, 1))) -
+                                       at(0, 1) * ((at(1, 0) * at(2, 2)) - (at(1, 2) * at(2, 0))) +
+                                       at(0, 2) * ((at(1, 0) * at(2, 1)) - (at(1, 1) * at(2, 0)));
+            return std::isfinite(determinant) && determinant != 0.0;
+        }
+
         [[nodiscard]] bool validTopLevelInstance(const AccelerationStructureInstance& instance) noexcept
         {
             return instance.instanceId <= 0x00ff'ffffU && instance.instanceMask <= 0xffU &&
                    instance.hitGroupOffset <= 0x00ff'ffffU && validInstanceFlags(instance.flags) &&
-                   std::ranges::all_of(instance.transform, [](float value) { return std::isfinite(value); });
+                   std::ranges::all_of(instance.transform, [](float value) { return std::isfinite(value); }) &&
+                   invertibleLinearPart(instance.transform);
         }
 
         [[nodiscard]] VkAccelerationStructureInstanceKHR nativeInstance(const AccelerationStructureInstance& instance,
@@ -631,7 +643,8 @@ namespace rachis::vulkan
                         ErrorCode::invalidArgument,
                         0,
                         "A TLAS instance needs an instanceId and hitGroupOffset below 2^24, an instanceMask below "
-                        "2^8, known flags without both forceOpaque and forceNonOpaque, and a finite transform.",
+                        "2^8, known flags without both forceOpaque and forceNonOpaque, and a finite transform whose "
+                        "3x3 part is invertible.",
                     });
                 }
                 auto bottom = accelerationStructures.resolve(instance.bottomLevel);
@@ -1117,6 +1130,7 @@ namespace rachis::vulkan
         std::vector<std::uint32_t> primitiveCounts;
         geometries.reserve(input.geometries.size());
         primitiveCounts.reserve(input.geometries.size());
+        std::uint64_t totalPrimitives = 0;
         for (const auto& geometry : input.geometries)
         {
             auto native = validatedBottomLevelGeometry(*resources_, geometry);
@@ -1124,8 +1138,27 @@ namespace rachis::vulkan
             {
                 return std::unexpected(std::move(native.error()));
             }
+            if (!geometries.empty() && native->geometry.geometryType != geometries.front().geometryType)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidArgument,
+                    0,
+                    "A BLAS build cannot mix triangle and AABB geometries.",
+                });
+            }
             geometries.push_back(native->geometry);
             primitiveCounts.push_back(native->primitiveCount);
+            totalPrimitives += native->primitiveCount;
+        }
+        if (const auto limit = capabilities_->rayTracingLimits.maxPrimitivesPerBottomLevel;
+            limit != 0 && totalPrimitives > limit)
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidArgument,
+                0,
+                "The geometries of a BLAS build hold more primitives in total than the device's "
+                "maxPrimitivesPerBottomLevel limit.",
+            });
         }
         return queryBuildSizes(VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
                                input.flags,

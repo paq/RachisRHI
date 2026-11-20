@@ -4862,6 +4862,85 @@ TEST_CASE("Vulkan publishes update-after-bind binding arrays with exactly the up
     }
 }
 
+namespace
+{
+
+    thread_local VkSubgroupFeatureFlags gMockSubgroupOperations = 0;
+
+    VKAPI_ATTR void VKAPI_CALL mockGetSubgroupProperties2(VkPhysicalDevice physical,
+                                                          VkPhysicalDeviceProperties2* pProperties)
+    {
+        mockGetPhysicalDeviceProperties(physical, &pProperties->properties);
+        for (auto* next = static_cast<VkBaseOutStructure*>(pProperties->pNext); next != nullptr; next = next->pNext)
+        {
+            if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES)
+            {
+                auto* v11 = reinterpret_cast<VkPhysicalDeviceVulkan11Properties*>(next);
+                v11->subgroupSize = 32;
+                v11->subgroupSupportedStages = VK_SHADER_STAGE_COMPUTE_BIT;
+                v11->subgroupSupportedOperations = gMockSubgroupOperations;
+            }
+            else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES)
+            {
+                auto* v13 = reinterpret_cast<VkPhysicalDeviceVulkan13Properties*>(next);
+                v13->minSubgroupSize = 16;
+                v13->maxSubgroupSize = 64;
+                v13->maxComputeWorkgroupSubgroups = 64;
+                v13->requiredSubgroupSizeStages = VK_SHADER_STAGE_COMPUTE_BIT;
+            }
+        }
+    }
+
+    VKAPI_ATTR void VKAPI_CALL mockGetSubgroupSizeControlFeatures2(VkPhysicalDevice,
+                                                                   VkPhysicalDeviceFeatures2* pFeatures)
+    {
+        for (auto* next = static_cast<VkBaseOutStructure*>(pFeatures->pNext); next != nullptr; next = next->pNext)
+        {
+            if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES)
+            {
+                auto* v13 = reinterpret_cast<VkPhysicalDeviceVulkan13Features*>(next);
+                v13->subgroupSizeControl = VK_TRUE;
+                v13->computeFullSubgroups = VK_TRUE;
+            }
+        }
+    }
+
+} // namespace
+
+TEST_CASE("Vulkan publishes required compute subgroup sizes whether or not the device has subgroup arithmetic",
+          "[size:small][rhi][vulkan][vuid]")
+{
+    rachis::vulkan::VulkanInstanceTable instanceTable{};
+    instanceTable.vkEnumeratePhysicalDevices = &mockEnumeratePhysicalDevices;
+    instanceTable.vkGetPhysicalDeviceProperties = &mockGetPhysicalDeviceProperties;
+    instanceTable.vkGetPhysicalDeviceProperties2 = &mockGetSubgroupProperties2;
+    instanceTable.vkGetPhysicalDeviceMemoryProperties = &mockGetPhysicalDeviceMemoryProperties;
+    instanceTable.vkGetPhysicalDeviceFeatures2 = &mockGetSubgroupSizeControlFeatures2;
+    instanceTable.vkEnumerateDeviceExtensionProperties = &mockEnumerateDeviceExtensionProperties;
+    instanceTable.vkGetPhysicalDeviceQueueFamilyProperties = &mockGetPhysicalDeviceQueueFamilyProperties;
+    const auto publish = [&](VkSubgroupFeatureFlags operations) {
+        gMockSubgroupOperations = operations;
+        auto records = rachis::vulkan::discoverVulkanPhysicalDevices(
+            fakeHandle<VkInstance>(0x13), instanceTable, rachis::VulkanInstanceReport{.apiMajor = 1, .apiMinor = 3});
+        gMockSubgroupOperations = 0;
+        REQUIRE(records.has_value());
+        REQUIRE(records->size() == 1);
+        return rachis::vulkan::publishVulkanCapabilities(instanceTable, records->front(), false);
+    };
+
+    for (const VkSubgroupFeatureFlags operations :
+         {VkSubgroupFeatureFlags{VK_SUBGROUP_FEATURE_BASIC_BIT},
+          VkSubgroupFeatureFlags{VK_SUBGROUP_FEATURE_BASIC_BIT | VK_SUBGROUP_FEATURE_ARITHMETIC_BIT}})
+    {
+        CAPTURE(operations);
+        const auto capabilities = publish(operations);
+        CHECK(capabilities.subgroupOperations == ((operations & VK_SUBGROUP_FEATURE_ARITHMETIC_BIT) != 0));
+        CHECK(capabilities.subgroup.requiredSizeStages == rachis::ShaderStage::compute);
+        CHECK(capabilities.subgroup.minSize == 16);
+        CHECK(capabilities.subgroup.maxSize == 64);
+    }
+}
+
 TEST_CASE("Vulkan update-after-bind sets come from an update-after-bind pool and change in place while bound",
           "[size:small][rhi][vulkan][vuid][bindings-mock]")
 {
@@ -5046,6 +5125,58 @@ TEST_CASE("Vulkan pipeline layouts hold update-after-bind sets to the update-aft
     CHECK(overRegularBesideUpdateAfterBind.error().code == rachis::ErrorCode::unsupported);
 
     bindings.shutdown();
+    gDescriptorMock = nullptr;
+}
+
+TEST_CASE("Vulkan pipeline layouts with update-after-bind sets hold dynamic buffers to the larger dynamic limit",
+          "[size:small][rhi][vulkan][vuid][bindings-mock]")
+{
+    MockDescriptorDispatch mock;
+    gDescriptorMock = &mock;
+    const auto table = makeMockDescriptorTable();
+    rachis::DeviceCapabilities caps{};
+    caps.partiallyBoundBindingArrays = true;
+    caps.updateAfterBindBindingArrays = true;
+    const rachis::vulkan::VulkanDescriptorLimits regular{
+        .maxDescriptorSetUniformBuffersDynamic = 2,
+        .maxDescriptorSetStorageBuffersDynamic = 2,
+    };
+    const rachis::vulkan::VulkanDescriptorLimits noUpdateAfterBindDynamic{
+        .maxDescriptorSetUniformBuffersDynamic = 0,
+        .maxDescriptorSetStorageBuffersDynamic = 0,
+    };
+    const rachis::vulkan::VulkanDescriptorLimits largerUpdateAfterBindDynamic{
+        .maxDescriptorSetUniformBuffersDynamic = 8,
+        .maxDescriptorSetStorageBuffersDynamic = 8,
+    };
+    const auto updateAfterBindFlags = rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind;
+
+    const auto check = [&](const rachis::vulkan::VulkanDescriptorLimits& updateAfterBind,
+                           rachis::BindingType type,
+                           std::uint32_t count) {
+        rachis::vulkan::VulkanBindingManager bindings;
+        bindings.initialize(fakeHandle<VkDevice>(0x47), &table, caps, nullptr, {}, regular, updateAfterBind);
+        const std::array dynamicEntries{rachis::BindingLayoutEntry{0, type, rachis::ShaderStage::compute, count}};
+        auto dynamicLayout = bindings.createBindingLayout({.entries = dynamicEntries});
+        REQUIRE(dynamicLayout.has_value());
+        const std::array textureEntries{rachis::BindingLayoutEntry{
+            0, rachis::BindingType::sampledTexture, rachis::ShaderStage::compute, 4, updateAfterBindFlags}};
+        auto textureLayout = bindings.createBindingLayout({.entries = textureEntries});
+        REQUIRE(textureLayout.has_value());
+        const std::array sets{*dynamicLayout, *textureLayout};
+        auto created = bindings.createPipelineLayout({.bindingLayouts = sets});
+        bindings.shutdown();
+        return created.has_value() ? std::optional<rachis::ErrorCode>{} : std::optional{created.error().code};
+    };
+
+    for (const auto type : {rachis::BindingType::dynamicUniformBuffer, rachis::BindingType::dynamicStorageBuffer})
+    {
+        INFO("binding type " << static_cast<int>(type));
+        CHECK_FALSE(check(noUpdateAfterBindDynamic, type, 2).has_value());
+        CHECK(check(noUpdateAfterBindDynamic, type, 3) == rachis::ErrorCode::unsupported);
+        CHECK_FALSE(check(largerUpdateAfterBindDynamic, type, 2).has_value());
+        CHECK(check(largerUpdateAfterBindDynamic, type, 3) == rachis::ErrorCode::unsupported);
+    }
     gDescriptorMock = nullptr;
 }
 
@@ -5754,7 +5885,17 @@ TEST_CASE("Vulkan buffers for acceleration-structure build inputs get 16-byte al
     CHECK(alignment(BufferUsage::accelerationStructureBuildInput | BufferUsage::shaderBindingTable) == sbtAlignment);
     CHECK(alignment(BufferUsage::accelerationStructureScratch) == scratchAlignment);
     CHECK(alignment(BufferUsage::shaderBindingTable) == sbtAlignment);
-    CHECK(alignment(BufferUsage::storage | BufferUsage::indirect) == 1);
+    CHECK(alignment(BufferUsage::storage) == 1);
+}
+
+TEST_CASE("Vulkan indirect-argument buffers get device addresses aligned for their records",
+          "[size:small][rhi][vulkan][vuid][indirect]")
+{
+    using rachis::BufferUsage;
+    const auto alignment = [](BufferUsage usage) { return rachis::vulkan::bufferAddressAlignment(usage, 64, 128); };
+    CHECK(alignment(BufferUsage::indirect) == rachis::indirectArgumentAlignment);
+    CHECK(alignment(BufferUsage::storage | BufferUsage::indirect) == rachis::indirectArgumentAlignment);
+    CHECK(alignment(BufferUsage::indirect | BufferUsage::accelerationStructureBuildInput) == 16);
 }
 
 TEST_CASE("Vulkan acceleration-structure size queries accept a driver that needs no build scratch",

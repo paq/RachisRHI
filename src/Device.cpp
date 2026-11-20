@@ -138,8 +138,7 @@ namespace rachis
                 });
             }
             const auto& capabilities = backend.capabilities();
-            if (!capabilities.subgroupOperations ||
-                !hasAny(capabilities.subgroup.requiredSizeStages, ShaderStage::compute))
+            if (!hasAny(capabilities.subgroup.requiredSizeStages, ShaderStage::compute))
             {
                 return std::unexpected(Error{
                     ErrorCode::unsupported,

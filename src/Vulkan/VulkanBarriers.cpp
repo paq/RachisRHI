@@ -1973,20 +1973,47 @@ namespace rachis::vulkan
             auto reference = lease->retainRecordedReference();
             if (!reference)
             {
-                for (auto index = previousCount; index < retained->size(); ++index)
-                {
-                    (*retained)[index]->releaseRecordedReference();
-                }
-                retained->resize(previousCount);
-                if (retained->empty())
-                {
-                    recordedSwapchainImages_.erase(command);
-                }
+                rollBackSwapchainImagesLocked(command, previousCount);
                 return reference;
             }
             retained->push_back(lease);
         }
         return {};
+    }
+
+    std::size_t VulkanResourceAllocator::swapchainImageReferenceMark(VkCommandBuffer command) const
+    {
+        const std::scoped_lock lock(mutex_);
+        const auto found = recordedSwapchainImages_.find(command);
+        return found != recordedSwapchainImages_.end() ? found->second.size() : 0U;
+    }
+
+    void VulkanResourceAllocator::rollBackSwapchainImages(VkCommandBuffer command, std::size_t mark) noexcept
+    {
+        const std::scoped_lock lock(mutex_);
+        rollBackSwapchainImagesLocked(command, mark);
+    }
+
+    void VulkanResourceAllocator::rollBackSwapchainImagesLocked(VkCommandBuffer command, std::size_t mark) noexcept
+    {
+        const auto found = recordedSwapchainImages_.find(command);
+        if (found == recordedSwapchainImages_.end())
+        {
+            return;
+        }
+        auto& retained = found->second;
+        for (auto index = mark; index < retained.size(); ++index)
+        {
+            retained[index]->releaseRecordedReference();
+        }
+        if (mark < retained.size())
+        {
+            retained.resize(mark);
+        }
+        if (retained.empty())
+        {
+            recordedSwapchainImages_.erase(found);
+        }
     }
 
     void VulkanResourceAllocator::releaseSwapchainImagesLocked(VkCommandBuffer command) noexcept

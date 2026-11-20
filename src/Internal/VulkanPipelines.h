@@ -12,6 +12,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -389,6 +390,7 @@ namespace rachis::vulkan
         VkPhysicalDevice physical_ = VK_NULL_HANDLE;
         DeviceCapabilities capabilities_{};
         std::uint32_t maxComputeWorkgroupSubgroups_ = 0;
+        std::uint32_t maxFragmentCombinedOutputResources_ = std::numeric_limits<std::uint32_t>::max();
         bool depthBiasClampSupported_ = true;
         bool maintenance5_ = false;
         VulkanMultiviewStageSupport multiviewStages_{};

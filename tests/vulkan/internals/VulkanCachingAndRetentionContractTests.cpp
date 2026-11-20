@@ -124,6 +124,51 @@ namespace
         return spv;
     }
 
+    [[nodiscard]] SpirvBuilder makeStorageWritingPixelSpirv()
+    {
+        SpirvBuilder spv;
+        spv.op(17, {1});
+        spv.op(14, {0, 1});
+        spv.entryPoint(4, 11, "psMain", {20, 21, 30});
+        spv.op(16, {11, 7});
+        spv.op(71, {30, 30, 0});
+        spv.op(71, {3, 6, 4});
+        spv.op(72, {4, 0, 35, 0});
+        spv.op(71, {4, 2});
+        spv.op(71, {20, 34, 0});
+        spv.op(71, {20, 33, 0});
+        spv.op(71, {21, 34, 0});
+        spv.op(71, {21, 33, 1});
+        spv.op(19, {1});
+        spv.op(33, {2, 1});
+        spv.op(21, {5, 32, 0});
+        spv.op(21, {6, 32, 1});
+        spv.op(22, {7, 32});
+        spv.op(23, {8, 7, 4});
+        spv.op(29, {3, 5});
+        spv.op(30, {4, 3});
+        spv.op(32, {9, 12, 4});
+        spv.op(59, {9, 20, 12});
+        spv.op(59, {9, 21, 12});
+        spv.op(32, {12, 3, 8});
+        spv.op(59, {12, 30, 3});
+        spv.op(43, {6, 13, 0});
+        spv.op(43, {5, 14, 1});
+        spv.op(43, {7, 15, 0x3F80'0000U});
+        spv.op(44, {8, 16, 15, 15, 15, 15});
+        spv.op(32, {17, 12, 5});
+        spv.op(54, {1, 11, 0, 2});
+        spv.op(248, {22});
+        spv.op(65, {17, 23, 20, 13, 13});
+        spv.op(62, {23, 14});
+        spv.op(65, {17, 24, 21, 13, 13});
+        spv.op(62, {24, 14});
+        spv.op(62, {30, 16});
+        spv.op(253, {});
+        spv.op(56, {});
+        return spv;
+    }
+
     [[nodiscard]] rachis::DeviceCapabilities baselinePerfCapabilities() noexcept
     {
         rachis::DeviceCapabilities caps{};
@@ -182,6 +227,7 @@ namespace
         std::uintptr_t nextHandle = 0x10000;
         MemoryTopologyKind memoryTopology = MemoryTopologyKind::coherentHostVisible;
         float maxSamplerLodBias = 16.0F;
+        std::uint32_t maxFragmentCombinedOutputResources = 0;
 
         std::vector<std::unique_ptr<std::byte[]>> hostAllocations;
         std::vector<std::uint32_t> allocatedMemoryTypes;
@@ -303,6 +349,7 @@ namespace
         props->limits.nonCoherentAtomSize = 64;
         props->limits.maxSamplerAnisotropy = 16.0F;
         props->limits.maxSamplerLodBias = gPerfMock->maxSamplerLodBias;
+        props->limits.maxFragmentCombinedOutputResources = gPerfMock->maxFragmentCombinedOutputResources;
         props->limits.framebufferColorSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT;
         props->limits.framebufferDepthSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT;
     }
@@ -1833,6 +1880,86 @@ TEST_CASE("VulkanPipelineManager counts color attachments against the fragment s
     const auto full = pipelineFor(pipelineLayoutWith(4));
     REQUIRE_FALSE(full.has_value());
     CHECK(full.error().code == rachis::ErrorCode::unsupported);
+    pipelines.shutdown();
+    bindings.shutdown();
+    shaders.shutdown();
+}
+
+TEST_CASE("VulkanPipelineManager counts pixel-shader storage writes and color attachments against "
+          "maxFragmentCombinedOutputResources",
+          "[size:small][rhi][vulkan]")
+{
+    ScopedPerfMock mock;
+    mock.state.maxFragmentCombinedOutputResources = 3;
+    rachis::vulkan::VulkanInstanceTable instanceTable{};
+    VolkDeviceTable table{};
+    populatePerfTables(instanceTable, table);
+
+    const auto device = fakeVk<VkDevice>(0x321);
+    const auto physical = fakeVk<VkPhysicalDevice>(0x322);
+    const auto caps = baselinePerfCapabilities();
+    rachis::vulkan::VulkanShaderManager shaders;
+    shaders.initialize(device, &table, caps, &instanceTable);
+    rachis::vulkan::VulkanBindingManager bindings;
+    bindings.initialize(device, &table, caps, &instanceTable);
+    rachis::vulkan::VulkanPipelineManager pipelines;
+    pipelines.initialize(device, &table, physical, caps, &shaders, &bindings, &instanceTable, true);
+
+    const auto vertexSpv = makeMinimalGraphicsSpirv();
+    const auto vs = shaders.createShaderModule({
+        .stage = rachis::ShaderStage::vertex,
+        .bytecode = vertexSpv.bytes(),
+        .entryPoint = "vsMain",
+    });
+    REQUIRE(vs.has_value());
+    const auto pixelSpv = makeStorageWritingPixelSpirv();
+    const std::array storageBindings{
+        rachis::ShaderBindingRequirement{0, 0, rachis::ShaderResourceType::storageBuffer, 1},
+        rachis::ShaderBindingRequirement{0, 1, rachis::ShaderResourceType::storageBuffer, 1},
+    };
+    const auto ps = shaders.createShaderModule({
+        .stage = rachis::ShaderStage::pixel,
+        .bytecode = pixelSpv.bytes(),
+        .entryPoint = "psMain",
+        .shaderInterface = {.bindings = storageBindings},
+    });
+    if (!ps)
+    {
+        UNSCOPED_INFO(ps.error().message);
+    }
+    REQUIRE(ps.has_value());
+    const std::array entries{
+        rachis::BindingLayoutEntry{0, rachis::BindingType::storageBuffer, rachis::ShaderStage::pixel, 1},
+        rachis::BindingLayoutEntry{1, rachis::BindingType::storageBuffer, rachis::ShaderStage::pixel, 1},
+    };
+    const auto setLayout = bindings.createBindingLayout({.entries = entries});
+    REQUIRE(setLayout.has_value());
+    const auto layout = bindings.createPipelineLayout({.bindingLayouts = std::array{*setLayout}});
+    REQUIRE(layout.has_value());
+    const auto pipelineWith = [&](std::span<const rachis::ColorTargetState> colorTargets) {
+        return pipelines.createGraphicsPipeline({
+            .layout = *layout,
+            .vertexShader = *vs,
+            .pixelShader = *ps,
+            .colorTargets = colorTargets,
+        });
+    };
+
+    const std::array oneTarget{rachis::ColorTargetState{.format = rachis::Format::rgba8Unorm}};
+    const auto fits = pipelineWith(oneTarget);
+    if (!fits)
+    {
+        UNSCOPED_INFO(fits.error().message);
+    }
+    CHECK(fits.has_value());
+    const std::array twoTargets{
+        rachis::ColorTargetState{.format = rachis::Format::rgba8Unorm},
+        rachis::ColorTargetState{.format = rachis::Format::rgba8Unorm},
+    };
+    const auto over = pipelineWith(twoTargets);
+    REQUIRE_FALSE(over.has_value());
+    CHECK(over.error().code == rachis::ErrorCode::unsupported);
+    CHECK(over.error().message.find("maxFragmentCombinedOutputResources") != std::string::npos);
     pipelines.shutdown();
     bindings.shutdown();
     shaders.shutdown();
