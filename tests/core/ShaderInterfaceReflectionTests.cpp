@@ -141,6 +141,36 @@ TEST_CASE("Shader interface reflection keeps the resources the entry point uses"
     CHECK(vulkan.error().find("'push' is in binding set 4") != std::string::npos);
 }
 
+TEST_CASE("Shader interface reflection reads Boolean used flags like integer flags",
+          "[size:small][rhi][tooling][shader-interface]")
+{
+    constexpr std::string_view json = R"({
+        "parameters": [
+            {"name": "results", "binding": {"kind": "unorderedAccess", "index": 0},
+             "type": {"kind": "resource", "baseShape": "structuredBuffer", "access": "readWrite"}},
+            {"name": "unused", "binding": {"kind": "unorderedAccess", "index": 1},
+             "type": {"kind": "resource", "baseShape": "structuredBuffer", "access": "readWrite"}}
+        ],
+        "entryPoints": [
+            {"name": "main", "stage": "compute", "threadGroupSize": [1, 1, 1],
+             "bindings": [
+                {"name": "results", "binding": {"kind": "unorderedAccess", "index": 0, "used": true}},
+                {"name": "unused", "binding": {"kind": "unorderedAccess", "index": 1, "used": false}}
+             ]}
+        ]
+    })";
+    for (const auto backend : {InterfaceBackend::d3d12, InterfaceBackend::vulkan, InterfaceBackend::metal})
+    {
+        INFO("backend " << rachis::shader_tool::interfaceBackendName(backend));
+        const auto reflected = reflectShaderInterface(json, backend, "main", InterfaceStage::compute);
+        REQUIRE(reflected.has_value());
+        const std::vector<ReflectedBinding> expected{
+            {.name = "results", .set = 0, .binding = 0, .type = "storageBuffer", .count = 1},
+        };
+        CHECK(reflected->bindings == expected);
+    }
+}
+
 TEST_CASE("Shader interface reflection reads vertex input locations per backend",
           "[size:small][rhi][tooling][shader-interface]")
 {

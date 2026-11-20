@@ -204,6 +204,21 @@ namespace rachis::shader_tool
             return list.size() == 1 ? &list.front() : nullptr;
         }
 
+        [[nodiscard]] inline bool isUsedRecord(const JsonValue& record)
+        {
+            const auto* used = record.find("used");
+            if (used == nullptr)
+            {
+                return false;
+            }
+            if (const auto* flag = used->asBool(); flag != nullptr)
+            {
+                return *flag;
+            }
+            const auto value = used->asUint32();
+            return value.has_value() && *value != 0;
+        }
+
         [[nodiscard]] inline std::optional<std::vector<std::string>> usedParameterNames(const JsonValue& entry)
         {
             const auto* bindings = entry.find("bindings");
@@ -215,10 +230,8 @@ namespace rachis::shader_tool
             for (const auto& item : *bindings->asArray())
             {
                 const auto records = bindingRecords(item);
-                const bool isUsed = std::ranges::any_of(records, [](const JsonValue* record) {
-                    const auto flag = jsonUint32(*record, "used");
-                    return flag.has_value() && *flag != 0;
-                });
+                const bool isUsed =
+                    std::ranges::any_of(records, [](const JsonValue* record) { return isUsedRecord(*record); });
                 if (isUsed)
                 {
                     used.emplace_back(jsonString(item.find("name")));
