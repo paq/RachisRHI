@@ -4,6 +4,7 @@
 #include "GeneratedDrawIndexPixel.h"
 #include "GeneratedDrawIndexVertex.h"
 #include "GeneratedDrawIndexVertexSlang.h"
+#include "GeneratedEntryBindingArray.h"
 #include "GeneratedLayouts.h"
 #include "GeneratedLayoutsSlang.h"
 #include "GeneratedSlang.h"
@@ -25,6 +26,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -854,6 +856,56 @@ TEST_CASE("rachis_add_shader interfaces declare the draw index a shader reads on
             CHECK(device.destroyShaderModule(*vertexModule).has_value());
         }
         CHECK(device.destroyShaderModule(*pixelModule).has_value());
+        const auto counts = device.diagnosticCounts();
+        CHECK(counts.errors == 0);
+        CHECK(counts.corruptions == 0);
+    }
+}
+
+TEST_CASE("rachis_add_shader interfaces hold the resource arrays of entry-point parameters on every backend",
+          RACHIS_GENERATED_INTERFACE_TAGS)
+{
+    namespace entryArray = rachis_shaders::reflection::GeneratedEntryBindingArray;
+    for (const auto& spec : generatedBackends())
+    {
+        CAPTURE(spec.name);
+        auto created = rachis::createDevice(spec.desc);
+        if (!created && spec.skipWhenUnavailable && rachis::test::skipWithoutCreatedDevice(created))
+        {
+            continue;
+        }
+        REQUIRE(created.has_value());
+        auto device = std::move(*created);
+        const auto backend = spec.desc.backend;
+        const auto capabilities = rachis::test::requireCapabilities(device);
+        if (!capabilities.variableDescriptorCountBindingArrays)
+        {
+            continue;
+        }
+
+        auto module = device.createShaderModule(entryArray::moduleDesc(backend, "Generated entry binding array"));
+        INFO((module ? std::string{} : module.error().message));
+        REQUIRE(module.has_value());
+        std::vector<rachis::BindingLayoutHandle> layouts;
+        auto layout = createGeneratedPipelineLayout(
+            device,
+            entryArray::bindingSetCount(backend),
+            [&](std::uint32_t set) { return entryArray::bindingLayout(backend, set); },
+            entryArray::pushConstantRanges(backend),
+            layouts);
+        INFO((layout ? std::string{} : layout.error().message));
+        REQUIRE(layout.has_value());
+        auto pipeline = device.createComputePipeline({.layout = *layout, .computeShader = *module});
+        INFO((pipeline ? std::string{} : pipeline.error().message));
+        REQUIRE(pipeline.has_value());
+
+        CHECK(device.destroyPipeline(*pipeline).has_value());
+        CHECK(device.destroyPipelineLayout(*layout).has_value());
+        for (const auto handle : layouts)
+        {
+            CHECK(device.destroyBindingLayout(handle).has_value());
+        }
+        CHECK(device.destroyShaderModule(*module).has_value());
         const auto counts = device.diagnosticCounts();
         CHECK(counts.errors == 0);
         CHECK(counts.corruptions == 0);

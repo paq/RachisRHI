@@ -68,6 +68,7 @@ namespace rachis::shader_tool
         DataUsage usage = DataUsage::constantBuffer;
         std::uint32_t set = 0;
         std::uint32_t binding = 0;
+        bool entryParameter = false;
     };
 
     struct DataBlock final

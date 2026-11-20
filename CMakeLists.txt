@@ -3298,6 +3298,13 @@ if(rachis_build_tests)
             ENTRY main
             STAGE compute
             REFLECT)
+        # An unbounded binding array declared as an entry-point parameter, which the generated interface must list.
+        rachis_add_shader(RachisRHITests
+            NAME GeneratedEntryBindingArray
+            SOURCE tests/shaders/GeneratedEntryBindingArray.slang
+            ENTRY entryArrayMain
+            STAGE compute
+            REFLECT)
         # Shaders that include Rachis/DrawIndex.hlsli through the include directory rachis_add_shader passes.
         rachis_add_shader(RachisRHITests
             NAME GeneratedDrawIndexVertex
