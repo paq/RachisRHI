@@ -710,6 +710,167 @@ namespace
         return bytes;
     }
 
+    [[nodiscard]] std::vector<std::byte> wordsAsBytes(const std::vector<std::uint32_t>& words)
+    {
+        std::vector<std::byte> bytes(words.size() * sizeof(std::uint32_t));
+        std::memcpy(bytes.data(), words.data(), bytes.size());
+        return bytes;
+    }
+
+    [[nodiscard]] std::vector<std::byte> vertexModuleWithGroupedLocation()
+    {
+        constexpr std::uint32_t mainName = 0x6E69616DU;
+        return wordsAsBytes({
+            0x07230203U,
+            0x00010600U,
+            0U,
+            11U,
+            0U,
+            (2U << 16U) | 17U,
+            1U,
+            (3U << 16U) | 14U,
+            0U,
+            1U,
+            (6U << 16U) | 15U,
+            0U,
+            1U,
+            mainName,
+            0U,
+            2U,
+            (4U << 16U) | 71U,
+            3U,
+            30U,
+            0U,
+            (2U << 16U) | 73U,
+            3U,
+            (3U << 16U) | 74U,
+            3U,
+            2U,
+            (3U << 16U) | 22U,
+            4U,
+            32U,
+            (4U << 16U) | 23U,
+            5U,
+            4U,
+            4U,
+            (4U << 16U) | 32U,
+            6U,
+            1U,
+            5U,
+            (4U << 16U) | 59U,
+            6U,
+            2U,
+            1U,
+            (2U << 16U) | 19U,
+            7U,
+            (3U << 16U) | 33U,
+            8U,
+            7U,
+            (5U << 16U) | 54U,
+            7U,
+            1U,
+            0U,
+            8U,
+            (2U << 16U) | 248U,
+            9U,
+            (4U << 16U) | 61U,
+            5U,
+            10U,
+            2U,
+            (1U << 16U) | 253U,
+            (1U << 16U) | 56U,
+        });
+    }
+
+    [[nodiscard]] std::vector<std::byte> computeModuleWithGroupedBlock()
+    {
+        constexpr std::uint32_t mainName = 0x6E69616DU;
+        return wordsAsBytes({
+            0x07230203U,
+            0x00010600U,
+            0U,
+            40U,
+            0U,
+            (2U << 16U) | 17U,
+            1U,
+            (3U << 16U) | 14U,
+            0U,
+            1U,
+            (6U << 16U) | 15U,
+            5U,
+            1U,
+            mainName,
+            0U,
+            20U,
+            (6U << 16U) | 16U,
+            1U,
+            17U,
+            1U,
+            1U,
+            1U,
+            (4U << 16U) | 71U,
+            30U,
+            34U,
+            0U,
+            (4U << 16U) | 71U,
+            30U,
+            33U,
+            3U,
+            (3U << 16U) | 71U,
+            32U,
+            2U,
+            (4U << 16U) | 71U,
+            31U,
+            35U,
+            4U,
+            (2U << 16U) | 73U,
+            30U,
+            (2U << 16U) | 73U,
+            31U,
+            (2U << 16U) | 73U,
+            32U,
+            (3U << 16U) | 74U,
+            30U,
+            20U,
+            (3U << 16U) | 74U,
+            32U,
+            21U,
+            (4U << 16U) | 75U,
+            31U,
+            21U,
+            0U,
+            (4U << 16U) | 21U,
+            4U,
+            32U,
+            0U,
+            (3U << 16U) | 30U,
+            21U,
+            4U,
+            (4U << 16U) | 32U,
+            23U,
+            2U,
+            21U,
+            (4U << 16U) | 59U,
+            23U,
+            20U,
+            2U,
+            (2U << 16U) | 19U,
+            7U,
+            (3U << 16U) | 33U,
+            8U,
+            7U,
+            (5U << 16U) | 54U,
+            7U,
+            1U,
+            0U,
+            8U,
+            (2U << 16U) | 248U,
+            9U,
+            (1U << 16U) | 253U,
+            (1U << 16U) | 56U,
+        });
+    }
+
     [[nodiscard]] std::vector<std::byte> pnmsShader(std::string_view json)
     {
         constexpr std::array metallib{std::byte{'M'}, std::byte{'T'}, std::byte{'L'}, std::byte{'B'}, std::byte{0}};
@@ -837,6 +998,46 @@ TEST_CASE("Shader interface reflection reads the draw index from each backend's 
     CHECK(header->find("case rachis::Backend::d3d12:\n            return d3d12::drawIndex;") != std::string::npos);
     CHECK(header->find("RachisDrawIndex") == std::string::npos);
 }
+TEST_CASE("SPIR-V reflection applies decorations from decoration groups",
+          "[size:small][rhi][tooling][shader-interface]")
+{
+    const auto vertex = vertexModuleWithGroupedLocation();
+    const auto reads = rachis::shader_tool::spirvReadsDrawIndex(vertex, "main", InterfaceStage::vertex);
+    INFO((reads ? std::string{} : reads.error()));
+    REQUIRE(reads.has_value());
+    CHECK_FALSE(*reads);
+    const auto vertexInterface =
+        rachis::shader_tool::reflectSpirvShaderInterface(vertex, "main", InterfaceStage::vertex);
+    INFO((vertexInterface ? std::string{} : vertexInterface.error()));
+    REQUIRE(vertexInterface.has_value());
+    CHECK(vertexInterface->vertexInputLocations == std::vector<std::uint32_t>{0});
+
+    const auto compute = rachis::shader_tool::reflectSpirvShaderInterface(
+        computeModuleWithGroupedBlock(), "main", InterfaceStage::compute);
+    INFO((compute ? std::string{} : compute.error()));
+    REQUIRE(compute.has_value());
+    REQUIRE(compute->bindings.size() == 1);
+    CHECK(compute->bindings[0].set == 0);
+    CHECK(compute->bindings[0].binding == 3);
+    CHECK(compute->bindings[0].type == "uniformBuffer");
+    REQUIRE(compute->blocks.size() == 1);
+    REQUIRE(compute->blocks[0].type->fields.size() == 1);
+    CHECK(compute->blocks[0].type->fields[0].offset == 4);
+}
+
+TEST_CASE("SPIR-V reflection rejects a draw-index read in a stage that cannot read it",
+          "[size:small][rhi][tooling][shader-interface][draw-index]")
+{
+    const auto fragment =
+        workgroupModuleWithDrawIndex(rachis::shader_tool::detail::SpirvLayoutModule::executionModelFragment);
+    const auto reads = rachis::shader_tool::spirvReadsDrawIndex(fragment, "main", InterfaceStage::pixel);
+    REQUIRE_FALSE(reads.has_value());
+    CHECK(reads.error().find("pixel entry point 'main' reads the draw index") != std::string::npos);
+    const auto reflected = rachis::shader_tool::reflectSpirvShaderInterface(fragment, "main", InterfaceStage::pixel);
+    REQUIRE_FALSE(reflected.has_value());
+    CHECK(reflected.error().find("pixel entry point 'main' reads the draw index") != std::string::npos);
+}
+
 TEST_CASE("Shader interface reflection reads task and mesh entry points and their draw index",
           "[size:small][rhi][tooling][shader-interface][draw-index]")
 {

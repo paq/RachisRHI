@@ -141,6 +141,12 @@ namespace rachis::shader_tool
         return "compute";
     }
 
+    [[nodiscard]] inline std::string drawIndexStageError(InterfaceStage stage, std::string_view entryPoint)
+    {
+        return "The " + std::string(interfaceStageName(stage)) + " entry point '" + std::string(entryPoint) +
+               "' reads the draw index, which only vertex, task, and mesh shaders can read.";
+    }
+
     [[nodiscard]] constexpr std::string_view interfaceBackendName(InterfaceBackend backend) noexcept
     {
         switch (backend)
@@ -1055,12 +1061,16 @@ namespace rachis::shader_tool
         {
             return std::unexpected(std::move(module.error()));
         }
-        auto found = module->interfaceOf(entryPoint, spirvExecutionModel(stage));
-        if (!found)
+        const auto reads = module->entryReadsDrawIndex(entryPoint, spirvExecutionModel(stage));
+        if (!reads)
         {
-            return std::unexpected(std::move(found.error()));
+            return std::unexpected(reads.error());
         }
-        return found->drawIndex;
+        if (*reads && !interfaceStageReadsDrawIndex(stage))
+        {
+            return std::unexpected(drawIndexStageError(stage, entryPoint));
+        }
+        return *reads;
     }
 
     namespace detail
@@ -1203,6 +1213,10 @@ namespace rachis::shader_tool
         if (!found)
         {
             return std::unexpected(std::move(found.error()));
+        }
+        if (found->drawIndex && !interfaceStageReadsDrawIndex(stage))
+        {
+            return std::unexpected(drawIndexStageError(stage, entryPoint));
         }
         ReflectedInterface reflected;
         for (auto& binding : found->bindings)

@@ -465,6 +465,16 @@ namespace rachis::shader_tool
                     {
                         return std::unexpected("The SPIR-V module has a malformed instruction.");
                     }
+                    if (opcode == opDecorationGroup && wordCount >= 2)
+                    {
+                        module.decorationGroups_.insert(words[cursor + 1]);
+                    }
+                    cursor += wordCount;
+                }
+                for (std::size_t cursor = 5; cursor < words.size();)
+                {
+                    const auto wordCount = words[cursor] >> 16U;
+                    const auto opcode = words[cursor] & 0xFFFFU;
                     module.instruction(opcode, std::span(words).subspan(cursor + 1, wordCount - 1));
                     cursor += wordCount;
                 }
@@ -638,22 +648,24 @@ namespace rachis::shader_tool
                 return std::pair{array->second.operands.at(0), stride->second};
             }
 
+            [[nodiscard]] std::expected<bool, std::string> entryReadsDrawIndex(std::string_view entryName,
+                                                                               std::uint32_t executionModel) const
+            {
+                const auto* entry = findEntryPoint(entryName, executionModel);
+                if (entry == nullptr)
+                {
+                    return std::unexpected(missingEntryPoint(entryName));
+                }
+                return readsDrawIndex(*entry);
+            }
+
             [[nodiscard]] std::expected<Interface, std::string> interfaceOf(std::string_view entryName,
                                                                             std::uint32_t executionModel) const
             {
-                const EntryPoint* entry = nullptr;
-                for (const auto& candidate : entryPoints_)
-                {
-                    if (candidate.name == entryName && candidate.executionModel == executionModel)
-                    {
-                        entry = &candidate;
-                        break;
-                    }
-                }
+                const auto* entry = findEntryPoint(entryName, executionModel);
                 if (entry == nullptr)
                 {
-                    return std::unexpected("The SPIR-V module has no entry point '" + std::string(entryName) +
-                                           "' for the shader's stage.");
+                    return std::unexpected(missingEntryPoint(entryName));
                 }
                 const bool listsResources = version_ >= 0x00010400U;
                 const auto uses = [entry](std::uint32_t id) {
@@ -769,6 +781,9 @@ namespace rachis::shader_tool
             static constexpr std::uint32_t opCopyObject = 83;
             static constexpr std::uint32_t opDecorate = 71;
             static constexpr std::uint32_t opMemberDecorate = 72;
+            static constexpr std::uint32_t opDecorationGroup = 73;
+            static constexpr std::uint32_t opGroupDecorate = 74;
+            static constexpr std::uint32_t opGroupMemberDecorate = 75;
             static constexpr std::uint32_t opExecutionModeId = 331;
             static constexpr std::uint32_t opTypeAccelerationStructure = 5341;
             static constexpr std::uint32_t decorationBlock = 2;
@@ -794,6 +809,45 @@ namespace rachis::shader_tool
             static constexpr std::uint32_t storagePushConstant = 9;
             static constexpr std::uint32_t storageStorageBuffer = 12;
             static constexpr std::uint32_t unboundedBindingCount = 0xFFFFFFFFU;
+
+            [[nodiscard]] const EntryPoint* findEntryPoint(std::string_view entryName,
+                                                           std::uint32_t executionModel) const noexcept
+            {
+                for (const auto& candidate : entryPoints_)
+                {
+                    if (candidate.name == entryName && candidate.executionModel == executionModel)
+                    {
+                        return &candidate;
+                    }
+                }
+                return nullptr;
+            }
+
+            [[nodiscard]] static std::string missingEntryPoint(std::string_view entryName)
+            {
+                return "The SPIR-V module has no entry point '" + std::string(entryName) + "' for the shader's stage.";
+            }
+
+            void applyDecorationGroup(std::uint32_t group, std::span<const std::uint32_t> targets, bool members)
+            {
+                const auto found = groupDecorations_.find(group);
+                if (found == groupDecorations_.end())
+                {
+                    return;
+                }
+                const std::size_t stride = members ? 2 : 1;
+                for (std::size_t index = 0; index + stride <= targets.size(); index += stride)
+                {
+                    for (const auto& decoration : found->second)
+                    {
+                        std::vector<std::uint32_t> operands(targets.begin() + static_cast<std::ptrdiff_t>(index),
+                                                            targets.begin() +
+                                                                static_cast<std::ptrdiff_t>(index + stride));
+                        operands.insert(operands.end(), decoration.begin(), decoration.end());
+                        instruction(members ? opMemberDecorate : opDecorate, operands);
+                    }
+                }
+            }
 
             [[nodiscard]] bool isBuiltInBlock(const Variable& variable) const
             {
@@ -1345,8 +1399,19 @@ namespace rachis::shader_tool
                         variables_.emplace_back(operands[1], Variable{operands[0], operands[2]});
                     }
                     break;
+                case opGroupDecorate:
+                case opGroupMemberDecorate:
+                    if (!operands.empty())
+                    {
+                        applyDecorationGroup(operands[0], operands.subspan(1), opcode == opGroupMemberDecorate);
+                    }
+                    break;
                 case opDecorate:
-                    if (operands.size() >= 3 && operands[1] == decorationArrayStride)
+                    if (!operands.empty() && decorationGroups_.contains(operands[0]))
+                    {
+                        groupDecorations_[operands[0]].emplace_back(operands.begin() + 1, operands.end());
+                    }
+                    else if (operands.size() >= 3 && operands[1] == decorationArrayStride)
                     {
                         arrayStrides_[operands[0]] = operands[2];
                     }
@@ -1505,6 +1570,8 @@ namespace rachis::shader_tool
             std::set<std::uint32_t> builtInBlocks_;
             std::unordered_map<std::uint32_t, Function> functions_;
             std::unordered_map<std::uint32_t, AccessChain> accessChains_;
+            std::set<std::uint32_t> decorationGroups_;
+            std::map<std::uint32_t, std::vector<std::vector<std::uint32_t>>> groupDecorations_;
             std::uint32_t currentFunction_ = 0;
         };
 

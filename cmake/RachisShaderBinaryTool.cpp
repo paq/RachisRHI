@@ -1592,9 +1592,8 @@ namespace
             }
             if (*drawIndex && !rachis::shader_tool::interfaceStageReadsDrawIndex(options->stage))
             {
-                std::cerr << path << ": the " << rachis::shader_tool::interfaceStageName(options->stage)
-                          << " entry point '" << options->entryPoint
-                          << "' reads the draw index, which only vertex, task, and mesh shaders can read.\n";
+                std::cerr << path << ": "
+                          << rachis::shader_tool::drawIndexStageError(options->stage, options->entryPoint) << '\n';
                 return 1;
             }
             target->reflected.drawIndex = *drawIndex;
