@@ -2,7 +2,7 @@
 
 struct RecordPayload
 {
-    float4 color;
+    uint drawIndex;
 };
 
 struct RecordVertex
@@ -22,7 +22,7 @@ static const float2 recordTriangle[3] = {
 void recordTask()
 {
     RecordPayload payload;
-    payload.color = float4(0.0F, rachisDrawIndex() < 3U ? 0.25F : 0.0F, 0.0F, 1.0F);
+    payload.drawIndex = rachisDrawIndex();
     DispatchMesh(1, 1, 1, payload);
 }
 
@@ -50,13 +50,14 @@ void recordMeshFromTask(in payload RecordPayload payload,
                         out vertices RecordVertex vertices[3],
                         out indices uint3 triangles[1])
 {
-    const float offset = -0.5F + 0.5F * float(min(rachisDrawIndex(), 2U));
+    const float offset = -0.5F + 0.5F * float(min(payload.drawIndex, 2U));
+    const bool sameIndex = payload.drawIndex == rachisDrawIndex();
     SetMeshOutputCounts(3, 1);
     for (uint index = 0; index < 3; ++index)
     {
         RecordVertex vertex;
         vertex.position = float4(recordTriangle[index] * 0.3F + float2(offset, 0.0F), 0.0F, 1.0F);
-        vertex.color = payload.color;
+        vertex.color = sameIndex ? float4(0.0F, 0.25F, 0.0F, 1.0F) : float4(1.0F, 0.0F, 0.0F, 1.0F);
         vertices[index] = vertex;
     }
     triangles[0] = uint3(0, 1, 2);
