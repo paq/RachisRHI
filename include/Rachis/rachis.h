@@ -21,7 +21,7 @@ extern "C"
 {
 #endif
 
-#define RACHIS_ABI_VERSION 2U
+#define RACHIS_ABI_VERSION 3U
 #define RACHIS_ERROR_MESSAGE_CAPACITY 256u
 #define RACHIS_MAX_SURFACE_FORMATS 16U
 #define RACHIS_MAX_VERTEX_BUFFERS 8U
@@ -1275,6 +1275,19 @@ extern "C"
                                                       rachis_handle render_complete,
                                                       uint32_t* present_status,
                                                       rachis_error* error);
+
+    enum
+    {
+        RACHIS_TIMELINE_STATUS_PENDING = 0,
+        RACHIS_TIMELINE_STATUS_COMPLETE = 1
+    };
+
+    RACHIS_API rachis_status rachis_timeline_query(rachis_device* device,
+                                                   rachis_handle timeline,
+                                                   uint32_t* status,
+                                                   rachis_error* error);
+    RACHIS_API rachis_status rachis_timeline_wait_for(
+        rachis_device* device, rachis_handle timeline, uint64_t timeout_ns, uint32_t* status, rachis_error* error);
 
 #ifdef __cplusplus
 }

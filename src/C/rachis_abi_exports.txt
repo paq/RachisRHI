@@ -1,4 +1,4 @@
-RACHIS_ABI_VERSION=2
+RACHIS_ABI_VERSION=3
 rachis_abi_version
 rachis_binding_layout_create
 rachis_binding_layout_destroy
@@ -77,6 +77,8 @@ rachis_texture_lease_release
 rachis_texture_query_transfer_layout
 rachis_texture_view_create
 rachis_texture_view_destroy
+rachis_timeline_query
 rachis_timeline_release
 rachis_timeline_wait
+rachis_timeline_wait_for
 rachis_timestamp_pool_create

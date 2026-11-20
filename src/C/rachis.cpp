@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -4008,6 +4009,90 @@ extern "C"
     }
 }
 
+namespace
+{
+    [[nodiscard]] std::uint32_t timelineStatusOf(rachis::TimelinePointStatus status) noexcept
+    {
+        return status == rachis::TimelinePointStatus::complete ? RACHIS_TIMELINE_STATUS_COMPLETE
+                                                               : RACHIS_TIMELINE_STATUS_PENDING;
+    }
+
+    [[nodiscard]] std::chrono::nanoseconds timelineTimeout(std::uint64_t timeoutNs) noexcept
+    {
+        constexpr auto longest = static_cast<std::uint64_t>(std::chrono::nanoseconds::max().count());
+        return std::chrono::nanoseconds{static_cast<std::chrono::nanoseconds::rep>(std::min(timeoutNs, longest))};
+    }
+
+    [[nodiscard]] std::optional<rachis::TimelinePoint> findTimelinePoint(rachis_device& device, rachis_handle timeline)
+    {
+        std::shared_lock const lock(device.mutex);
+        const auto* const entry = device.timelines.find(timeline);
+        if (entry == nullptr)
+        {
+            return std::nullopt;
+        }
+        return *entry;
+    }
+
+} // namespace
+
+extern "C"
+{
+    rachis_status rachis_timeline_query(rachis_device* device,
+                                        rachis_handle timeline,
+                                        std::uint32_t* status,
+                                        rachis_error* error)
+    {
+        return boundary(error, [&]() -> rachis_status {
+            if (device == nullptr || status == nullptr)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "device or timeline status is null");
+            }
+            *status = RACHIS_TIMELINE_STATUS_PENDING;
+            const auto point = findTimelinePoint(*device, timeline);
+            if (!point)
+            {
+                return invalidHandle(error);
+            }
+            const auto queried = device->native.queryTimelinePoint(*point);
+            if (!queried)
+            {
+                return result(error, queried.error());
+            }
+            *status = timelineStatusOf(*queried);
+            return RACHIS_STATUS_OK;
+        });
+    }
+
+    rachis_status rachis_timeline_wait_for(rachis_device* device,
+                                           rachis_handle timeline,
+                                           std::uint64_t timeoutNs,
+                                           std::uint32_t* status,
+                                           rachis_error* error)
+    {
+        return boundary(error, [&]() -> rachis_status {
+            if (device == nullptr || status == nullptr)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "device or timeline status is null");
+            }
+            *status = RACHIS_TIMELINE_STATUS_PENDING;
+            const auto point = findTimelinePoint(*device, timeline);
+            if (!point)
+            {
+                return invalidHandle(error);
+            }
+            const auto waited = device->native.wait(*point, timelineTimeout(timeoutNs));
+            if (!waited)
+            {
+                return result(error, waited.error());
+            }
+            *status = timelineStatusOf(*waited);
+            return RACHIS_STATUS_OK;
+        });
+    }
+
+}
+
 #ifdef RACHIS_TESTING
 namespace rachis::cabi::detail
 {
@@ -4057,6 +4142,26 @@ namespace rachis::cabi::detail
     void emitDiagnosticForTesting(rachis_device* device, const rachis::DiagnosticMessage& message) noexcept
     {
         onDiagnostic(message, device);
+    }
+
+    rachis::Device* nativeDeviceForTesting(rachis_device* device) noexcept
+    {
+        return device == nullptr ? nullptr : &device->native;
+    }
+
+    rachis_handle adoptTimelinePointForTesting(rachis_device* device, rachis::TimelinePoint point)
+    {
+        if (device == nullptr)
+        {
+            return 0;
+        }
+        std::scoped_lock const lock(device->mutex);
+        const auto id = device->timelines.emplace(activeTokenSource());
+        if (id != 0)
+        {
+            *device->timelines.find(id) = point;
+        }
+        return id;
     }
 } // namespace rachis::cabi::detail
 #endif

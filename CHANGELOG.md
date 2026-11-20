@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The C ABI is at `RACHIS_ABI_VERSION` 3, and the shared library is
+  `librachis.so.3` and `librachis.3.dylib`. Modules built against version 2
+  must be rebuilt. [C ABI](docs/c-abi.md) describes what version 3 adds:
+  - `rachis_timeline_query`, which says without waiting whether a timeline's
+    submission has completed, and `rachis_timeline_wait_for`, which waits at
+    most a given time, with the `RACHIS_TIMELINE_STATUS_*` values.
 - Vulkan: `createSwapchain` uses the surface's current extent on fixed-extent
   surfaces and creates a suspended swapchain on zero extent.
 - Vulkan: `present` suspends minimized or zero-extent swapchains so

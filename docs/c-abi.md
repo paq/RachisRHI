@@ -21,10 +21,11 @@ The C ABI lives in the `rachis` shared library (`Rachis::C` in CMake) and export
   - [Swapchain images](#swapchain-images)
 - [Threads](#threads)
 - [Device loss](#device-loss)
+- [Timeline waits with a timeout](#timeline-waits-with-a-timeout)
 
 ## Version
 
-Call `rachis_abi_version()` before creating a device and abort unless it equals the `RACHIS_ABI_VERSION` your module compiled against (currently `2`). ABI versions are not backwards-compatible.
+Call `rachis_abi_version()` before creating a device and abort unless it equals the `RACHIS_ABI_VERSION` your module compiled against (currently `3`). ABI versions are not backwards-compatible.
 
 ## Creating a device
 
@@ -89,6 +90,7 @@ Supported C ABI surface:
 - Timestamp queries
 - Adapter identification
 - Surfaces, swapchains, and presentation status
+- Timeline queries and waits with a timeout
 
 ### C++-only features and stage rules
 
@@ -247,3 +249,21 @@ Calls on a single `rachis_device*` are thread-safe, provided nothing else calls 
 - Once lost, all create, record, submit, acquire, and present calls—plus `rachis_buffer_write`, `rachis_buffer_read`, `rachis_buffer_map`, `rachis_buffer_flush_mapped_ranges`, and `rachis_buffer_invalidate_mapped_ranges` (even with stale handles or out-of-bounds ranges)—return `RACHIS_STATUS_DEVICE_LOST`.
 - A pointer mapped before the loss stays valid memory until `rachis_buffer_unmap`: reading and writing through it does not fault, but the bytes read are undefined and writes reach no GPU. `rachis_buffer_unmap` still succeeds, and a mapped buffer still needs it before `rachis_buffer_destroy`.
 - Diagnostics, `destroy`, and `release` calls continue working (including `rachis_swapchain_destroy` while an image is still acquired). Create a new device to recover.
+
+## Timeline waits with a timeout
+
+`rachis_timeline_wait` returns only once a timeline handle's submission has completed. Two calls let a caller bound that wait or skip it:
+
+- `rachis_timeline_query` writes the state of the submission to `*status` without waiting: `RACHIS_TIMELINE_STATUS_PENDING` or `RACHIS_TIMELINE_STATUS_COMPLETE`.
+- `rachis_timeline_wait_for` waits at most `timeout_ns` nanoseconds and writes the state when it returns. A `timeout_ns` of `0` waits no time, like `rachis_timeline_query`. A timeout longer than `INT64_MAX` nanoseconds, such as `UINT64_MAX`, waits as long as `rachis_timeline_wait`.
+
+Both return `RACHIS_STATUS_OK` whether or not the submission has completed, so read `*status`. A call that fails leaves `RACHIS_TIMELINE_STATUS_PENDING` in `*status`; a released or unknown handle returns `RACHIS_STATUS_INVALID_ARGUMENT`. Like `rachis_timeline_wait`, neither consumes the handle, and neither holds a device lock while it waits, so other threads keep calling into the device.
+
+```c
+uint32_t state = RACHIS_TIMELINE_STATUS_PENDING;
+if (rachis_timeline_wait_for(device, timeline, 2000000000ull, &state, &error) == RACHIS_STATUS_OK
+    && state == RACHIS_TIMELINE_STATUS_PENDING)
+{
+    report_stalled_gpu();
+}
+```

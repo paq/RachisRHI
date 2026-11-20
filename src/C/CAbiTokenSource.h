@@ -8,6 +8,14 @@
 #include <cstddef>
 #include <cstdint>
 
+#ifdef RACHIS_TESTING
+namespace rachis
+{
+    class Device;
+    class TimelinePoint;
+} // namespace rachis
+#endif
+
 namespace rachis::cabi::detail
 {
 
@@ -40,6 +48,9 @@ namespace rachis::cabi::detail
     [[nodiscard]] bool deviceLockAdmitsSharedCallersForTesting(rachis_device* device) noexcept;
     [[nodiscard]] std::size_t liveTokenCountForTesting(rachis_device* device);
     void emitDiagnosticForTesting(rachis_device* device, const rachis::DiagnosticMessage& message) noexcept;
+
+    [[nodiscard]] rachis::Device* nativeDeviceForTesting(rachis_device* device) noexcept;
+    [[nodiscard]] rachis_handle adoptTimelinePointForTesting(rachis_device* device, rachis::TimelinePoint point);
 #endif
 
 } // namespace rachis::cabi::detail

@@ -3473,3 +3473,52 @@ TEST_CASE("C ABI opens the D3D12 WARP adapter by ID under the hardware preferenc
     }
 }
 #endif
+
+TEST_CASE("C ABI timeline queries and bounded waits report a finished submission as complete",
+          RACHIS_CABI_DEVICE_SIZE RACHIS_CABI_DEVICE_REQUIRES "[rachis][cabi][timeline]")
+{
+    auto error = makeError();
+    std::uint32_t status = 99;
+    CHECK(rachis_timeline_query(nullptr, 1, &status, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_timeline_wait_for(nullptr, 1, 0, &status, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+
+    auto device = createDevice(error);
+    CHECK(rachis_timeline_query(device.get(), 1, nullptr, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_timeline_wait_for(device.get(), 1, 0, nullptr, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    status = 99;
+    CHECK(rachis_timeline_query(device.get(), 0, &status, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(status == RACHIS_TIMELINE_STATUS_PENDING);
+    status = 99;
+    CHECK(rachis_timeline_wait_for(device.get(), 0, UINT64_MAX, &status, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(status == RACHIS_TIMELINE_STATUS_PENDING);
+    auto wrongSize = makeError();
+    wrongSize.struct_size = sizeof(wrongSize) - 1;
+    CHECK(rachis_timeline_query(device.get(), 0, &status, &wrongSize) == RACHIS_STATUS_ABI_MISMATCH);
+    CHECK(rachis_timeline_wait_for(device.get(), 0, 0, &status, &wrongSize) == RACHIS_STATUS_ABI_MISMATCH);
+
+    rachis_handle pool = 0;
+    const auto command = acquireCommand(device.get(), RACHIS_QUEUE_GRAPHICS, pool, error);
+    rachis_handle timeline = 0;
+    requireOk(rachis_command_submit(device.get(), command, &timeline, &error), error);
+
+    status = 99;
+    requireOk(rachis_timeline_wait_for(device.get(), timeline, 10'000'000'000ULL, &status, &error), error);
+    CHECK(status == RACHIS_TIMELINE_STATUS_COMPLETE);
+    status = 99;
+    requireOk(rachis_timeline_query(device.get(), timeline, &status, &error), error);
+    CHECK(status == RACHIS_TIMELINE_STATUS_COMPLETE);
+    status = 99;
+    requireOk(rachis_timeline_wait_for(device.get(), timeline, 0, &status, &error), error);
+    CHECK(status == RACHIS_TIMELINE_STATUS_COMPLETE);
+    status = 99;
+    requireOk(rachis_timeline_wait_for(device.get(), timeline, UINT64_MAX, &status, &error), error);
+    CHECK(status == RACHIS_TIMELINE_STATUS_COMPLETE);
+    requireOk(rachis_timeline_wait(device.get(), timeline, &error), error);
+
+    requireOk(rachis_timeline_release(device.get(), timeline, &error), error);
+    status = 99;
+    CHECK(rachis_timeline_query(device.get(), timeline, &status, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(status == RACHIS_TIMELINE_STATUS_PENDING);
+    CHECK(rachis_timeline_wait_for(device.get(), timeline, 0, &status, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    requireOk(rachis_command_pool_destroy(device.get(), pool, &error), error);
+}
