@@ -165,3 +165,62 @@ TEST_CASE("Metal clearStorageTexture that fails to encode leaves no layout requi
     REQUIRE(device.destroyTextureView(*view).has_value());
     REQUIRE(device.destroyTexture(*texture).has_value());
 }
+
+TEST_CASE("Metal clearStorageTexture that fails while recording layouts can be retried",
+          "[size:large][rhi][metal][clear]")
+{
+    auto created = rachis::createDevice(metalDesc());
+    REQUIRE(created);
+    auto device = std::move(*created);
+    auto texture = device.createTexture({
+        .dimension = rachis::TextureDimension::texture2D,
+        .width = 4,
+        .height = 4,
+        .depthOrArrayLayers = 3,
+        .format = rachis::Format::rgba8Unorm,
+        .usage = rachis::TextureUsage::storage | rachis::TextureUsage::copyDestination,
+        .label = "Metal retried-clear texture",
+    });
+    REQUIRE(texture.has_value());
+    auto view = device.createTextureView({
+        .texture = *texture,
+        .usage = rachis::TextureViewUsage::storage,
+        .dimension = rachis::TextureViewDimension::texture2DArray,
+    });
+    REQUIRE(view.has_value());
+
+    auto transition = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+    REQUIRE(transition.has_value());
+    REQUIRE(device
+                .textureBarrier(*transition,
+                                {
+                                    .texture = *texture,
+                                    .stagesAfter = rachis::PipelineStage::computeShader,
+                                    .accessAfter = rachis::Access::unorderedAccess,
+                                    .layoutAfter = rachis::TextureLayout::unorderedAccess,
+                                })
+                .has_value());
+    auto transitioned = device.submit(std::move(*transition));
+    REQUIRE(transitioned.has_value());
+    REQUIRE(device.wait(*transitioned).has_value());
+
+    const rachis::StorageTextureClearValue value{
+        .type = rachis::StorageTextureClearType::float32,
+        .float32 = {1.0F, 0.0F, 0.0F, 1.0F},
+    };
+    auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+    REQUIRE(command.has_value());
+    rachis::metal::setFailNextLayoutStaging(true);
+    const auto failed = device.clearStorageTexture(*command, *view, value);
+    rachis::metal::setFailNextLayoutStaging(false);
+    REQUIRE_FALSE(failed.has_value());
+    CHECK(failed.error().code == rachis::ErrorCode::outOfMemory);
+    REQUIRE(device.clearStorageTexture(*command, *view, value).has_value());
+    REQUIRE(device.clearStorageTexture(*command, *view, value).has_value());
+    auto submitted = device.submit(std::move(*command));
+    REQUIRE(submitted.has_value());
+    REQUIRE(device.wait(*submitted).has_value());
+
+    REQUIRE(device.destroyTextureView(*view).has_value());
+    REQUIRE(device.destroyTexture(*texture).has_value());
+}

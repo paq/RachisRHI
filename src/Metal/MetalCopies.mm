@@ -2462,11 +2462,16 @@ namespace rachis::metal
             .baseLayout = generation.baseLayout,
             .finalLayout = generation.finalLayout,
         };
+        auto staging = metalPrepareLayoutTransitions(native.layoutState(), layoutTransitions);
+        if (!staging)
+        {
+            return std::unexpected(std::move(staging.error()));
+        }
         if (auto encoded = encodeMetalMipmapChain(*this, mutex_, native_, native, chain, *resources); !encoded)
         {
             return encoded;
         }
-        metalStageLayoutTransitions(native.layoutState(), layoutTransitions);
+        metalCommitLayoutTransitions(native.layoutState(), *staging);
         return {};
     }
 

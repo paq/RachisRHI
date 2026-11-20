@@ -452,6 +452,11 @@ namespace rachis::metal
         metalTestingState().residencyCommitCount.fetch_add(1, std::memory_order_relaxed);
     }
 
+    void recordMetalIndirectClampEncode() noexcept
+    {
+        metalTestingState().indirectClampEncodeCount.fetch_add(1, std::memory_order_relaxed);
+    }
+
     void recordMetalArgumentTableCreate() noexcept
     {
         metalTestingState().argumentTableCreateCount.fetch_add(1, std::memory_order_relaxed);
@@ -1310,6 +1315,30 @@ void rachis::metal::setFailPushConstantSliceAfter(std::int64_t successes) noexce
     metalTestingState().failPushConstantSliceAfter = successes;
 }
 
+void rachis::metal::setFailNextBindingResidencyReserve(bool fail) noexcept
+{
+    std::scoped_lock const lock(metalTestingState().mutex);
+    metalTestingState().failNextBindingResidencyReserve = fail;
+}
+
+bool rachis::metal::consumeInjectedMetalBindingResidencyReserveFailure() noexcept
+{
+    std::scoped_lock const lock(metalTestingState().mutex);
+    return std::exchange(metalTestingState().failNextBindingResidencyReserve, false);
+}
+
+void rachis::metal::setFailNextLayoutStaging(bool fail) noexcept
+{
+    std::scoped_lock const lock(metalTestingState().mutex);
+    metalTestingState().failNextLayoutStaging = fail;
+}
+
+bool rachis::metal::consumeInjectedMetalLayoutStagingFailure() noexcept
+{
+    std::scoped_lock const lock(metalTestingState().mutex);
+    return std::exchange(metalTestingState().failNextLayoutStaging, false);
+}
+
 bool rachis::metal::consumeInjectedMetalDrawIndexTableGrowthFailure() noexcept
 {
     std::scoped_lock const lock(metalTestingState().mutex);
@@ -1741,6 +1770,65 @@ void rachis::metal::holdNextCommitFeedback(std::shared_ptr<rachis::metal::MetalC
     }
 }
 
+void rachis::metal::holdNextSubmitAfterResidencyFold(std::shared_ptr<rachis::metal::MetalCommitFeedbackGate> gate)
+{
+    const std::scoped_lock lock(metalTestingState().mutex);
+    metalTestingState().nextSubmitFoldGate = std::move(gate);
+}
+
+void rachis::metal::waitAtMetalSubmitAfterResidencyFold() noexcept
+{
+    std::shared_ptr<rachis::metal::MetalCommitFeedbackGate> gate;
+    {
+        const std::scoped_lock lock(metalTestingState().mutex);
+        gate = std::move(metalTestingState().nextSubmitFoldGate);
+    }
+    if (gate != nullptr)
+    {
+        gate->waitUntilReleased();
+    }
+}
+
+void rachis::metal::holdNextSubmitOnGpu() noexcept
+{
+    const std::scoped_lock lock(metalTestingState().mutex);
+    metalTestingState().holdNextSubmitOnGpu = true;
+}
+
+void rachis::metal::releaseSubmitHeldOnGpu() noexcept
+{
+    id<MTLSharedEvent> event = nil;
+    {
+        const std::scoped_lock lock(metalTestingState().mutex);
+        metalTestingState().holdNextSubmitOnGpu = false;
+        event = metalTestingState().heldSubmitEvent;
+        metalTestingState().heldSubmitEvent = nil;
+    }
+    if (event != nil)
+    {
+        event.signaledValue = 1;
+    }
+}
+
+void rachis::metal::encodeHeldMetalSubmitGpuWait(id<MTLDevice> device, id<MTL4CommandQueue> queue) noexcept
+{
+    id<MTLSharedEvent> event = nil;
+    {
+        const std::scoped_lock lock(metalTestingState().mutex);
+        if (!metalTestingState().holdNextSubmitOnGpu)
+        {
+            return;
+        }
+        metalTestingState().holdNextSubmitOnGpu = false;
+        event = [device newSharedEvent];
+        metalTestingState().heldSubmitEvent = event;
+    }
+    if (event != nil)
+    {
+        [queue waitForEvent:event value:1];
+    }
+}
+
 void rachis::metal::holdNextCommandPoolReset(std::shared_ptr<rachis::metal::MetalCommitFeedbackGate> gate)
 {
     const std::scoped_lock lock(metalTestingState().mutex);
@@ -1839,6 +1927,7 @@ void rachis::metal::resetRecordingTelemetry() noexcept
     state.pushConstantSliceSuballocateCount.store(0, std::memory_order_relaxed);
     state.renderTimestampVertexStageCount.store(0, std::memory_order_relaxed);
     state.renderTimestampFragmentStageCount.store(0, std::memory_order_relaxed);
+    state.indirectClampEncodeCount.store(0, std::memory_order_relaxed);
 }
 
 rachis::metal::MetalRecordingTelemetry rachis::metal::recordingTelemetry() noexcept
@@ -1855,6 +1944,7 @@ rachis::metal::MetalRecordingTelemetry rachis::metal::recordingTelemetry() noexc
         .pushConstantSuballocateCount = state.pushConstantSliceSuballocateCount.load(std::memory_order_relaxed),
         .renderTimestampVertexStageCount = state.renderTimestampVertexStageCount.load(std::memory_order_relaxed),
         .renderTimestampFragmentStageCount = state.renderTimestampFragmentStageCount.load(std::memory_order_relaxed),
+        .indirectClampEncodeCount = state.indirectClampEncodeCount.load(std::memory_order_relaxed),
     };
 }
 

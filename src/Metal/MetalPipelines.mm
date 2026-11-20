@@ -856,6 +856,21 @@ namespace rachis::metal
             return descriptor;
         }
 
+        [[nodiscard]] constexpr bool metalWorkgroupFits(const ShaderWorkgroupSize& workgroup,
+                                                        std::uint32_t maxInvocations) noexcept
+        {
+            if (workgroup.x == 0 || workgroup.y == 0 || workgroup.z == 0 || workgroup.x > maxInvocations)
+            {
+                return false;
+            }
+            const std::uint32_t afterX = maxInvocations / workgroup.x;
+            if (workgroup.y > afterX)
+            {
+                return false;
+            }
+            return workgroup.z <= afterX / workgroup.y;
+        }
+
         [[nodiscard]] Status metalValidateWorkgroupSize(const ShaderWorkgroupSize& workgroup,
                                                         const DeviceCapabilities& capabilities)
         {
@@ -865,9 +880,8 @@ namespace rachis::metal
                                                            "A compute pipeline requires a non-zero workgroup size."));
             }
             const auto& limit = capabilities.limits.maxComputeWorkgroupSize;
-            const auto invocations = static_cast<std::uint64_t>(workgroup.x) * workgroup.y * workgroup.z;
             if (workgroup.x > limit[0] || workgroup.y > limit[1] || workgroup.z > limit[2] ||
-                invocations > capabilities.limits.maxComputeWorkgroupInvocations)
+                !metalWorkgroupFits(workgroup, capabilities.limits.maxComputeWorkgroupInvocations))
             {
                 return std::unexpected(metalSelectionError(
                     ErrorCode::unsupported, "The compute workgroup exceeds the Metal device threadgroup limits."));
@@ -1400,7 +1414,8 @@ namespace rachis::metal
     namespace
     {
 
-        [[nodiscard]] Status metalValidateShaderInterfaceWorkgroupSize(const ShaderModuleDesc& desc)
+        [[nodiscard]] Status metalValidateShaderInterfaceWorkgroupSize(const ShaderModuleDesc& desc,
+                                                                       const DeviceCapabilities& capabilities)
         {
             const auto& workgroupSize = desc.shaderInterface.workgroupSize;
             const bool requiresWorkgroup = desc.stage == ShaderStage::compute || desc.stage == ShaderStage::task ||
@@ -1416,10 +1431,24 @@ namespace rachis::metal
                 return std::unexpected(metalSelectionError(ErrorCode::invalidArgument,
                                                            "Shader-interface workgroup dimensions must be non-zero."));
             }
+            if (workgroupSize.has_value() && capabilities.meshShaders &&
+                (desc.stage == ShaderStage::task || desc.stage == ShaderStage::mesh))
+            {
+                const auto limit = desc.stage == ShaderStage::task
+                                       ? capabilities.meshShader.maxTaskWorkgroupInvocations
+                                       : capabilities.meshShader.maxMeshWorkgroupInvocations;
+                if (!metalWorkgroupFits(*workgroupSize, limit))
+                {
+                    return std::unexpected(
+                        metalSelectionError(ErrorCode::unsupported,
+                                            "The shader-interface workgroup size exceeds the device's stage limits."));
+                }
+            }
             return {};
         }
 
-        [[nodiscard]] Result<MetalSpecializationSet> metalValidateShaderModuleDesc(const ShaderModuleDesc& desc)
+        [[nodiscard]] Result<MetalSpecializationSet> metalValidateShaderModuleDesc(
+            const ShaderModuleDesc& desc, const DeviceCapabilities& capabilities)
         {
             const auto stageBits = static_cast<std::uint16_t>(desc.stage);
             const bool singleStage = stageBits != 0 && (stageBits & (stageBits - 1U)) == 0;
@@ -1431,7 +1460,7 @@ namespace rachis::metal
                                                            "A shader module requires exactly one stage and one "
                                                            "bytecode source: direct PNMS bytes or a live library."));
             }
-            if (auto workgroup = metalValidateShaderInterfaceWorkgroupSize(desc); !workgroup)
+            if (auto workgroup = metalValidateShaderInterfaceWorkgroupSize(desc, capabilities); !workgroup)
             {
                 return std::unexpected(std::move(workgroup.error()));
             }
@@ -1644,7 +1673,7 @@ namespace rachis::metal
         {
             return std::unexpected(std::move(blocked.error()));
         }
-        auto specializationConstants = metalValidateShaderModuleDesc(desc);
+        auto specializationConstants = metalValidateShaderModuleDesc(desc, capabilities_);
         if (!specializationConstants)
         {
             return std::unexpected(std::move(specializationConstants.error()));
@@ -1819,7 +1848,7 @@ namespace rachis::metal
                     stageSlots[kind] += entry.count == unboundedBindingCount ? 1U : entry.count;
                     if (stageSlots[kind] > argumentLimits[kind])
                     {
-                        return std::unexpected(metalSelectionError(ErrorCode::invalidArgument,
+                        return std::unexpected(metalSelectionError(ErrorCode::unsupported,
                                                                    "Pipeline layout bindings and push constants exceed "
                                                                    "Metal's per-stage argument-table capacity."));
                     }
@@ -2910,7 +2939,6 @@ namespace rachis::metal
                 pipelineDesc.objectFunctionDescriptor =
                     metalLibraryFunctionDescriptor(inputs.task.library, inputs.task.entryPoint);
                 pipelineDesc.maxTotalThreadsPerObjectThreadgroup = metalWorkgroupThreads(inputs.task.snapshot);
-                pipelineDesc.maxTotalThreadgroupsPerMeshGrid = metalMaxMeshGridThreadgroups;
             }
             pipelineDesc.meshFunctionDescriptor =
                 metalLibraryFunctionDescriptor(inputs.mesh.library, inputs.mesh.entryPoint);
@@ -2975,8 +3003,16 @@ namespace rachis::metal
                 if (inputs.hasTask)
                 {
                     writer.writeShader(inputs.task);
+                    const auto task = metalWorkgroupMtlSize(inputs.task.snapshot);
+                    writer.write(static_cast<std::uint64_t>(task.width));
+                    writer.write(static_cast<std::uint64_t>(task.height));
+                    writer.write(static_cast<std::uint64_t>(task.depth));
                 }
                 writer.writeShader(inputs.mesh);
+                const auto mesh = metalWorkgroupMtlSize(inputs.mesh.snapshot);
+                writer.write(static_cast<std::uint64_t>(mesh.width));
+                writer.write(static_cast<std::uint64_t>(mesh.height));
+                writer.write(static_cast<std::uint64_t>(mesh.depth));
             }
             else
             {

@@ -32,6 +32,8 @@ namespace rachis::metal
     void setFailNextResidencySetCreate(bool fail) noexcept;
     void setFailNextPipelineCacheSerialize(bool fail) noexcept;
     void setFailNextDrawIndexTableGrowth(bool fail) noexcept;
+    void setFailNextBindingResidencyReserve(bool fail) noexcept;
+    void setFailNextLayoutStaging(bool fail) noexcept;
     void setFailPushConstantSliceAfter(std::int64_t successes) noexcept;
     void setPipelineCacheTemporaryDirectory(std::string_view directory);
 
@@ -278,6 +280,7 @@ namespace rachis::metal
         std::uint64_t pushConstantSuballocateCount = 0;
         std::uint64_t renderTimestampVertexStageCount = 0;
         std::uint64_t renderTimestampFragmentStageCount = 0;
+        std::uint64_t indirectClampEncodeCount = 0;
     };
 
     enum class MetalTestErrorDomain : std::uint8_t
@@ -300,6 +303,9 @@ namespace rachis::metal
     void holdNextCommitFeedback(std::shared_ptr<MetalCommitFeedbackGate> gate);
     void holdNextCommandPoolReset(std::shared_ptr<MetalCommitFeedbackGate> gate);
     void holdNextDrawableAcquire(std::shared_ptr<MetalCommitFeedbackGate> gate);
+    void holdNextSubmitAfterResidencyFold(std::shared_ptr<MetalCommitFeedbackGate> gate);
+    void holdNextSubmitOnGpu() noexcept;
+    void releaseSubmitHeldOnGpu() noexcept;
     [[nodiscard]] std::weak_ptr<void> boundBufferOwnerObserver(BufferHandle buffer);
     [[nodiscard]] Result<std::size_t> boundAllocationTelemetryCount();
     [[nodiscard]] Status injectMetalDeviceLoss(DeviceFaultStatus status = DeviceFaultStatus::removed);
@@ -328,6 +334,9 @@ namespace rachis::metal
         const void* version = nullptr;
         const void* elements = nullptr;
         std::weak_ptr<void> argumentBuffer;
+        bool contentsLocked = false;
+        std::size_t replacedCount = 0;
+        std::size_t replacedCapacity = 0;
     };
 
     [[nodiscard]] MetalBindingSetStorage boundBindingSetStorage(BindingSetHandle set);

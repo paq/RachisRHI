@@ -1,5 +1,7 @@
 #include "Metal/MetalInternal.h"
 
+#include "Common/VectorReserve.h"
+
 namespace rachis::metal
 {
     namespace
@@ -949,36 +951,79 @@ namespace rachis::metal
         return {};
     }
 
-    void metalStageLayoutTransitions(MetalCommandLayoutState& state, std::span<const MetalLayoutTransition> transitions)
+    Result<MetalLayoutStaging> metalPrepareLayoutTransitions(MetalCommandLayoutState& state,
+                                                             std::span<const MetalLayoutTransition> transitions)
     {
-        for (const auto& transition : transitions)
+        MetalLayoutStaging staging;
+        try
         {
-            if (transition.table == nullptr)
+            for (const auto& transition : transitions)
             {
-                continue;
+                if (transition.table == nullptr)
+                {
+                    continue;
+                }
+                forEachMetalLayoutCell(transition, [&](std::size_t index, const TextureSubresource& subresource) {
+                    const MetalLayoutCell cell{transition.table.get(), index};
+                    if (const auto found = state.writeIndex.find(cell); found != state.writeIndex.end())
+                    {
+                        staging.updates.emplace_back(found->second, transition.after);
+                        return;
+                    }
+                    if (const auto added = staging.added.find(cell); added != staging.added.end())
+                    {
+                        staging.writes[added->second - state.writes.size()].layout = transition.after;
+                        return;
+                    }
+                    if (transition.before != TextureLayout::undefined)
+                    {
+                        staging.entries.push_back(MetalLayoutEntryRequirement{
+                            .table = transition.table,
+                            .index = index,
+                            .layout = transition.before,
+                            .subresource = subresource,
+                            .operation = transition.operation,
+                        });
+                    }
+                    staging.added.emplace(cell, state.writes.size() + staging.writes.size());
+                    staging.writes.push_back(
+                        MetalLayoutWrite{.table = transition.table, .index = index, .layout = transition.after});
+#ifdef RACHIS_TESTING
+                    if (consumeInjectedMetalLayoutStagingFailure())
+                    {
+                        throw std::bad_alloc{};
+                    }
+#endif
+                });
             }
-            forEachMetalLayoutCell(transition, [&](std::size_t index, const TextureSubresource& subresource) {
-                const MetalLayoutCell cell{transition.table.get(), index};
-                if (const auto found = state.writeIndex.find(cell); found != state.writeIndex.end())
-                {
-                    state.writes[found->second].layout = transition.after;
-                    return;
-                }
-                if (transition.before != TextureLayout::undefined)
-                {
-                    state.entries.push_back(MetalLayoutEntryRequirement{
-                        .table = transition.table,
-                        .index = index,
-                        .layout = transition.before,
-                        .subresource = subresource,
-                        .operation = transition.operation,
-                    });
-                }
-                state.writeIndex.emplace(cell, state.writes.size());
-                state.writes.push_back(
-                    MetalLayoutWrite{.table = transition.table, .index = index, .layout = transition.after});
-            });
+            detail::reserveAdditional(state.writes, staging.writes.size());
+            detail::reserveAdditional(state.entries, staging.entries.size());
+            state.writeIndex.reserve(state.writeIndex.size() + staging.added.size());
         }
+        catch (const std::bad_alloc&)
+        {
+            return std::unexpected(
+                metalSelectionError(ErrorCode::outOfMemory, "Failed to record Metal texture layout transitions."));
+        }
+        return staging;
+    }
+
+    void metalCommitLayoutTransitions(MetalCommandLayoutState& state, MetalLayoutStaging& staging) noexcept
+    {
+        for (const auto& [index, layout] : staging.updates)
+        {
+            state.writes[index].layout = layout;
+        }
+        for (auto& write : staging.writes)
+        {
+            state.writes.push_back(std::move(write));
+        }
+        for (auto& entry : staging.entries)
+        {
+            state.entries.push_back(std::move(entry));
+        }
+        state.writeIndex.merge(staging.added);
+        staging = {};
     }
 
     Result<MetalBatchLayouts> metalPlanBatchLayouts(std::span<MetalCommandBuffer* const> commands)
@@ -1095,11 +1140,16 @@ namespace rachis::metal
         {
             return kept;
         }
+        auto staging = metalPrepareLayoutTransitions(native->layoutState(), resources.layoutTransitions);
+        if (!staging)
+        {
+            return std::unexpected(std::move(staging.error()));
+        }
         if (auto encoded = encodeMetalBarrierResources(*native, resources); !encoded)
         {
             return encoded;
         }
-        metalStageLayoutTransitions(native->layoutState(), resources.layoutTransitions);
+        metalCommitLayoutTransitions(native->layoutState(), *staging);
         return {};
     }
 
@@ -1411,11 +1461,16 @@ namespace rachis::metal
         {
             return kept;
         }
+        auto staging = metalPrepareLayoutTransitions(native->layoutState(), std::span(&resources.afterLayout, 1));
+        if (!staging)
+        {
+            return std::unexpected(std::move(staging.error()));
+        }
         if (auto encoded = encodeMetalTextureAliasBarrier(*native, resources); !encoded)
         {
             return encoded;
         }
-        metalStageLayoutTransitions(native->layoutState(), std::span(&resources.afterLayout, 1));
+        metalCommitLayoutTransitions(native->layoutState(), *staging);
         return {};
     }
 

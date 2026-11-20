@@ -140,7 +140,7 @@ if(RACHIS_ENABLE_METAL)
     find_library(RACHIS_APPKIT_FRAMEWORK AppKit REQUIRED)
     message(STATUS "Rachis Metal: AppleClang ${CMAKE_CXX_COMPILER_VERSION}, SDK ${RACHIS_APPLE_SDK_VERSION}, "
         "deployment ${CMAKE_OSX_DEPLOYMENT_TARGET}, language Objective-C++ ARC. "
-        "slangc 2026.17.1+ is required to cook metallib. "
+        "slangc 2026.20+ is required to cook metallib. "
         "Vulkan SDK, dxc, and spirv-val are not configure requirements.")
 endif()
 
@@ -1314,12 +1314,18 @@ if(RACHIS_ENABLE_METAL AND rachis_build_tests)
     rachis_rhi_slang_metallib(MetalMeshShader.ms.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalMeshShader.slang" meshMain)
     rachis_rhi_slang_metallib(MetalMeshShader.no-task.ms.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalMeshShader.slang" meshNoTask)
     rachis_rhi_slang_metallib(MetalMeshShader.fixed.ms.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalMeshShader.slang" meshFixed)
+    rachis_rhi_slang_metallib(MetalMeshShader.grid.as.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalMeshShader.slang" taskGrid)
+    rachis_rhi_slang_metallib(MetalMeshShader.count.ms.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalMeshShader.slang" meshCount)
     rachis_rhi_slang_metallib(MetalMeshShader.ps.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalMeshShader.slang" meshPixel)
     rachis_rhi_slang_metallib(MetalMeshShader.missing.ps.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalMeshShader.slang" meshPixelMissing)
     rachis_rhi_slang_metallib(MetalIndirectCount.cs.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalIndirectCount.slang" countMain)
     rachis_rhi_slang_metallib(MetalBindingArrays.cs.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalBindingArrays.slang" bindingArraysMain)
     rachis_rhi_slang_metallib(MetalUpdateAfterBind.cs.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalUpdateAfterBind.slang" updateAfterBindMain)
     rachis_rhi_slang_metallib(MetalSamplerArrays.cs.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalSamplerArrays.slang" samplerArraysMain)
+    rachis_rhi_slang_metallib(MetalTextureArrays.cs.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalTextureArrays.slang" textureArraysMain)
+    rachis_rhi_slang_metallib(MetalEntryBindingArray.cs.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalEntryBindingArray.slang" entryArrayMain)
+    rachis_rhi_slang_metallib(MetalGraphicsBindingArray.vs.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalGraphicsBindingArray.slang" arrayVertex)
+    rachis_rhi_slang_metallib(MetalGraphicsBindingArray.ps.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalGraphicsBindingArray.slang" arrayPixel)
     rachis_cook_slang_metallib(
         SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/DrawIndex.hlsl"
         ENTRY drawIndexVertex
@@ -1335,6 +1341,38 @@ if(RACHIS_ENABLE_METAL AND rachis_build_tests)
         OUTPUT "${rachis_rhi_metallib_dir}/DrawIndex.plain.vs.metallib"
         INCLUDE_DIRECTORIES "${rachis_rhi_public_include_dir}"
         COMMENT "Cooking Metal metallib DrawIndex.plain.vs"
+    )
+    rachis_cook_slang_metallib(
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalMeshRecords.slang"
+        ENTRY recordTask
+        STAGE amplification
+        OUTPUT "${rachis_rhi_metallib_dir}/MetalMeshRecords.as.metallib"
+        INCLUDE_DIRECTORIES "${rachis_rhi_public_include_dir}"
+        COMMENT "Cooking Metal metallib MetalMeshRecords.as"
+    )
+    rachis_cook_slang_metallib(
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalMeshRecords.slang"
+        ENTRY recordMesh
+        STAGE mesh
+        OUTPUT "${rachis_rhi_metallib_dir}/MetalMeshRecords.ms.metallib"
+        INCLUDE_DIRECTORIES "${rachis_rhi_public_include_dir}"
+        COMMENT "Cooking Metal metallib MetalMeshRecords.ms"
+    )
+    rachis_cook_slang_metallib(
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalMeshRecords.slang"
+        ENTRY recordMeshFromTask
+        STAGE mesh
+        OUTPUT "${rachis_rhi_metallib_dir}/MetalMeshRecords.task.ms.metallib"
+        INCLUDE_DIRECTORIES "${rachis_rhi_public_include_dir}"
+        COMMENT "Cooking Metal metallib MetalMeshRecords.task.ms"
+    )
+    rachis_cook_slang_metallib(
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalMeshRecords.slang"
+        ENTRY recordColor
+        STAGE pixel
+        OUTPUT "${rachis_rhi_metallib_dir}/MetalMeshRecords.ps.metallib"
+        INCLUDE_DIRECTORIES "${rachis_rhi_public_include_dir}"
+        COMMENT "Cooking Metal metallib MetalMeshRecords.ps"
     )
     rachis_cook_slang_metallib(
         SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/DrawIndex.hlsl"
@@ -1376,6 +1414,10 @@ if(RACHIS_ENABLE_METAL AND rachis_build_tests)
             "${rachis_rhi_metallib_dir}/MetalMeshShader.no-task.ms.pnms"
             "${rachis_rhi_metallib_dir}/MetalMeshShader.fixed.ms.metallib"
             "${rachis_rhi_metallib_dir}/MetalMeshShader.fixed.ms.pnms"
+            "${rachis_rhi_metallib_dir}/MetalMeshShader.grid.as.metallib"
+            "${rachis_rhi_metallib_dir}/MetalMeshShader.grid.as.pnms"
+            "${rachis_rhi_metallib_dir}/MetalMeshShader.count.ms.metallib"
+            "${rachis_rhi_metallib_dir}/MetalMeshShader.count.ms.pnms"
             "${rachis_rhi_metallib_dir}/MetalMeshShader.ps.metallib"
             "${rachis_rhi_metallib_dir}/MetalMeshShader.ps.pnms"
             "${rachis_rhi_metallib_dir}/MetalMeshShader.missing.ps.metallib"
@@ -1388,10 +1430,26 @@ if(RACHIS_ENABLE_METAL AND rachis_build_tests)
             "${rachis_rhi_metallib_dir}/MetalUpdateAfterBind.cs.pnms"
             "${rachis_rhi_metallib_dir}/MetalSamplerArrays.cs.metallib"
             "${rachis_rhi_metallib_dir}/MetalSamplerArrays.cs.pnms"
+            "${rachis_rhi_metallib_dir}/MetalTextureArrays.cs.metallib"
+            "${rachis_rhi_metallib_dir}/MetalTextureArrays.cs.pnms"
+            "${rachis_rhi_metallib_dir}/MetalEntryBindingArray.cs.metallib"
+            "${rachis_rhi_metallib_dir}/MetalEntryBindingArray.cs.pnms"
+            "${rachis_rhi_metallib_dir}/MetalGraphicsBindingArray.vs.metallib"
+            "${rachis_rhi_metallib_dir}/MetalGraphicsBindingArray.vs.pnms"
+            "${rachis_rhi_metallib_dir}/MetalGraphicsBindingArray.ps.metallib"
+            "${rachis_rhi_metallib_dir}/MetalGraphicsBindingArray.ps.pnms"
             "${rachis_rhi_metallib_dir}/DrawIndex.vs.metallib"
             "${rachis_rhi_metallib_dir}/DrawIndex.vs.pnms"
             "${rachis_rhi_metallib_dir}/DrawIndex.plain.vs.metallib"
             "${rachis_rhi_metallib_dir}/DrawIndex.plain.vs.pnms"
+            "${rachis_rhi_metallib_dir}/MetalMeshRecords.as.metallib"
+            "${rachis_rhi_metallib_dir}/MetalMeshRecords.as.pnms"
+            "${rachis_rhi_metallib_dir}/MetalMeshRecords.ms.metallib"
+            "${rachis_rhi_metallib_dir}/MetalMeshRecords.ms.pnms"
+            "${rachis_rhi_metallib_dir}/MetalMeshRecords.task.ms.metallib"
+            "${rachis_rhi_metallib_dir}/MetalMeshRecords.task.ms.pnms"
+            "${rachis_rhi_metallib_dir}/MetalMeshRecords.ps.metallib"
+            "${rachis_rhi_metallib_dir}/MetalMeshRecords.ps.pnms"
             "${rachis_rhi_metallib_dir}/DrawIndex.ms.metallib"
             "${rachis_rhi_metallib_dir}/DrawIndex.ms.pnms"
             "${rachis_rhi_metallib_dir}/DrawIndex.ps.metallib"

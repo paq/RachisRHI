@@ -663,7 +663,7 @@ TEST_CASE("Metal single-record indirect draws write Apple GPU color and fail clo
     CHECK(colored > 200);
 }
 
-TEST_CASE("Metal rejects occlusion, pipeline statistics, predicates, and counted indirect execution",
+TEST_CASE("Metal rejects occlusion, pipeline statistics, predicates, and conditional execution",
           "[size:large][rhi][metal][query][unsupported]")
 {
     auto created = rachis::createDevice(metalDesc());
@@ -690,50 +690,69 @@ TEST_CASE("Metal rejects occlusion, pipeline statistics, predicates, and counted
     REQUIRE_FALSE(predicate);
     CHECK(predicate.error().code == rachis::ErrorCode::unsupported);
 
+    auto plainBuffer = device.createBuffer({
+        .size = sizeof(std::uint32_t),
+        .usage = rachis::BufferUsage::copyDestination,
+        .memoryType = rachis::MemoryType::upload,
+        .label = "Metal condition buffer",
+    });
+    REQUIRE(plainBuffer);
+    auto graphics = rachis::test::acquireCommandBuffer(device, rachis::QueueType::graphics);
+    REQUIRE(graphics);
+    auto conditional = device.beginConditionalExecution(*graphics, {.buffer = *plainBuffer});
+    REQUIRE_FALSE(conditional);
+    CHECK(conditional.error().code == rachis::ErrorCode::unsupported);
+}
+
+TEST_CASE("Metal rejects indirect calls whose records overrun the argument buffer or whose count buffer lacks "
+          "indirect usage",
+          "[size:large][rhi][metal][indirect]")
+{
+    auto created = rachis::createDevice(metalDesc());
+    REQUIRE(created);
+    auto device = std::move(*created);
+
     auto countBuffer = device.createBuffer({
         .size = sizeof(std::uint32_t),
         .usage = rachis::BufferUsage::copyDestination,
         .memoryType = rachis::MemoryType::upload,
-        .label = "Metal count buffer",
+        .label = "Metal count buffer without indirect usage",
     });
     REQUIRE(countBuffer);
     auto arguments = device.createBuffer({
         .size = sizeof(rachis::DispatchIndirectArguments),
         .usage = rachis::BufferUsage::indirect | rachis::BufferUsage::copyDestination,
         .memoryType = rachis::MemoryType::upload,
-        .label = "Metal rejected arguments",
+        .label = "Metal one-record arguments",
     });
     REQUIRE(arguments);
 
     auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
     REQUIRE(command);
-    auto countedDispatch = device.dispatchIndirect(*command,
+    auto overrunDispatch = device.dispatchIndirect(*command,
                                                    {
                                                        .argumentBuffer = *arguments,
                                                        .maxDispatchCount = 2,
                                                    });
-    REQUIRE_FALSE(countedDispatch);
-    CHECK(countedDispatch.error().code == rachis::ErrorCode::invalidArgument);
-    auto countedWithBuffer = device.dispatchIndirect(*command,
-                                                     {
-                                                         .argumentBuffer = *arguments,
-                                                         .countBuffer = *countBuffer,
-                                                     });
-    REQUIRE_FALSE(countedWithBuffer);
-    CHECK(countedWithBuffer.error().code == rachis::ErrorCode::invalidArgument);
+    REQUIRE_FALSE(overrunDispatch);
+    CHECK(overrunDispatch.error().code == rachis::ErrorCode::invalidArgument);
+    auto countWithoutIndirectUsage = device.dispatchIndirect(*command,
+                                                             {
+                                                                 .argumentBuffer = *arguments,
+                                                                 .countBuffer = *countBuffer,
+                                                             });
+    REQUIRE_FALSE(countWithoutIndirectUsage);
+    CHECK(countWithoutIndirectUsage.error().code == rachis::ErrorCode::invalidArgument);
 
     auto graphics = rachis::test::acquireCommandBuffer(device, rachis::QueueType::graphics);
     REQUIRE(graphics);
-    auto countedDraw = device.drawIndirect(*graphics,
+    auto overrunDraw = device.drawIndirect(*graphics,
                                            {
                                                .argumentBuffer = *arguments,
                                                .maxDrawCount = 2,
                                            });
-    REQUIRE_FALSE(countedDraw);
-    CHECK(countedDraw.error().code == rachis::ErrorCode::invalidArgument);
-    auto conditional = device.beginConditionalExecution(*graphics, {.buffer = *countBuffer});
-    REQUIRE_FALSE(conditional);
-    CHECK(conditional.error().code == rachis::ErrorCode::unsupported);
+    REQUIRE_FALSE(overrunDraw);
+    CHECK(overrunDraw.error().code == rachis::ErrorCode::invalidArgument);
 }
 
 TEST_CASE("Metal timestamp query pools enforce cross-command-buffer reset, rollback, and scope rules",

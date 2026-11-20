@@ -481,8 +481,11 @@ namespace rachis::metal
     {
         std::vector<std::shared_ptr<void>> replaced;
         std::shared_ptr<MetalArgumentEra> next;
+        std::shared_ptr<std::mutex> chainMutex;
 
-        MetalArgumentEra() = default;
+        explicit MetalArgumentEra(std::shared_ptr<std::mutex> mutex) noexcept : chainMutex(std::move(mutex))
+        {
+        }
         MetalArgumentEra(const MetalArgumentEra&) = delete;
         MetalArgumentEra& operator=(const MetalArgumentEra&) = delete;
         MetalArgumentEra(MetalArgumentEra&&) = delete;
@@ -492,7 +495,7 @@ namespace rachis::metal
 
     struct MetalArgumentBufferContents final
     {
-        std::mutex mutex;
+        std::shared_ptr<std::mutex> mutex = std::make_shared<std::mutex>();
         std::vector<MetalBindingSlot> elements;
         std::unordered_map<const void*, std::uint32_t> residentElements;
         std::weak_ptr<MetalArgumentEra> era;
@@ -1445,6 +1448,7 @@ namespace rachis::metal
     inline constexpr std::uint32_t metalMaxArgumentBufferResources = 500'000;
     inline constexpr std::uint32_t metalMaxArgumentBufferSamplers = 1024;
     inline constexpr std::uint32_t metalMaxArgumentBufferSamplersBeforeApple9 = 996;
+    inline constexpr std::uint64_t metalMaxArgumentBufferTexturesPerStage = 1'000'000;
 
     [[nodiscard]] inline std::uint32_t metalArgumentBufferSamplerLimit(id<MTLDevice> device) noexcept
     {
@@ -1580,6 +1584,8 @@ namespace rachis::metal
         bool failNextResidencySetCreate = false;
         bool failNextPipelineCacheSerialize = false;
         bool failNextDrawIndexTableGrowth = false;
+        bool failNextBindingResidencyReserve = false;
+        bool failNextLayoutStaging = false;
         std::int64_t failPushConstantSliceAfter = -1;
         std::string pipelineCacheTemporaryDirectory;
         std::atomic<std::uint64_t> residencyAddCount{0};
@@ -1593,7 +1599,11 @@ namespace rachis::metal
         std::atomic<std::uint64_t> teardownQueueDrainCount{0};
         std::atomic<std::uint64_t> renderTimestampVertexStageCount{0};
         std::atomic<std::uint64_t> renderTimestampFragmentStageCount{0};
+        std::atomic<std::uint64_t> indirectClampEncodeCount{0};
         std::shared_ptr<MetalCommitFeedbackGate> nextCommandPoolResetGate;
+        std::shared_ptr<MetalCommitFeedbackGate> nextSubmitFoldGate;
+        bool holdNextSubmitOnGpu = false;
+        __strong id<MTLSharedEvent> heldSubmitEvent = nil;
         std::shared_ptr<MetalCommitFeedbackGate> nextDrawableAcquireGate;
     };
 
@@ -1611,9 +1621,14 @@ namespace rachis::metal
     void recordMetalPushConstantSliceSuballocate() noexcept;
     void recordMetalTeardownQueueDrain() noexcept;
     void recordMetalRenderTimestampStage(MTLRenderStages stage) noexcept;
+    void recordMetalIndirectClampEncode() noexcept;
     void holdMetalCommandPoolResetForTesting() noexcept;
     [[nodiscard]] bool consumeInjectedMetalDrawIndexTableGrowthFailure() noexcept;
     [[nodiscard]] bool consumeInjectedMetalPushConstantSliceFailure() noexcept;
+    [[nodiscard]] bool consumeInjectedMetalBindingResidencyReserveFailure() noexcept;
+    [[nodiscard]] bool consumeInjectedMetalLayoutStagingFailure() noexcept;
+    void waitAtMetalSubmitAfterResidencyFold() noexcept;
+    void encodeHeldMetalSubmitGpuWait(id<MTLDevice> device, id<MTL4CommandQueue> queue) noexcept;
 #endif
 
     [[nodiscard]] FormatProperties probeFormat(id<MTLDevice> device, Format format) noexcept;
@@ -1642,8 +1657,16 @@ namespace rachis::metal
     [[nodiscard]] std::shared_ptr<MetalTextureLayoutTable> metalTextureLayoutTable(MetalTextureRecord& record);
     [[nodiscard]] Status metalCheckLayoutTransitions(const MetalCommandLayoutState& state,
                                                      std::span<const MetalLayoutTransition> transitions);
-    void metalStageLayoutTransitions(MetalCommandLayoutState& state,
-                                     std::span<const MetalLayoutTransition> transitions);
+    struct MetalLayoutStaging final
+    {
+        std::unordered_map<MetalLayoutCell, std::size_t, MetalLayoutCellHash> added;
+        std::vector<MetalLayoutWrite> writes;
+        std::vector<MetalLayoutEntryRequirement> entries;
+        std::vector<std::pair<std::size_t, TextureLayout>> updates;
+    };
+    [[nodiscard]] Result<MetalLayoutStaging> metalPrepareLayoutTransitions(
+        MetalCommandLayoutState& state, std::span<const MetalLayoutTransition> transitions);
+    void metalCommitLayoutTransitions(MetalCommandLayoutState& state, MetalLayoutStaging& staging) noexcept;
 
     struct MetalBatchLayouts final
     {

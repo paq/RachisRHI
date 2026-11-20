@@ -40,6 +40,62 @@ namespace rachis::metal
             return {};
         }
 
+        [[nodiscard]] Status metalRetainBoundBindingSetsOrFail(
+            MetalCommandBuffer& native,
+            MetalCommandEntry& entry,
+            std::span<const std::shared_ptr<MetalBindingSetVersion>> versions,
+            std::span<std::shared_ptr<MetalBindingSetCommandRetention>> retentions,
+            std::vector<std::shared_ptr<MetalBindingSetVersion>>& bound,
+            std::uint32_t firstSet)
+        {
+            try
+            {
+                if (bound.size() < firstSet + versions.size())
+                {
+                    bound.resize(firstSet + versions.size());
+                }
+            }
+            catch (const std::bad_alloc&)
+            {
+                return std::unexpected(
+                    metalSelectionError(ErrorCode::outOfMemory, "Failed to record the bound Metal binding sets."));
+            }
+            for (const auto& version : versions)
+            {
+                if (auto kept = retainMetalApplicationResource(native, std::static_pointer_cast<void>(version)); !kept)
+                {
+                    return kept;
+                }
+                if (auto elements = retainMetalBindingSetElements(native, *version); !elements)
+                {
+                    return elements;
+                }
+            }
+            if (auto reserved = metalReserveBindingSetResidency(entry, versions.size()); !reserved)
+            {
+                return reserved;
+            }
+            return retainMetalBindingSetRetentions(native, retentions);
+        }
+
+        [[nodiscard]] Status metalRetainBoundBindingSets(
+            MetalCommandBuffer& native,
+            MetalCommandEntry& entry,
+            std::span<const std::shared_ptr<MetalBindingSetVersion>> versions,
+            std::span<std::shared_ptr<MetalBindingSetCommandRetention>> retentions,
+            std::vector<std::shared_ptr<MetalBindingSetVersion>>& bound,
+            std::uint32_t firstSet)
+        {
+            auto& retained = native.retained();
+            const auto mark = retained.size();
+            auto status = metalRetainBoundBindingSetsOrFail(native, entry, versions, retentions, bound, firstSet);
+            if (!status)
+            {
+                retained.erase(retained.begin() + static_cast<std::ptrdiff_t>(mark), retained.end());
+            }
+            return status;
+        }
+
         [[nodiscard]] id<MTL4ArgumentTable> metalFindReusableSingleSetTable(
             const MetalResolvedStageBindings& stageBindings,
             std::span<const std::shared_ptr<MetalBindingSetVersion>> versions,
@@ -149,6 +205,7 @@ namespace rachis::metal
             std::span<const std::shared_ptr<MetalBindingSetVersion>> versions)
         {
             std::uint64_t argumentSamplers = 0;
+            std::uint64_t argumentTextures = 0;
             for (const auto& res : stageBindings.resources)
             {
                 if (res.set >= versions.size() || versions[res.set] == nullptr)
@@ -175,6 +232,11 @@ namespace rachis::metal
                     {
                         argumentSamplers += version.variableDescriptorCount;
                     }
+                    else if (res.type == ShaderResourceType::sampledTexture ||
+                             res.type == ShaderResourceType::storageTexture)
+                    {
+                        argumentTextures += version.variableDescriptorCount;
+                    }
                     metalIncludeBindingSlot(capacity, BindingType::storageBuffer, res.metalIndex + 1U);
                     continue;
                 }
@@ -199,6 +261,52 @@ namespace rachis::metal
                     metalSelectionError(ErrorCode::invalidArgument,
                                         "The binding arrays of samplers bound to one shader stage exceed "
                                         "maxVariableSamplerDescriptors."));
+            }
+            if (argumentTextures > metalMaxArgumentBufferTexturesPerStage)
+            {
+                return std::unexpected(metalSelectionError(
+                    ErrorCode::invalidArgument,
+                    "The binding arrays of textures bound to one shader stage exceed Metal's 1,000,000 textures."));
+            }
+            return {};
+        }
+
+        [[nodiscard]] Status metalValidateStageResources(
+            id<MTLDevice> device,
+            const MetalResolvedStageBindings& stageBindings,
+            std::span<const std::shared_ptr<MetalBindingSetVersion>> versions)
+        {
+            MetalArgumentTableCapacity capacity{};
+            return metalMeasureResourceSlots(device, capacity, stageBindings, versions);
+        }
+
+        [[nodiscard]] Status metalValidateGraphicsResources(id<MTLDevice> device,
+                                                            const MetalCommandEntry& entry,
+                                                            const MetalPipelineRecord& pipeline)
+        {
+            const std::span<const std::shared_ptr<MetalBindingSetVersion>> versions{entry.boundGraphicsVersions};
+            if (pipeline.mesh)
+            {
+                if (pipeline.hasObjectShader)
+                {
+                    if (auto valid = metalValidateStageResources(device, pipeline.objectStageBindings, versions);
+                        !valid)
+                    {
+                        return valid;
+                    }
+                }
+                if (auto valid = metalValidateStageResources(device, pipeline.meshStageBindings, versions); !valid)
+                {
+                    return valid;
+                }
+            }
+            else if (auto valid = metalValidateStageResources(device, pipeline.vertexStageBindings, versions); !valid)
+            {
+                return valid;
+            }
+            if (pipeline.hasPixelShader)
+            {
+                return metalValidateStageResources(device, pipeline.pixelStageBindings, versions);
             }
             return {};
         }
@@ -1313,29 +1421,11 @@ namespace rachis::metal
         {
             return valid;
         }
-        for (auto& version : versions)
+        if (auto retainedSets = metalRetainBoundBindingSets(
+                *native, *entry, versions, retentions, entry->boundComputeVersions, firstSet);
+            !retainedSets)
         {
-            auto kept = retainMetalApplicationResource(*native, std::static_pointer_cast<void>(version));
-            if (!kept)
-            {
-                return kept;
-            }
-            if (auto elements = retainMetalBindingSetElements(*native, *version); !elements)
-            {
-                return elements;
-            }
-        }
-        if (auto reserved = metalReserveBindingSetResidency(*entry, versions.size()); !reserved)
-        {
-            return reserved;
-        }
-        if (auto counted = retainMetalBindingSetRetentions(*native, retentions); !counted)
-        {
-            return counted;
-        }
-        if (entry->boundComputeVersions.size() < firstSet + versions.size())
-        {
-            entry->boundComputeVersions.resize(firstSet + versions.size());
+            return retainedSets;
         }
         for (std::size_t index = 0; index < versions.size(); ++index)
         {
@@ -1815,12 +1905,19 @@ namespace rachis::metal
         {
             return prepared;
         }
+        const auto& pipeline = *entry->boundComputePipeline;
+        if (records.count != nil)
+        {
+            if (auto prepared = metalApplyComputeDispatchState(device, *entry, pipeline); !prepared)
+            {
+                return prepared;
+            }
+        }
         auto span = metalClampComputeRecords(device, *entry, *pipelines, layout, records);
         if (!span)
         {
             return std::unexpected(std::move(span.error()));
         }
-        const auto& pipeline = *entry->boundComputePipeline;
         if (auto applied = metalApplyComputeDispatchState(device, *entry, pipeline); !applied)
         {
             return applied;
@@ -2748,29 +2845,11 @@ namespace rachis::metal
         {
             return valid;
         }
-        for (auto& version : versions)
+        if (auto retainedSets = metalRetainBoundBindingSets(
+                *native, *entry, versions, retentions, entry->boundGraphicsVersions, firstSet);
+            !retainedSets)
         {
-            auto kept = retainMetalApplicationResource(*native, std::static_pointer_cast<void>(version));
-            if (!kept)
-            {
-                return kept;
-            }
-            if (auto elements = retainMetalBindingSetElements(*native, *version); !elements)
-            {
-                return elements;
-            }
-        }
-        if (entry->boundGraphicsVersions.size() < firstSet + versions.size())
-        {
-            entry->boundGraphicsVersions.resize(firstSet + versions.size());
-        }
-        if (auto reserved = metalReserveBindingSetResidency(*entry, versions.size()); !reserved)
-        {
-            return reserved;
-        }
-        if (auto counted = retainMetalBindingSetRetentions(*native, retentions); !counted)
-        {
-            return counted;
+            return retainedSets;
         }
         for (std::size_t index = 0; index < versions.size(); ++index)
         {
@@ -3254,7 +3333,7 @@ namespace rachis::metal
         auto* entry = native->entry();
         if (metalDrawScissoredOut(*entry, *pipeline))
         {
-            return {};
+            return metalValidateGraphicsResources(device, *entry, *pipeline);
         }
         auto applied = metalApplyGraphicsDrawState(device, *entry, *pipeline);
         if (!applied)
@@ -3330,7 +3409,7 @@ namespace rachis::metal
         }
         if (metalDrawScissoredOut(*entry, *pipeline))
         {
-            return {};
+            return metalValidateGraphicsResources(device, *entry, *pipeline);
         }
         auto applied = metalApplyGraphicsDrawState(device, *entry, *pipeline);
         if (!applied)
@@ -3450,7 +3529,7 @@ namespace rachis::metal
         }
         if (layout.maxRecords == 0 || metalDrawScissoredOut(*entry, *pipeline))
         {
-            return {};
+            return metalValidateGraphicsResources(inputs->device, *entry, *pipeline);
         }
         if (auto kept = metalRetainIndirectRecords(*native, *entry, inputs->records); !kept)
         {
@@ -3459,6 +3538,13 @@ namespace rachis::metal
         if (auto reserved = metalReserveDrawIndices(inputs->device, *entry, *pipeline, layout.maxRecords); !reserved)
         {
             return reserved;
+        }
+        if (inputs->records.count != nil)
+        {
+            if (auto prepared = metalApplyGraphicsDrawState(inputs->device, *entry, *pipeline); !prepared)
+            {
+                return prepared;
+            }
         }
         auto span = metalClampRenderRecords(inputs->device, *entry, inputs->pipelines, layout, inputs->records, 1, 1);
         if (!span)
@@ -3531,7 +3617,7 @@ namespace rachis::metal
         }
         if (layout.maxRecords == 0 || metalDrawScissoredOut(*entry, *pipeline))
         {
-            return {};
+            return metalValidateGraphicsResources(inputs->device, *entry, *pipeline);
         }
         if (auto kept = metalRetainIndirectRecords(*native, *entry, inputs->records); !kept)
         {
@@ -3540,6 +3626,13 @@ namespace rachis::metal
         if (auto reserved = metalReserveDrawIndices(inputs->device, *entry, *pipeline, layout.maxRecords); !reserved)
         {
             return reserved;
+        }
+        if (inputs->records.count != nil)
+        {
+            if (auto prepared = metalApplyGraphicsDrawState(inputs->device, *entry, *pipeline); !prepared)
+            {
+                return prepared;
+            }
         }
         auto span = metalClampRenderRecords(inputs->device, *entry, inputs->pipelines, layout, inputs->records, 1, 1);
         if (!span)
@@ -3668,7 +3761,7 @@ namespace rachis::metal
         }
         if (metalDrawScissoredOut(*entry, *pipeline))
         {
-            return {};
+            return metalValidateGraphicsResources(device, *entry, *pipeline);
         }
         auto applied = metalApplyGraphicsDrawState(device, *entry, *pipeline);
         if (!applied)
@@ -3735,7 +3828,7 @@ namespace rachis::metal
         }
         if (layout.maxRecords == 0 || metalDrawScissoredOut(*entry, *pipeline))
         {
-            return {};
+            return metalValidateGraphicsResources(inputs->device, *entry, *pipeline);
         }
         if (auto kept = metalRetainIndirectRecords(*native, *entry, inputs->records); !kept)
         {
@@ -3744,6 +3837,13 @@ namespace rachis::metal
         if (auto reserved = metalReserveDrawIndices(inputs->device, *entry, *pipeline, layout.maxRecords); !reserved)
         {
             return reserved;
+        }
+        if (inputs->records.count != nil)
+        {
+            if (auto prepared = metalApplyGraphicsDrawState(inputs->device, *entry, *pipeline); !prepared)
+            {
+                return prepared;
+            }
         }
         auto span = metalClampRenderRecords(inputs->device,
                                             *entry,

@@ -260,7 +260,9 @@ namespace rachis::metal
             NSArray* const group = array(entry[@"threadGroupSize"]);
             if (group.count != 3)
             {
-                return std::unexpected(manifestError("Metal compute reflection requires three workgroup dimensions."));
+                return std::unexpected(
+                    manifestError("Metal compute, task, and mesh reflection requires three workgroup dimensions. Cook "
+                                  "task and mesh shaders with Slang 2026.20 or later, which reflects them."));
             }
             const auto x = uintValue(group[0]);
             const auto y = uintValue(group[1]);
@@ -634,30 +636,107 @@ namespace rachis::metal
             return {};
         }
 
-        [[nodiscard]] bool activeBindingIsUsed(NSDictionary* active)
+        [[nodiscard]] Result<std::optional<bool>> bindingUsageFlag(NSDictionary* binding)
+        {
+            id const flag = binding[@"used"];
+            if (flag == nil)
+            {
+                return std::optional<bool>{};
+            }
+            if (![flag isKindOfClass:[NSNumber class]] || ([flag doubleValue] != 0 && [flag doubleValue] != 1))
+            {
+                return std::unexpected(manifestError("Metal resource usage must be a boolean flag."));
+            }
+            return std::optional<bool>{[flag doubleValue] != 0};
+        }
+
+        [[nodiscard]] Result<bool> activeBindingIsUsed(NSDictionary* active)
         {
             bool sawUsage = false;
-            const auto used = [&](NSDictionary* binding) {
-                id const flag = binding[@"used"];
-                if (flag == nil)
+            bool used = false;
+            const auto record = [&](NSDictionary* binding) -> Status {
+                auto flag = bindingUsageFlag(binding);
+                if (!flag)
                 {
-                    return false;
+                    return std::unexpected(std::move(flag.error()));
                 }
-                sawUsage = true;
-                return [flag isKindOfClass:[NSNumber class]] && [flag doubleValue] != 0;
+                if (flag->has_value())
+                {
+                    sawUsage = true;
+                    used = used || **flag;
+                }
+                return {};
             };
-            if (NSDictionary* const single = dictionary(active[@"binding"]); single != nil && used(single))
+            if (NSDictionary* const single = dictionary(active[@"binding"]); single != nil)
             {
-                return true;
+                if (auto recorded = record(single); !recorded)
+                {
+                    return std::unexpected(std::move(recorded.error()));
+                }
             }
             for (id item in array(active[@"bindings"]))
             {
-                if (NSDictionary* const binding = dictionary(item); binding != nil && used(binding))
+                if (NSDictionary* const binding = dictionary(item); binding != nil)
                 {
-                    return true;
+                    if (auto recorded = record(binding); !recorded)
+                    {
+                        return std::unexpected(std::move(recorded.error()));
+                    }
                 }
             }
-            return !sawUsage;
+            return used || !sawUsage;
+        }
+
+        [[nodiscard]] NSDictionary* findNamedParameter(NSArray* parameters, NSString* name)
+        {
+            for (id item in parameters)
+            {
+                NSDictionary* const candidate = dictionary(item);
+                if (name != nil && [string(candidate[@"name"]) isEqualToString:name])
+                {
+                    return candidate;
+                }
+            }
+            return nil;
+        }
+
+        [[nodiscard]] Status validateArgumentBufferParameter(NSDictionary* parameter,
+                                                             const MetalReflectedResource& annotation)
+        {
+            NSDictionary* const type = dictionary(parameter[@"type"]);
+            const auto elements = uintValue(type[@"elementCount"]);
+            NSDictionary* const element = dictionary(type[@"elementType"]);
+            MetalReflectedResource reflected;
+            if (![string(type[@"kind"]) isEqualToString:@"array"] || !elements || *elements != 0 || element == nil ||
+                classifyReflectedResource(element, reflected) == nil || reflected.type != annotation.type)
+            {
+                return std::unexpected(manifestError("Metal rachisArgumentBuffers entry '" + annotation.name +
+                                                     "' does not match an unbounded array of its resource type "
+                                                     "in the reflection."));
+            }
+            return {};
+        }
+
+        [[nodiscard]] bool isDrawIndexPayload(NSDictionary* type)
+        {
+            NSDictionary* element = dictionary(type[@"elementType"]);
+            if (element == nil)
+            {
+                element = dictionary(dictionary(type[@"elementVarLayout"])[@"type"]);
+            }
+            NSArray* const fields = array(element[@"fields"]);
+            if (![string(type[@"kind"]) isEqualToString:@"constantBuffer"] ||
+                ![string(element[@"kind"]) isEqualToString:@"struct"] || fields.count != 1)
+            {
+                return false;
+            }
+            NSDictionary* const field = dictionary(fields[0]);
+            NSDictionary* const fieldType = dictionary(field[@"type"]);
+            NSDictionary* const binding = bindingOfKind(field, @"uniform");
+            const auto offset = uintValue(binding[@"offset"]);
+            return [string(fieldType[@"kind"]) isEqualToString:@"scalar"] &&
+                   [string(fieldType[@"scalarType"]) isEqualToString:@"uint32"] && offset == 0U &&
+                   (binding[@"size"] == nil || uintValue(binding[@"size"]) == sizeof(std::uint32_t));
         }
 
         [[nodiscard]] Status reflectActiveBinding(NSDictionary* root,
@@ -695,14 +774,12 @@ namespace rachis::metal
             {
                 return std::unexpected(manifestError("Metal reflection contains an unsupported resource mapping."));
             }
-            id const used = binding[@"used"];
-            if (used != nil &&
-                (![used isKindOfClass:[NSNumber class]] || ([used doubleValue] != 0 && [used doubleValue] != 1)))
+            auto used = bindingUsageFlag(binding);
+            if (!used)
             {
-                return std::unexpected(manifestError("Metal resource usage must be a boolean flag."));
+                return std::unexpected(std::move(used.error()));
             }
-
-            if (used != nil && ![used boolValue])
+            if (used->has_value() && !**used)
             {
                 return {};
             }
@@ -723,7 +800,7 @@ namespace rachis::metal
                 const auto payloadBytes = uniformSize(dictionary(type[@"elementType"]));
                 if (resource.type != ShaderResourceType::uniformBuffer || resource.count != 1 ||
                     *space != drawIndexRegisterSpace || !payloadBytes || *payloadBytes != sizeof(std::uint32_t) ||
-                    resource.metalIndex >= 31 || layout.drawIndex)
+                    !isDrawIndexPayload(type) || resource.metalIndex >= 31 || layout.drawIndex)
                 {
                     return std::unexpected(
                         manifestError("Metal draw-index reflection must be one uint32 constant buffer in register "
@@ -816,23 +893,75 @@ namespace rachis::metal
             }
 
             std::vector<std::string> activeArrays;
+            const auto annotatedArray = [&](const char* name) -> const MetalReflectedResource* {
+                if (name == nullptr)
+                {
+                    return nullptr;
+                }
+                const auto found = std::ranges::find_if(
+                    *argumentBuffers, [&](const MetalReflectedResource& array) { return array.name == name; });
+                return found != argumentBuffers->end() ? &*found : nullptr;
+            };
+            const auto activateArray = [&](NSDictionary* parameter, const MetalReflectedResource& array) -> Status {
+                if (auto valid = validateArgumentBufferParameter(parameter, array); !valid)
+                {
+                    return valid;
+                }
+                activeArrays.push_back(array.name);
+                return {};
+            };
             for (id item in array(entry[@"bindings"]))
             {
-                NSString* const activeName = string(dictionary(item)[@"name"]);
-                const char* const activeUtf8 = activeName != nil ? activeName.UTF8String : nullptr;
-                if (activeUtf8 != nullptr &&
-                    std::ranges::any_of(*argumentBuffers,
-                                        [&](const MetalReflectedResource& array) { return array.name == activeUtf8; }))
+                NSDictionary* const active = dictionary(item);
+                NSString* const activeName = string(active[@"name"]);
+                auto used = activeBindingIsUsed(active);
+                if (!used)
                 {
-                    if (activeBindingIsUsed(dictionary(item)))
+                    return std::unexpected(std::move(used.error()));
+                }
+                if (!*used)
+                {
+                    continue;
+                }
+                if (const auto* annotated = annotatedArray(activeName != nil ? activeName.UTF8String : nullptr))
+                {
+                    NSDictionary* parameter = findNamedParameter(array(root[@"parameters"]), activeName);
+                    if (parameter == nil)
                     {
-                        activeArrays.emplace_back(activeUtf8);
+                        parameter = findNamedParameter(array(entry[@"parameters"]), activeName);
+                    }
+                    if (auto activated = activateArray(parameter, *annotated); !activated)
+                    {
+                        return std::unexpected(std::move(activated.error()));
                     }
                     continue;
                 }
-                if (auto reflected = reflectActiveBinding(root, dictionary(item), *rachisBindings, layout); !reflected)
+                if (auto reflected = reflectActiveBinding(root, active, *rachisBindings, layout); !reflected)
                 {
                     return std::unexpected(std::move(reflected.error()));
+                }
+            }
+            for (id item in array(entry[@"parameters"]))
+            {
+                NSDictionary* const parameter = dictionary(item);
+                NSString* const parameterName = string(parameter[@"name"]);
+                const auto* annotated = annotatedArray(parameterName != nil ? parameterName.UTF8String : nullptr);
+                if (annotated == nullptr || std::ranges::find(activeArrays, annotated->name) != activeArrays.end())
+                {
+                    continue;
+                }
+                auto used = activeBindingIsUsed(parameter);
+                if (!used)
+                {
+                    return std::unexpected(std::move(used.error()));
+                }
+                if (!*used)
+                {
+                    continue;
+                }
+                if (auto activated = activateArray(parameter, *annotated); !activated)
+                {
+                    return std::unexpected(std::move(activated.error()));
                 }
             }
             const bool entryListsBindings = array(entry[@"bindings"]) != nil;

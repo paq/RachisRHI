@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstring>
 #include <expected>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <span>
@@ -1762,6 +1763,23 @@ namespace rachis::shader_tool
         {
             return std::unexpected(stageInterface.error());
         }
+        if (const auto* entry = detail::findSelectedEntryPoint(*parsed, entryPoint); entry != nullptr)
+        {
+            const auto* stage = entry->find("stage");
+            const auto* stageName = stage != nullptr ? stage->asString() : nullptr;
+            const auto* workgroup = entry->find("threadGroupSize");
+            const bool hasWorkgroup =
+                workgroup != nullptr && workgroup->asArray() != nullptr && workgroup->asArray()->size() == 3;
+            if (stageName != nullptr && (*stageName == "mesh" || *stageName == "amplification") && !hasWorkgroup)
+            {
+                const auto* name = entry->find("name");
+                return std::unexpected(
+                    "Slang did not reflect the thread-group size of the " +
+                    std::string(*stageName == "mesh" ? "mesh" : "task") + " entry point '" +
+                    std::string(name != nullptr && name->asString() != nullptr ? *name->asString() : "") +
+                    "'. Cooking task and mesh shaders for Metal needs Slang 2026.20 or later.");
+            }
+        }
 
         std::size_t closeBrace = rawMetalReflectionJson.size();
         while (closeBrace > 0)
@@ -2194,14 +2212,97 @@ namespace rachis::shader_tool
             return std::nullopt;
         }
 
+        [[nodiscard]] inline std::vector<MetalSourceRange> metalNonCodeRanges(std::string_view source)
+        {
+            std::vector<MetalSourceRange> ranges;
+            bool lineStart = true;
+            std::size_t index = 0;
+            const auto skipToLineEnd = [&](std::size_t from) {
+                std::size_t end = from;
+                while (end < source.size() && source[end] != '\n')
+                {
+                    if (source[end] == '\\' && end + 1 < source.size() && source[end + 1] == '\n')
+                    {
+                        ++end;
+                    }
+                    ++end;
+                }
+                return end;
+            };
+            while (index < source.size())
+            {
+                const char ch = source[index];
+                if (ch == '\n')
+                {
+                    lineStart = true;
+                    ++index;
+                    continue;
+                }
+                if (lineStart && (ch == ' ' || ch == '\t' || ch == '\r'))
+                {
+                    ++index;
+                    continue;
+                }
+                if (lineStart && ch == '#')
+                {
+                    const auto end = skipToLineEnd(index);
+                    ranges.push_back(MetalSourceRange{index, end});
+                    index = end;
+                    continue;
+                }
+                lineStart = false;
+                if (ch == '/' && index + 1 < source.size() && source[index + 1] == '/')
+                {
+                    const auto end = skipToLineEnd(index);
+                    ranges.push_back(MetalSourceRange{index, end});
+                    index = end;
+                    continue;
+                }
+                if (ch == '/' && index + 1 < source.size() && source[index + 1] == '*')
+                {
+                    const auto close = source.find("*/", index + 2);
+                    const auto end = close == std::string_view::npos ? source.size() : close + 2;
+                    ranges.push_back(MetalSourceRange{index, end});
+                    index = end;
+                    continue;
+                }
+                if (ch == '"' || ch == '\'')
+                {
+                    std::size_t end = index + 1;
+                    while (end < source.size() && source[end] != ch && source[end] != '\n')
+                    {
+                        end += source[end] == '\\' ? 2U : 1U;
+                    }
+                    end = std::min(end + 1, source.size());
+                    ranges.push_back(MetalSourceRange{index, end});
+                    index = end;
+                    continue;
+                }
+                ++index;
+            }
+            return ranges;
+        }
+
+        [[nodiscard]] inline bool isMetalCodePosition(std::span<const MetalSourceRange> nonCode,
+                                                      std::size_t position) noexcept
+        {
+            const auto after = std::ranges::upper_bound(nonCode, position, {}, &MetalSourceRange::begin);
+            return after == nonCode.begin() || position >= std::prev(after)->end;
+        }
+
         [[nodiscard]] inline std::vector<MetalSourceRange> metalEntryParameterLists(std::string_view source)
         {
+            const auto nonCode = metalNonCodeRanges(source);
             std::vector<MetalSourceRange> ranges;
             for (const auto attribute : metalEntryAttributes)
             {
                 for (std::size_t found = source.find(attribute); found != std::string_view::npos;
                      found = source.find(attribute, found + attribute.size()))
                 {
+                    if (!isMetalCodePosition(nonCode, found))
+                    {
+                        continue;
+                    }
                     const auto open = source.find('(', found);
                     if (open == std::string_view::npos)
                     {
@@ -2290,11 +2391,17 @@ namespace rachis::shader_tool
 
         [[nodiscard]] inline std::vector<MetalUnboundedDeclaration> metalUnboundedDeclarations(std::string_view source)
         {
+            const auto nonCode = metalNonCodeRanges(source);
             std::vector<MetalUnboundedDeclaration> declarations;
             for (std::size_t found = source.find("[]"); found != std::string_view::npos;
                  found = source.find("[]", found + 2))
             {
-                if (auto declaration = metalUnboundedDeclarationAt(source, found); declaration.has_value())
+                if (!isMetalCodePosition(nonCode, found))
+                {
+                    continue;
+                }
+                if (auto declaration = metalUnboundedDeclarationAt(source, found);
+                    declaration.has_value() && isMetalCodePosition(nonCode, declaration->typeBegin))
                 {
                     declarations.push_back(std::move(*declaration));
                 }
@@ -2327,7 +2434,8 @@ namespace rachis::shader_tool
         [[nodiscard]] inline MetalBufferSlots occupiedMetalBufferSlots(std::string_view source,
                                                                        const JsonValue& metalRoot,
                                                                        std::string_view entryPoint,
-                                                                       const JsonArray* entryBindings)
+                                                                       const JsonArray* entryBindings,
+                                                                       std::span<const std::string> replacedArrays)
         {
             MetalBufferSlots occupied{};
             constexpr std::string_view attribute = "[[buffer(";
@@ -2354,7 +2462,8 @@ namespace rachis::shader_tool
             }
             for (const auto& parameter : collectUsedMetalParameters(metalRoot, entryPoint, entryBindings))
             {
-                if (parameter.kindClass == metalBufferKindClass)
+                if (parameter.kindClass == metalBufferKindClass &&
+                    std::ranges::find(replacedArrays, parameter.name) == replacedArrays.end())
                 {
                     occupyMetalBufferSlots(occupied, parameter.unshiftedMetalIndex, parameter.count);
                 }
@@ -2474,25 +2583,67 @@ namespace rachis::shader_tool
         {
             return std::unexpected(entryBindings.error());
         }
-        auto occupied = detail::occupiedMetalBufferSlots(metalSource, *metalRoot, entryPoint, *entryBindings);
         std::vector<const detail::JsonValue*> metalParameters;
         std::vector<const detail::JsonValue*> spirvParameters;
-        detail::collectParameterNodes(*metalRoot, entryPoint, metalParameters);
-        detail::collectParameterNodes(*spirvRoot, entryPoint, spirvParameters);
+        const auto metalGlobals = detail::collectParameterNodes(*metalRoot, entryPoint, metalParameters);
+        const auto spirvGlobals = detail::collectParameterNodes(*spirvRoot, entryPoint, spirvParameters);
+        const std::vector<const detail::JsonValue*> metalEntryParameters(
+            metalParameters.begin() + static_cast<std::ptrdiff_t>(metalGlobals), metalParameters.end());
+        const std::vector<const detail::JsonValue*> spirvEntryParameters(
+            spirvParameters.begin() + static_cast<std::ptrdiff_t>(spirvGlobals), spirvParameters.end());
+        struct ResolvedArray final
+        {
+            std::string name;
+            const detail::JsonValue* metal = nullptr;
+            const detail::JsonValue* spirv = nullptr;
+        };
+        std::vector<ResolvedArray> resolved;
+        resolved.reserve(parameters.size());
         for (const auto& parameter : parameters)
         {
-            const auto* metalParameter = detail::findParameterNamed(metalParameters, parameter.baseName);
-            const auto* spirvParameter = detail::findParameterNamed(spirvParameters, parameter.baseName);
-            if (metalParameter == nullptr || spirvParameter == nullptr)
+            constexpr std::string_view entryPrefix = "entryPointParams_";
+            ResolvedArray found{.name = parameter.baseName};
+            if (parameter.baseName.starts_with(entryPrefix))
+            {
+                const auto entryName = std::string_view(parameter.baseName).substr(entryPrefix.size());
+                found.metal = detail::findParameterNamed(metalEntryParameters, entryName);
+                found.spirv = detail::findParameterNamed(spirvEntryParameters, entryName);
+                if (found.metal != nullptr && found.spirv != nullptr)
+                {
+                    found.name = std::string(entryName);
+                }
+            }
+            if (found.metal == nullptr || found.spirv == nullptr)
+            {
+                found.metal = detail::findParameterNamed(metalParameters, parameter.baseName);
+                found.spirv = detail::findParameterNamed(spirvParameters, parameter.baseName);
+            }
+            if (found.metal == nullptr || found.spirv == nullptr)
             {
                 return std::unexpected("The unbounded Metal resource array '" + parameter.baseName +
                                        "' is missing from the reflection.");
             }
+            resolved.push_back(std::move(found));
+        }
+        std::vector<std::string> replacedArrays;
+        replacedArrays.reserve(resolved.size());
+        for (const auto& array : resolved)
+        {
+            replacedArrays.push_back(array.name);
+        }
+        auto occupied =
+            detail::occupiedMetalBufferSlots(metalSource, *metalRoot, entryPoint, *entryBindings, replacedArrays);
+        for (std::size_t index = 0; index < parameters.size(); ++index)
+        {
+            const auto& parameter = parameters[index];
+            const auto& name = resolved[index].name;
+            const auto* metalParameter = resolved[index].metal;
+            const auto* spirvParameter = resolved[index].spirv;
             const auto resourceType = detail::metalArgumentBufferResourceType(*metalParameter);
             const auto slot = detail::spirvDescriptorSlot(*spirvParameter);
             if (!resourceType.has_value() || !slot.has_value())
             {
-                return std::unexpected("The unbounded Metal resource array '" + parameter.baseName +
+                return std::unexpected("The unbounded Metal resource array '" + name +
                                        "' has an unsupported element type or binding.");
             }
             const auto free = std::ranges::find(occupied, false);
@@ -2500,11 +2651,11 @@ namespace rachis::shader_tool
             {
                 return std::unexpected("Unbounded resource arrays exceed Metal's 31 buffer argument slots: the entry "
                                        "point has no free buffer slot for '" +
-                                       parameter.baseName + "'.");
+                                       name + "'.");
             }
             *free = true;
             arrays.push_back(MetalArgumentBufferArray{
-                .name = parameter.baseName,
+                .name = name,
                 .parameterName = parameter.parameterName,
                 .elementType = parameter.elementType,
                 .resourceType = *resourceType,

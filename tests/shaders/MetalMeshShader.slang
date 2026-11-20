@@ -38,6 +38,26 @@ void taskMain()
     DispatchMesh(1, 1, 1, payload);
 }
 
+RWStructuredBuffer<uint> meshCounter : register(u1, space0);
+
+[shader("amplification")]
+[numthreads(1, 1, 1)]
+void taskGrid()
+{
+    MeshPayload payload;
+    payload.color = taskResources.taskColor;
+    DispatchMesh(uint(taskResources.taskColor.w), 1, 1, payload);
+}
+
+[shader("mesh")]
+[outputtopology("triangle")]
+[numthreads(1, 1, 1)]
+void meshCount(in payload MeshPayload payload, out vertices MeshVertex vertices[3], out indices uint3 triangles[1])
+{
+    SetMeshOutputCounts(0, 0);
+    InterlockedAdd(meshCounter[0], payload.color.w > 0.0F ? 1U : 0U);
+}
+
 [shader("mesh")]
 [outputtopology("triangle")]
 [numthreads(1, 1, 1)]

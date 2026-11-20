@@ -28,7 +28,7 @@ RachisRHI compiles its internal shaders at build time and never invokes a shader
 | --- | --- |
 | **Direct3D 12** | DirectX Shader Compiler (`dxc`) on `PATH` |
 | **Vulkan** | SPIR-V-capable `dxc` and `spirv-val` (both from the Vulkan SDK; the Windows SDK `dxc` cannot emit SPIR-V). Building tests also requires Slang (`slangc`) and glslang (`glslangValidator`) |
-| **Metal** | Xcode 26+ with the macOS 26 SDK, and Slang (`slangc`) `2026.17.1+` built for `arm64` |
+| **Metal** | Xcode 26+ with the macOS 26 SDK, and Slang (`slangc`) `2026.20+` built for `arm64` |
 
 - **Shader languages:** The table lists the tools for HLSL shaders. Slang shaders (`LANGUAGE SLANG`) compile with `slangc` on every backend; Direct3D 12 needs the `dxcompiler` library that ships beside `slangc` in the Vulkan SDK. GLSL shaders (`LANGUAGE GLSL`, Vulkan only) compile with `glslangValidator` from the Vulkan SDK, or `RACHIS_GLSLANG_EXECUTABLE`, and are checked with `spirv-val`.
 - **`REFLECT` shaders:** Calling `rachis_add_shader(... REFLECT)` on an HLSL or Slang shader generates shader interfaces and C++ buffer structs using `slangc`, so `slangc` is required on **all backends** when `REFLECT` is used (including for building the examples and tests). A GLSL shader's interface comes from its SPIR-V and needs no `slangc`. Without `REFLECT`, only the compilers above are needed.

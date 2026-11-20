@@ -1,6 +1,7 @@
 #include "Metal/MetalInternal.h"
 
 #include "Common/BindingPoolAccounting.h"
+#include "Common/VectorReserve.h"
 
 namespace rachis::metal
 {
@@ -90,12 +91,22 @@ namespace rachis::metal
 
     MetalArgumentEra::~MetalArgumentEra()
     {
-        auto later = std::move(next);
-        while (later != nullptr && later.use_count() == 1)
+        if (next == nullptr || chainMutex == nullptr)
         {
-            auto following = std::move(later->next);
-            later.reset();
-            later = std::move(following);
+            return;
+        }
+        const auto mutex = chainMutex;
+        std::shared_ptr<MetalArgumentEra> shared;
+        {
+            const std::scoped_lock lock(*mutex);
+            auto later = std::move(next);
+            while (later != nullptr && later.use_count() == 1)
+            {
+                auto following = std::move(later->next);
+                later.reset();
+                later = std::move(following);
+            }
+            shared = std::move(later);
         }
     }
 
@@ -107,26 +118,30 @@ namespace rachis::metal
             return {};
         }
         auto& contents = *version.argumentContents;
+        std::shared_ptr<MetalArgumentEra> previous;
         std::shared_ptr<MetalArgumentEra> era;
         {
-            const std::scoped_lock lock(contents.mutex);
-            era = contents.era.lock();
-            if (era == nullptr || !era->replaced.empty())
+            const std::scoped_lock lock(*contents.mutex);
+            previous = contents.era.lock();
+            if (previous != nullptr && previous->replaced.empty())
+            {
+                era = previous;
+            }
+            else
             {
                 try
                 {
-                    auto next = std::make_shared<MetalArgumentEra>();
-                    if (era != nullptr)
-                    {
-                        era->next = next;
-                    }
-                    era = std::move(next);
+                    era = std::make_shared<MetalArgumentEra>(contents.mutex);
                 }
                 catch (const std::bad_alloc&)
                 {
                     return std::unexpected(
                         metalSelectionError(ErrorCode::outOfMemory,
                                             "Failed to track the Metal binding-array elements a command can read."));
+                }
+                if (previous != nullptr)
+                {
+                    previous->next = era;
                 }
                 contents.era = era;
             }
@@ -1585,7 +1600,7 @@ namespace rachis::metal
             {
                 if (prepared.era != nullptr)
                 {
-                    prepared.era->replaced.reserve(prepared.era->replaced.size() + prepared.staged.size());
+                    detail::reserveAdditional(prepared.era->replaced, prepared.staged.size());
                 }
                 for (const auto* const key : prepared.keys)
                 {
@@ -1684,7 +1699,7 @@ namespace rachis::metal
                 return staged;
             }
             auto& contents = *version.argumentContents;
-            const std::scoped_lock contentsLock(contents.mutex);
+            const std::scoped_lock contentsLock(*contents.mutex);
             if (auto reserved = metalReserveElementResidency(contents, prepared); !reserved)
             {
                 return reserved;
@@ -1741,7 +1756,7 @@ namespace rachis::metal
         slots.fixed = previousVersion->slots;
         if (const auto& contents = previousVersion->argumentContents; contents != nullptr)
         {
-            const std::scoped_lock contentsLock(contents->mutex);
+            const std::scoped_lock contentsLock(*contents->mutex);
             slots.elements = contents->elements;
             contentsGeneration = contents->generation;
         }
@@ -1786,7 +1801,7 @@ namespace rachis::metal
         }
         if (const auto& contents = previousVersion->argumentContents; contents != nullptr)
         {
-            const std::scoped_lock contentsLock(contents->mutex);
+            const std::scoped_lock contentsLock(*contents->mutex);
             if (contents->generation != contentsGeneration)
             {
                 return std::unexpected(metalSelectionError(
@@ -1829,8 +1844,19 @@ namespace rachis::metal
         MetalBindingSetStorage storage{.version = version.get()};
         if (const auto& contents = version->argumentContents; contents != nullptr)
         {
-            const std::scoped_lock contentsLock(contents->mutex);
-            storage.elements = contents->elements.data();
+            std::shared_ptr<MetalArgumentEra> era;
+            std::unique_lock contentsLock(*contents->mutex, std::try_to_lock);
+            storage.contentsLocked = !contentsLock.owns_lock();
+            if (contentsLock.owns_lock())
+            {
+                storage.elements = contents->elements.data();
+                era = contents->era.lock();
+                if (era != nullptr)
+                {
+                    storage.replacedCount = era->replaced.size();
+                    storage.replacedCapacity = era->replaced.capacity();
+                }
+            }
         }
         storage.argumentBuffer = version->argumentNative;
         return storage;
