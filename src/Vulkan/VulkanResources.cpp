@@ -1072,6 +1072,25 @@ namespace rachis::vulkan
         std::vector<VmaBudget> vmaBudgets(memory_.memoryHeapCount);
         vmaGetHeapBudgets(allocator_, vmaBudgets.data());
 
+        VkPhysicalDeviceMemoryBudgetPropertiesEXT driverBudgets{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT,
+            .pNext = {},
+            .heapBudget = {},
+            .heapUsage = {},
+        };
+        const bool driverBudgetsRead = memoryBudget_ && instanceTable_ != nullptr &&
+                                       instanceTable_->vkGetPhysicalDeviceMemoryProperties2 != nullptr &&
+                                       physical_ != VK_NULL_HANDLE;
+        if (driverBudgetsRead)
+        {
+            VkPhysicalDeviceMemoryProperties2 properties{
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2,
+                .pNext = &driverBudgets,
+                .memoryProperties = {},
+            };
+            instanceTable_->vkGetPhysicalDeviceMemoryProperties2(physical_, &properties);
+        }
+
         std::vector<MemoryBudget> budgets;
         budgets.reserve(memory_.memoryHeapCount);
         for (std::uint32_t i = 0; i < memory_.memoryHeapCount; ++i)
@@ -1084,7 +1103,7 @@ namespace rachis::vulkan
                 .heapIndex = i,
                 .properties = (heap.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0 ? MemoryHeapProperty::deviceLocal
                                                                                   : MemoryHeapProperty::none,
-                .features = memoryBudget_
+                .features = driverBudgetsRead && driverBudgets.heapBudget[i] != 0
                                 ? MemoryBudgetFeature::allocationStatistics | MemoryBudgetFeature::driverReported
                                 : MemoryBudgetFeature::allocationStatistics,
                 .blockBytes = budget.statistics.blockBytes + exportedBytes,
