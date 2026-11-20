@@ -1721,9 +1721,7 @@ namespace rachis::metal
         };
 
         [[nodiscard]] MetalIndirectClampRequest metalClampRequest(const MetalIndirectRecordLayout& layout,
-                                                                  const MetalResolvedIndirectRecords& records,
-                                                                  std::uint32_t zeroFirstWord,
-                                                                  std::uint32_t zeroWordCount) noexcept
+                                                                  const MetalResolvedIndirectRecords& records) noexcept
         {
             return {
                 .sourceAddress = records.argument.gpuAddress + layout.argumentOffset + layout.prefixBytes,
@@ -1732,8 +1730,6 @@ namespace rachis::metal
                 .strideBytes = layout.stride,
                 .recordWords =
                     (layout.recordSize - layout.prefixBytes) / static_cast<std::uint32_t>(sizeof(std::uint32_t)),
-                .zeroFirstWord = zeroFirstWord,
-                .zeroWordCount = zeroWordCount,
             };
         }
 
@@ -1749,8 +1745,7 @@ namespace rachis::metal
                 return MetalIndirectRecordSpan{records.argument.gpuAddress + layout.argumentOffset + layout.prefixBytes,
                                                layout.stride};
             }
-            auto clamped = metalPrepareClampedRecords(
-                device, entry, metalClampRequest(layout, records, 0, sizeof(DispatchIndirectArguments) / 4U));
+            auto clamped = metalPrepareClampedRecords(device, entry, metalClampRequest(layout, records));
             if (!clamped)
             {
                 return std::unexpected(std::move(clamped.error()));
@@ -1769,17 +1764,14 @@ namespace rachis::metal
             MetalCommandEntry& entry,
             const MetalIndirectClampPipelines& pipelines,
             const MetalIndirectRecordLayout& layout,
-            const MetalResolvedIndirectRecords& records,
-            std::uint32_t zeroFirstWord,
-            std::uint32_t zeroWordCount)
+            const MetalResolvedIndirectRecords& records)
         {
             if (records.count == nil)
             {
                 return MetalIndirectRecordSpan{records.argument.gpuAddress + layout.argumentOffset + layout.prefixBytes,
                                                layout.stride};
             }
-            auto clamped = metalPrepareClampedRecords(
-                device, entry, metalClampRequest(layout, records, zeroFirstWord, zeroWordCount));
+            auto clamped = metalPrepareClampedRecords(device, entry, metalClampRequest(layout, records));
             if (!clamped)
             {
                 return std::unexpected(std::move(clamped.error()));
@@ -1893,25 +1885,31 @@ namespace rachis::metal
         {
             return validated;
         }
+        const auto& pipeline = *entry->boundComputePipeline;
+        if (auto valid =
+                metalValidateStageResources(device, pipeline.computeStageBindings, entry->boundComputeVersions);
+            !valid)
+        {
+            return valid;
+        }
         if (layout.maxRecords == 0)
         {
             return {};
-        }
-        if (auto kept = metalRetainIndirectRecords(*native, *entry, records); !kept)
-        {
-            return kept;
         }
         if (auto prepared = native->ensureComputeEncoder(); !prepared)
         {
             return prepared;
         }
-        const auto& pipeline = *entry->boundComputePipeline;
         if (records.count != nil)
         {
             if (auto prepared = metalApplyComputeDispatchState(device, *entry, pipeline); !prepared)
             {
                 return prepared;
             }
+        }
+        if (auto kept = metalRetainIndirectRecords(*native, *entry, records); !kept)
+        {
+            return kept;
         }
         auto span = metalClampComputeRecords(device, *entry, *pipelines, layout, records);
         if (!span)
@@ -3527,13 +3525,13 @@ namespace rachis::metal
         {
             return prefixed;
         }
+        if (auto valid = metalValidateGraphicsResources(inputs->device, *entry, *pipeline); !valid)
+        {
+            return valid;
+        }
         if (layout.maxRecords == 0 || metalDrawScissoredOut(*entry, *pipeline))
         {
-            return metalValidateGraphicsResources(inputs->device, *entry, *pipeline);
-        }
-        if (auto kept = metalRetainIndirectRecords(*native, *entry, inputs->records); !kept)
-        {
-            return kept;
+            return {};
         }
         if (auto reserved = metalReserveDrawIndices(inputs->device, *entry, *pipeline, layout.maxRecords); !reserved)
         {
@@ -3546,7 +3544,11 @@ namespace rachis::metal
                 return prepared;
             }
         }
-        auto span = metalClampRenderRecords(inputs->device, *entry, inputs->pipelines, layout, inputs->records, 1, 1);
+        if (auto kept = metalRetainIndirectRecords(*native, *entry, inputs->records); !kept)
+        {
+            return kept;
+        }
+        auto span = metalClampRenderRecords(inputs->device, *entry, inputs->pipelines, layout, inputs->records);
         if (!span)
         {
             return std::unexpected(std::move(span.error()));
@@ -3615,13 +3617,13 @@ namespace rachis::metal
         {
             return prefixed;
         }
+        if (auto valid = metalValidateGraphicsResources(inputs->device, *entry, *pipeline); !valid)
+        {
+            return valid;
+        }
         if (layout.maxRecords == 0 || metalDrawScissoredOut(*entry, *pipeline))
         {
-            return metalValidateGraphicsResources(inputs->device, *entry, *pipeline);
-        }
-        if (auto kept = metalRetainIndirectRecords(*native, *entry, inputs->records); !kept)
-        {
-            return kept;
+            return {};
         }
         if (auto reserved = metalReserveDrawIndices(inputs->device, *entry, *pipeline, layout.maxRecords); !reserved)
         {
@@ -3634,7 +3636,11 @@ namespace rachis::metal
                 return prepared;
             }
         }
-        auto span = metalClampRenderRecords(inputs->device, *entry, inputs->pipelines, layout, inputs->records, 1, 1);
+        if (auto kept = metalRetainIndirectRecords(*native, *entry, inputs->records); !kept)
+        {
+            return kept;
+        }
+        auto span = metalClampRenderRecords(inputs->device, *entry, inputs->pipelines, layout, inputs->records);
         if (!span)
         {
             return std::unexpected(std::move(span.error()));
@@ -3671,27 +3677,6 @@ namespace rachis::metal
 
     namespace
     {
-
-        [[nodiscard]] constexpr bool metalStageReadsArgumentTable(const MetalResolvedStageBindings& stage) noexcept
-        {
-            return !stage.resources.empty() || stage.usesPushConstants || stage.usesDrawIndex;
-        }
-
-        [[nodiscard]] Status metalRequireMeshRecordArguments(const MetalPipelineRecord& pipeline,
-                                                             const MetalIndirectRecordLayout& layout)
-        {
-            const bool tablesRead =
-                metalStageReadsArgumentTable(pipeline.meshStageBindings) &&
-                (!pipeline.hasObjectShader || metalStageReadsArgumentTable(pipeline.objectStageBindings));
-            if (layout.maxRecords > 1 && !tablesRead)
-            {
-                return std::unexpected(metalSelectionError(
-                    ErrorCode::unsupported,
-                    "Metal runs an indirect mesh dispatch with more than one record only when the task and mesh "
-                    "shaders each read a binding, push constants, or the draw index."));
-            }
-            return {};
-        }
 
         [[nodiscard]] bool metalMeshDispatchReady(const detail::GraphicsCommandState& state,
                                                   const MetalPipelineRecord* pipeline,
@@ -3822,17 +3807,13 @@ namespace rachis::metal
         {
             return prefixed;
         }
-        if (auto readable = metalRequireMeshRecordArguments(*pipeline, layout); !readable)
+        if (auto valid = metalValidateGraphicsResources(inputs->device, *entry, *pipeline); !valid)
         {
-            return readable;
+            return valid;
         }
         if (layout.maxRecords == 0 || metalDrawScissoredOut(*entry, *pipeline))
         {
-            return metalValidateGraphicsResources(inputs->device, *entry, *pipeline);
-        }
-        if (auto kept = metalRetainIndirectRecords(*native, *entry, inputs->records); !kept)
-        {
-            return kept;
+            return {};
         }
         if (auto reserved = metalReserveDrawIndices(inputs->device, *entry, *pipeline, layout.maxRecords); !reserved)
         {
@@ -3845,13 +3826,11 @@ namespace rachis::metal
                 return prepared;
             }
         }
-        auto span = metalClampRenderRecords(inputs->device,
-                                            *entry,
-                                            inputs->pipelines,
-                                            layout,
-                                            inputs->records,
-                                            0,
-                                            sizeof(DispatchIndirectArguments) / 4U);
+        if (auto kept = metalRetainIndirectRecords(*native, *entry, inputs->records); !kept)
+        {
+            return kept;
+        }
+        auto span = metalClampRenderRecords(inputs->device, *entry, inputs->pipelines, layout, inputs->records);
         if (!span)
         {
             return std::unexpected(std::move(span.error()));
@@ -3863,6 +3842,13 @@ namespace rachis::metal
         const MetalDrawIndexRestore restore(*entry);
         for (std::uint32_t record = 0; record < layout.maxRecords; ++record)
         {
+            if (pipeline->meshRecordSeparator != nil)
+            {
+                if (auto separated = metalEncodeMeshRecordSeparator(inputs->device, *entry, *pipeline); !separated)
+                {
+                    return separated;
+                }
+            }
             entry->drawIndex = pipeline->readsDrawIndex ? record : 0U;
             entry->vertexTableDirty = true;
             if (auto applied = metalApplyGraphicsDrawState(inputs->device, *entry, *pipeline, true); !applied)

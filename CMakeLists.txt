@@ -1314,6 +1314,7 @@ if(RACHIS_ENABLE_METAL AND rachis_build_tests)
     rachis_rhi_slang_metallib(MetalMeshShader.ms.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalMeshShader.slang" meshMain)
     rachis_rhi_slang_metallib(MetalMeshShader.no-task.ms.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalMeshShader.slang" meshNoTask)
     rachis_rhi_slang_metallib(MetalMeshShader.fixed.ms.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalMeshShader.slang" meshFixed)
+    rachis_rhi_slang_metallib(MetalMeshShader.fixed.as.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalMeshShader.slang" taskFixed)
     rachis_rhi_slang_metallib(MetalMeshShader.grid.as.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalMeshShader.slang" taskGrid)
     rachis_rhi_slang_metallib(MetalMeshShader.count.ms.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalMeshShader.slang" meshCount)
     rachis_rhi_slang_metallib(MetalMeshShader.ps.metallib "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/MetalMeshShader.slang" meshPixel)
@@ -1414,6 +1415,8 @@ if(RACHIS_ENABLE_METAL AND rachis_build_tests)
             "${rachis_rhi_metallib_dir}/MetalMeshShader.no-task.ms.pnms"
             "${rachis_rhi_metallib_dir}/MetalMeshShader.fixed.ms.metallib"
             "${rachis_rhi_metallib_dir}/MetalMeshShader.fixed.ms.pnms"
+            "${rachis_rhi_metallib_dir}/MetalMeshShader.fixed.as.metallib"
+            "${rachis_rhi_metallib_dir}/MetalMeshShader.fixed.as.pnms"
             "${rachis_rhi_metallib_dir}/MetalMeshShader.grid.as.metallib"
             "${rachis_rhi_metallib_dir}/MetalMeshShader.grid.as.pnms"
             "${rachis_rhi_metallib_dir}/MetalMeshShader.count.ms.metallib"

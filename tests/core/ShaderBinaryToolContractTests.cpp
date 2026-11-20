@@ -2310,6 +2310,166 @@ struct KernelContext_0
 #endif
 }
 
+TEST_CASE("ShaderBinaryTool keeps a global array and an entry-point array of the same name apart",
+          "[size:small][rhi][shader][tooling]")
+{
+    constexpr std::string_view source = R"msl(#include <metal_stdlib>
+using namespace metal;
+struct KernelContext_0
+{
+    uint device* outputs_0;
+    uint device*  values_0[];
+    uint device*  entryPointParams_values_0[];
+};
+[[kernel]] void shadowMain(uint device* outputs_1 [[buffer(1)]], uint device*  values_1[], uint device*  entryPointParams_values_1[])
+{
+    thread KernelContext_0 kernelContext_0;
+    (&kernelContext_0)->outputs_0 = outputs_1;
+    (&kernelContext_0)->values_0 = values_1;
+    (&kernelContext_0)->entryPointParams_values_0 = entryPointParams_values_1;
+    *outputs_1 = (&kernelContext_0)->values_0[int(1)][int(0)] + (&kernelContext_0)->entryPointParams_values_0[int(2)][int(0)];
+}
+)msl";
+    constexpr std::string_view spirvJson = R"({"parameters": [
+        {"name": "outputs", "binding": {"kind": "descriptorTableSlot", "space": 2, "index": 0}},
+        {"name": "values", "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 0}}],
+        "entryPoints": [{"name": "shadowMain", "parameters": [
+            {"name": "values", "binding": {"kind": "descriptorTableSlot", "index": 0}}]}]})";
+    constexpr std::string_view metalJson = R"({"parameters": [
+        {"name": "outputs", "bindings": [{"kind": "constantBuffer", "space": 2, "index": 1}, {"kind": "unorderedAccess", "index": 0}],
+         "type": {"kind": "resource", "baseShape": "structuredBuffer", "access": "readWrite"}},
+        {"name": "values", "bindings": [{"kind": "constantBuffer", "space": 1, "index": 0}, {"kind": "shaderResource", "index": 0, "count": 0}],
+         "type": {"kind": "array", "elementCount": 0, "elementType": {"kind": "resource", "baseShape": "structuredBuffer"}}}],
+        "entryPoints": [{"name": "shadowMain", "stage": "compute", "parameters": [
+            {"name": "values", "binding": {"kind": "constantBuffer", "index": 0},
+             "type": {"kind": "array", "elementCount": 0, "elementType": {"kind": "resource", "baseShape": "structuredBuffer"}}}],
+            "threadGroupSize": [1, 1, 1],
+            "bindings": [
+                {"name": "outputs", "bindings": [{"kind": "constantBuffer", "space": 2, "index": 1, "used": 1}, {"kind": "unorderedAccess", "index": 0, "used": 0}]},
+                {"name": "values", "bindings": [{"kind": "constantBuffer", "space": 1, "index": 0, "used": 1}, {"kind": "shaderResource", "index": 0, "count": 0, "used": 0}]}]}]})";
+    const auto planned = rachis::shader_tool::planMetalArgumentBufferArrays(source, spirvJson, metalJson, "shadowMain");
+    INFO((planned.has_value() ? std::string{} : planned.error()));
+    REQUIRE(planned.has_value());
+    REQUIRE(planned->size() == 2);
+    CHECK((*planned)[0].name == "values");
+    CHECK_FALSE((*planned)[0].entryPoint);
+    CHECK((*planned)[0].set == 1);
+    CHECK((*planned)[1].name == "values");
+    CHECK((*planned)[1].entryPoint);
+    CHECK((*planned)[1].set == 0);
+    CHECK((*planned)[0].metalIndex != (*planned)[1].metalIndex);
+
+    const std::array bindings{rachis::shader_tool::MetalLogicalParameterBinding{.name = "outputs", .set = 2}};
+    const auto enriched = rachis::shader_tool::enrichMetalReflectionJson(metalJson, bindings, "shadowMain", *planned);
+    REQUIRE(enriched.has_value());
+    CHECK(enriched->contains(R"("binding": 0, "index": 0, "capacity": 500000}, )"));
+    CHECK(enriched->contains(R"("capacity": 500000, "entryPoint": true}])"));
+#if RACHIS_ENABLE_METAL
+    const auto reflected =
+        rachis::metal::parseSlangReflectionJson(*enriched, "shadowMain", rachis::ShaderStage::compute);
+    INFO((reflected.has_value() ? std::string{} : reflected.error().message));
+    REQUIRE(reflected.has_value());
+    const auto arrays = std::ranges::count_if(reflected->resources, [](const auto& resource) {
+        return resource.name == "values" && resource.argumentBuffer;
+    });
+    CHECK(arrays == 2);
+    const std::array requirements{
+        rachis::ShaderBindingRequirement{
+            0, 0, rachis::ShaderResourceType::readOnlyStorageBuffer, rachis::unboundedBindingCount},
+        rachis::ShaderBindingRequirement{
+            1, 0, rachis::ShaderResourceType::readOnlyStorageBuffer, rachis::unboundedBindingCount},
+        rachis::ShaderBindingRequirement{2, 0, rachis::ShaderResourceType::storageBuffer, 1},
+    };
+    CHECK(rachis::metal::validateShaderInterface(
+        *reflected, {.bindings = requirements, .workgroupSize = rachis::ShaderWorkgroupSize{1, 1, 1}}));
+#endif
+}
+
+TEST_CASE("ShaderBinaryTool rejects a Metal resource or unbounded array in a binding set above 3",
+          "[size:small][rhi][shader][tooling]")
+{
+    constexpr std::string_view source = R"msl(#include <metal_stdlib>
+using namespace metal;
+[[kernel]] void farMain(float device* outputs_0 [[buffer(0)]], texture2d<float, access::read>  textures_0[])
+{
+    *outputs_0 = textures_0[1].read(uint2(0U, 0U)).x;
+}
+)msl";
+    const auto spirvJson = [](std::string_view space) {
+        return R"({"parameters": [
+        {"name": "outputs", "binding": {"kind": "descriptorTableSlot", "index": 0}},
+        {"name": "textures", "binding": {"kind": "descriptorTableSlot", "space": )" +
+               std::string(space) + R"(, "index": 0}}]})";
+    };
+    constexpr std::string_view metalJson = R"({"parameters": [
+        {"name": "outputs", "binding": {"kind": "constantBuffer", "index": 0},
+         "type": {"kind": "resource", "baseShape": "structuredBuffer", "access": "readWrite"}},
+        {"name": "textures", "binding": {"kind": "shaderResource", "index": 0, "count": 0},
+         "type": {"kind": "array", "elementCount": 0, "elementType": {"kind": "resource", "baseShape": "texture2D"}}}]})";
+    REQUIRE(rachis::shader_tool::planMetalArgumentBufferArrays(source, spirvJson("3"), metalJson).has_value());
+    REQUIRE(rachis::shader_tool::planMetalShaderBindings(spirvJson("3"), metalJson).has_value());
+    for (const std::string_view space : {std::string_view{"6"}, std::string_view{"12"}})
+    {
+        CAPTURE(space);
+        const auto planned = rachis::shader_tool::planMetalArgumentBufferArrays(source, spirvJson(space), metalJson);
+        REQUIRE_FALSE(planned.has_value());
+        CHECK(planned.error().contains("'textures' is in binding set " + std::string(space)));
+        const auto cookPlan = rachis::shader_tool::planMetalShaderBindings(spirvJson(space), metalJson);
+        REQUIRE_FALSE(cookPlan.has_value());
+        CHECK(cookPlan.error().contains("binding sets are 0 to 3"));
+    }
+
+    constexpr std::string_view plainSpirvJson = R"({"parameters": [
+        {"name": "outputs", "binding": {"kind": "descriptorTableSlot", "index": 0}},
+        {"name": "farTexture", "binding": {"kind": "descriptorTableSlot", "space": 6, "index": 0}}]})";
+    constexpr std::string_view plainMetalJson = R"({"parameters": [
+        {"name": "outputs", "binding": {"kind": "constantBuffer", "index": 0},
+         "type": {"kind": "resource", "baseShape": "structuredBuffer", "access": "readWrite"}},
+        {"name": "farTexture", "binding": {"kind": "shaderResource", "index": 0},
+         "type": {"kind": "resource", "baseShape": "texture2D"}}]})";
+    const auto plain = rachis::shader_tool::planMetalShaderBindings(plainSpirvJson, plainMetalJson);
+    REQUIRE_FALSE(plain.has_value());
+    CHECK(plain.error().contains("The resource 'farTexture' is in binding set 6"));
+}
+
+TEST_CASE("ShaderBinaryTool finds Metal vertex functions only in code, not in #line file names or comments",
+          "[size:small][rhi][shader][tooling]")
+{
+    constexpr std::string_view compute = R"msl(#include <metal_stdlib>
+using namespace metal;
+#line 1 "probe[[vertex]](draft).slang"
+// [[vertex]] Out_0 fake(uint id_0 [[vertex_id]]).
+static_assert(sizeof(uint) == 4, "[[vertex]](x).");
+[[kernel]] void probeMain(uint device* outputs_0 [[buffer(0)]])
+{
+    *outputs_0 = 1U;
+}
+)msl";
+    const auto unchanged = rachis::shader_tool::rebaseMetalVertexIds(compute);
+    INFO((unchanged.has_value() ? std::string{} : unchanged.error()));
+    REQUIRE(unchanged.has_value());
+    CHECK_FALSE(unchanged->has_value());
+
+    constexpr std::string_view vertex = "#line 1 \"probe[[vertex]](draft).slang\"\n"
+                                        "[[vertex]] Out_0 drawMain(uint vertexId_0 [[vertex_id]])\n"
+                                        "{\n"
+                                        "#line 3 \"probe[[vertex]](draft).slang\"\n"
+                                        "    return Out_0{float(vertexId_0)};\n"
+                                        "}\n";
+    const auto rebased = rachis::shader_tool::rebaseMetalVertexIds(vertex);
+    INFO((rebased.has_value() ? std::string{} : rebased.error()));
+    REQUIRE(rebased.has_value());
+    REQUIRE(rebased->has_value());
+    CHECK(**rebased == "#line 1 \"probe[[vertex]](draft).slang\"\n"
+                       "[[vertex]] Out_0 drawMain(uint rachis_vertex_id [[vertex_id]], uint rachis_base_vertex "
+                       "[[base_vertex]])\n"
+                       "{\n"
+                       "    uint vertexId_0 = rachis_vertex_id - rachis_base_vertex;\n"
+                       "#line 3 \"probe[[vertex]](draft).slang\"\n"
+                       "    return Out_0{float(vertexId_0)};\n"
+                       "}\n");
+}
+
 TEST_CASE("ShaderBinaryTool gives an unbounded array the buffer slot its reflection reports",
           "[size:small][rhi][shader][tooling]")
 {

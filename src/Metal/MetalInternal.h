@@ -610,11 +610,25 @@ namespace rachis::metal
         bool hasObjectShader = false;
         MTLSize objectThreadgroupSize{1, 1, 1};
         MTLSize meshThreadgroupSize{1, 1, 1};
+        __strong id<MTLRenderPipelineState> meshRecordSeparator;
+        __strong id<MTLBuffer> meshRecordSeparatorHeader;
         std::uint32_t pushConstantBytes = 0;
         bool reservePushConstantBuffer = false;
         std::optional<MetalGraphicsPipelineState> graphicsState;
         std::string label;
     };
+
+    [[nodiscard]] inline bool metalStageReadsArgumentTable(const MetalResolvedStageBindings& stage) noexcept
+    {
+        return !stage.resources.empty() || stage.usesPushConstants || stage.usesDrawIndex;
+    }
+
+    [[nodiscard]] inline bool metalMeshRecordsNeedSeparator(const MetalPipelineRecord& pipeline) noexcept
+    {
+        return pipeline.mesh &&
+               (!metalStageReadsArgumentTable(pipeline.meshStageBindings) ||
+                (pipeline.hasObjectShader && !metalStageReadsArgumentTable(pipeline.objectStageBindings)));
+    }
 
     struct MetalBoundBuffer final
     {
@@ -1114,6 +1128,7 @@ namespace rachis::metal
         __strong id<MTLBuffer> mipmapEncodeOn;
         __strong id<MTLComputePipelineState> indirectClampCompute;
         __strong id<MTLRenderPipelineState> indirectClampRender;
+        __strong id<MTLBuffer> indirectClampIdleHeader;
         __strong id<MTLComputePipelineState> fillBufferPipeline;
         std::array<__strong id<MTLComputePipelineState>, 15> clearTexturePipelines{};
         std::uint64_t nextAllocationId = 1;
@@ -1600,6 +1615,9 @@ namespace rachis::metal
         std::atomic<std::uint64_t> renderTimestampVertexStageCount{0};
         std::atomic<std::uint64_t> renderTimestampFragmentStageCount{0};
         std::atomic<std::uint64_t> indirectClampEncodeCount{0};
+        __strong id<MTLBuffer> lastIndirectClampScratch = nil;
+        std::size_t lastIndirectClampRecordsOffset = 0;
+        std::size_t lastIndirectClampRecordsBytes = 0;
         std::shared_ptr<MetalCommitFeedbackGate> nextCommandPoolResetGate;
         std::shared_ptr<MetalCommitFeedbackGate> nextSubmitFoldGate;
         bool holdNextSubmitOnGpu = false;
@@ -1622,6 +1640,9 @@ namespace rachis::metal
     void recordMetalTeardownQueueDrain() noexcept;
     void recordMetalRenderTimestampStage(MTLRenderStages stage) noexcept;
     void recordMetalIndirectClampEncode() noexcept;
+    void recordMetalIndirectClampScratch(id<MTLBuffer> scratch,
+                                         std::size_t recordsOffset,
+                                         std::size_t recordsBytes) noexcept;
     void holdMetalCommandPoolResetForTesting() noexcept;
     [[nodiscard]] bool consumeInjectedMetalDrawIndexTableGrowthFailure() noexcept;
     [[nodiscard]] bool consumeInjectedMetalPushConstantSliceFailure() noexcept;
@@ -1754,6 +1775,7 @@ namespace rachis::metal
     {
         __strong id<MTLComputePipelineState> compute = nil;
         __strong id<MTLRenderPipelineState> render = nil;
+        __strong id<MTLBuffer> idleHeader = nil;
     };
 
     struct MetalIndirectClampRequest final
@@ -1763,8 +1785,6 @@ namespace rachis::metal
         std::uint32_t maxRecords = 0;
         std::uint32_t strideBytes = 0;
         std::uint32_t recordWords = 0;
-        std::uint32_t zeroFirstWord = 0;
-        std::uint32_t zeroWordCount = 0;
     };
 
     struct MetalClampedRecords final
@@ -1789,5 +1809,8 @@ namespace rachis::metal
                                                       id<MTLRenderPipelineState> pipeline,
                                                       const MetalClampedRecords& records,
                                                       std::uint32_t maxRecords);
+    [[nodiscard]] Status metalEncodeMeshRecordSeparator(id<MTLDevice> device,
+                                                        MetalCommandEntry& entry,
+                                                        const MetalPipelineRecord& pipeline);
 
 } // namespace rachis::metal

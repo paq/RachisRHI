@@ -49,6 +49,7 @@ namespace rachis::shader_tool
     inline constexpr std::uint32_t metalArgumentBufferResourceLimit = 500'000;
     inline constexpr std::uint32_t metalArgumentBufferSamplerLimit = 1024;
     inline constexpr std::uint32_t metalArgumentTableBufferSlots = 31;
+    inline constexpr std::uint32_t metalPortableBindingSets = 4;
 
     struct MetalUnboundedArrayParameter final
     {
@@ -67,6 +68,7 @@ namespace rachis::shader_tool
         std::uint32_t binding = 0;
         std::uint32_t metalIndex = 0;
         std::uint32_t capacity = 0;
+        bool entryPoint = false;
     };
 
     namespace detail
@@ -1337,6 +1339,16 @@ namespace rachis::shader_tool
             }
         }
 
+        [[nodiscard]] inline std::string metalBindingSetLimitError(std::string_view kind,
+                                                                   std::string_view name,
+                                                                   std::uint32_t set)
+        {
+            return "The " + std::string(kind) + " '" + std::string(name) + "' is in binding set " +
+                   std::to_string(set) +
+                   ". RachisRHI binding sets are 0 to 3; register space 4 is reserved for push constants and space 5 "
+                   "for the draw index.";
+        }
+
     } // namespace detail
 
     [[nodiscard]] inline std::expected<MetalCookPlan, std::string> planMetalShaderBindings(
@@ -1369,6 +1381,10 @@ namespace rachis::shader_tool
         plan.bindings.reserve(candidates.size());
         for (const auto& item : candidates)
         {
+            if (!item.pushConstant && !item.drawIndex && item.logicalSet >= metalPortableBindingSets)
+            {
+                return std::unexpected(detail::metalBindingSetLimitError("resource", item.metal.name, item.logicalSet));
+            }
             plan.bindings.push_back(MetalLogicalParameterBinding{
                 .name = item.metal.name,
                 .pushConstant = item.pushConstant,
@@ -1734,7 +1750,8 @@ namespace rachis::shader_tool
             text += array.resourceType;
             text += "\", \"set\": " + std::to_string(array.set) + ", \"binding\": " + std::to_string(array.binding) +
                     ", \"index\": " + std::to_string(array.metalIndex) +
-                    ", \"capacity\": " + std::to_string(array.capacity) + "}";
+                    ", \"capacity\": " + std::to_string(array.capacity) +
+                    (array.entryPoint ? ", \"entryPoint\": true}" : "}");
         }
     } // namespace detail
 
@@ -2097,120 +2114,11 @@ namespace rachis::shader_tool
             return candidate;
         }
 
-    } // namespace detail
-
-    [[nodiscard]] inline std::expected<std::optional<std::string>, std::string> rebaseMetalVertexIds(
-        std::string_view source)
-    {
-        constexpr std::string_view vertexFunctionAttribute = "[[vertex]]";
-        std::string rebased(source);
-        bool changed = false;
-        std::size_t searchFrom = 0;
-        for (std::size_t entry = rebased.find(vertexFunctionAttribute); entry != std::string::npos;
-             entry = rebased.find(vertexFunctionAttribute, searchFrom))
-        {
-            const std::size_t open = rebased.find('(', entry);
-            if (open == std::string::npos)
-            {
-                return std::unexpected("A Metal [[vertex]] function has no parameter list.");
-            }
-            const auto close = detail::findClosingMetalParenthesis(rebased, open);
-            if (!close.has_value())
-            {
-                return std::unexpected("A Metal [[vertex]] function's parameter list is not closed.");
-            }
-            const std::size_t bodyOpen = rebased.find_first_not_of(" \t\r\n", *close + 1);
-            if (bodyOpen == std::string::npos || rebased[bodyOpen] != '{')
-            {
-                return std::unexpected("A Metal [[vertex]] function's body does not follow its parameter list.");
-            }
-            searchFrom = bodyOpen + 1;
-
-            const auto parameters = detail::splitMetalParameters(rebased, open, *close);
-            const auto vertexId = detail::findMetalAttributedParameter(rebased, parameters, "[[vertex_id]]");
-            if (!vertexId.has_value())
-            {
-                return std::unexpected(vertexId.error());
-            }
-            if (!vertexId->has_value())
-            {
-                continue;
-            }
-            const auto baseVertex = detail::findMetalAttributedParameter(rebased, parameters, "[[base_vertex]]");
-            if (!baseVertex.has_value())
-            {
-                return std::unexpected(baseVertex.error());
-            }
-
-            const detail::MetalAttributedParameter& vertexIdParameter = **vertexId;
-            const std::string rawName = detail::unusedMetalIdentifier(rebased, "rachis_vertex_id");
-            std::string baseName;
-            std::string addedParameter;
-            if (baseVertex->has_value())
-            {
-                baseName = detail::metalSourceText(rebased, (*baseVertex)->name);
-            }
-            else
-            {
-                baseName = detail::unusedMetalIdentifier(rebased, "rachis_base_vertex");
-                addedParameter = ", uint " + baseName + " [[base_vertex]]";
-            }
-            const std::string zeroBasedDeclaration =
-                "\n    " + std::string(detail::metalSourceText(rebased, vertexIdParameter.type)) + " " +
-                std::string(detail::metalSourceText(rebased, vertexIdParameter.name)) + " = " + rawName + " - " +
-                baseName + ";";
-
-            rebased.insert(bodyOpen + 1, zeroBasedDeclaration);
-            rebased.insert(vertexIdParameter.declaration.end, addedParameter);
-            const std::size_t nameLength = vertexIdParameter.name.end - vertexIdParameter.name.begin;
-            rebased.replace(vertexIdParameter.name.begin, nameLength, rawName);
-            searchFrom += zeroBasedDeclaration.size() + addedParameter.size() + rawName.size() - nameLength;
-            changed = true;
-        }
-        if (!changed)
-        {
-            return std::optional<std::string>{};
-        }
-        return std::optional<std::string>{std::move(rebased)};
-    }
-
-    namespace detail
-    {
-
-        inline constexpr std::array<std::string_view, 5> metalEntryAttributes{
-            "[[kernel]]",
-            "[[vertex]]",
-            "[[fragment]]",
-            "[[object]]",
-            "[[mesh]]",
-        };
-
         struct MetalSourceRange final
         {
             std::size_t begin = 0;
             std::size_t end = 0;
         };
-
-        [[nodiscard]] inline std::optional<std::size_t> matchingParenthesis(std::string_view source,
-                                                                            std::size_t open) noexcept
-        {
-            std::size_t depth = 0;
-            for (std::size_t index = open; index < source.size(); ++index)
-            {
-                if (source[index] == '(')
-                {
-                    ++depth;
-                }
-                else if (source[index] == ')')
-                {
-                    if (--depth == 0)
-                    {
-                        return index;
-                    }
-                }
-            }
-            return std::nullopt;
-        }
 
         [[nodiscard]] inline std::vector<MetalSourceRange> metalNonCodeRanges(std::string_view source)
         {
@@ -2288,6 +2196,122 @@ namespace rachis::shader_tool
         {
             const auto after = std::ranges::upper_bound(nonCode, position, {}, &MetalSourceRange::begin);
             return after == nonCode.begin() || position >= std::prev(after)->end;
+        }
+
+    } // namespace detail
+
+    [[nodiscard]] inline std::expected<std::optional<std::string>, std::string> rebaseMetalVertexIds(
+        std::string_view source)
+    {
+        constexpr std::string_view vertexFunctionAttribute = "[[vertex]]";
+        std::string rebased(source);
+        bool changed = false;
+        std::size_t searchFrom = 0;
+        auto nonCode = detail::metalNonCodeRanges(rebased);
+        for (std::size_t entry = rebased.find(vertexFunctionAttribute); entry != std::string::npos;
+             entry = rebased.find(vertexFunctionAttribute, searchFrom))
+        {
+            if (!detail::isMetalCodePosition(nonCode, entry))
+            {
+                searchFrom = entry + vertexFunctionAttribute.size();
+                continue;
+            }
+            const std::size_t open = rebased.find('(', entry);
+            if (open == std::string::npos)
+            {
+                return std::unexpected("A Metal [[vertex]] function has no parameter list.");
+            }
+            const auto close = detail::findClosingMetalParenthesis(rebased, open);
+            if (!close.has_value())
+            {
+                return std::unexpected("A Metal [[vertex]] function's parameter list is not closed.");
+            }
+            const std::size_t bodyOpen = rebased.find_first_not_of(" \t\r\n", *close + 1);
+            if (bodyOpen == std::string::npos || rebased[bodyOpen] != '{')
+            {
+                return std::unexpected("A Metal [[vertex]] function's body does not follow its parameter list.");
+            }
+            searchFrom = bodyOpen + 1;
+
+            const auto parameters = detail::splitMetalParameters(rebased, open, *close);
+            const auto vertexId = detail::findMetalAttributedParameter(rebased, parameters, "[[vertex_id]]");
+            if (!vertexId.has_value())
+            {
+                return std::unexpected(vertexId.error());
+            }
+            if (!vertexId->has_value())
+            {
+                continue;
+            }
+            const auto baseVertex = detail::findMetalAttributedParameter(rebased, parameters, "[[base_vertex]]");
+            if (!baseVertex.has_value())
+            {
+                return std::unexpected(baseVertex.error());
+            }
+
+            const detail::MetalAttributedParameter& vertexIdParameter = **vertexId;
+            const std::string rawName = detail::unusedMetalIdentifier(rebased, "rachis_vertex_id");
+            std::string baseName;
+            std::string addedParameter;
+            if (baseVertex->has_value())
+            {
+                baseName = detail::metalSourceText(rebased, (*baseVertex)->name);
+            }
+            else
+            {
+                baseName = detail::unusedMetalIdentifier(rebased, "rachis_base_vertex");
+                addedParameter = ", uint " + baseName + " [[base_vertex]]";
+            }
+            const std::string zeroBasedDeclaration =
+                "\n    " + std::string(detail::metalSourceText(rebased, vertexIdParameter.type)) + " " +
+                std::string(detail::metalSourceText(rebased, vertexIdParameter.name)) + " = " + rawName + " - " +
+                baseName + ";";
+
+            rebased.insert(bodyOpen + 1, zeroBasedDeclaration);
+            rebased.insert(vertexIdParameter.declaration.end, addedParameter);
+            const std::size_t nameLength = vertexIdParameter.name.end - vertexIdParameter.name.begin;
+            rebased.replace(vertexIdParameter.name.begin, nameLength, rawName);
+            searchFrom += zeroBasedDeclaration.size() + addedParameter.size() + rawName.size() - nameLength;
+            changed = true;
+            nonCode = detail::metalNonCodeRanges(rebased);
+        }
+        if (!changed)
+        {
+            return std::optional<std::string>{};
+        }
+        return std::optional<std::string>{std::move(rebased)};
+    }
+
+    namespace detail
+    {
+
+        inline constexpr std::array<std::string_view, 5> metalEntryAttributes{
+            "[[kernel]]",
+            "[[vertex]]",
+            "[[fragment]]",
+            "[[object]]",
+            "[[mesh]]",
+        };
+
+        [[nodiscard]] inline std::optional<std::size_t> matchingParenthesis(std::string_view source,
+                                                                            std::size_t open) noexcept
+        {
+            std::size_t depth = 0;
+            for (std::size_t index = open; index < source.size(); ++index)
+            {
+                if (source[index] == '(')
+                {
+                    ++depth;
+                }
+                else if (source[index] == ')')
+                {
+                    if (--depth == 0)
+                    {
+                        return index;
+                    }
+                }
+            }
+            return std::nullopt;
         }
 
         [[nodiscard]] inline std::vector<MetalSourceRange> metalEntryParameterLists(std::string_view source)
@@ -2596,6 +2620,7 @@ namespace rachis::shader_tool
             std::string name;
             const detail::JsonValue* metal = nullptr;
             const detail::JsonValue* spirv = nullptr;
+            bool entryPoint = false;
         };
         std::vector<ResolvedArray> resolved;
         resolved.reserve(parameters.size());
@@ -2611,6 +2636,7 @@ namespace rachis::shader_tool
                 if (found.metal != nullptr && found.spirv != nullptr)
                 {
                     found.name = std::string(entryName);
+                    found.entryPoint = true;
                 }
             }
             if (found.metal == nullptr || found.spirv == nullptr)
@@ -2646,6 +2672,11 @@ namespace rachis::shader_tool
                 return std::unexpected("The unbounded Metal resource array '" + name +
                                        "' has an unsupported element type or binding.");
             }
+            if (slot->set >= metalPortableBindingSets)
+            {
+                return std::unexpected(
+                    detail::metalBindingSetLimitError("unbounded Metal resource array", name, slot->set));
+            }
             const auto free = std::ranges::find(occupied, false);
             if (free == occupied.end())
             {
@@ -2664,6 +2695,7 @@ namespace rachis::shader_tool
                 .metalIndex = static_cast<std::uint32_t>(std::distance(occupied.begin(), free)),
                 .capacity =
                     *resourceType == "sampler" ? metalArgumentBufferSamplerLimit : metalArgumentBufferResourceLimit,
+                .entryPoint = resolved[index].entryPoint,
             });
         }
         return arrays;

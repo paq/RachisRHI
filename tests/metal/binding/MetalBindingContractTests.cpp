@@ -586,6 +586,34 @@ TEST_CASE("Metal binding-set updates are copy-on-write and pipeline layouts rese
     auto oversizedLayout = device.createBindingLayout({.entries = fullBufferEntries});
     REQUIRE_FALSE(oversizedLayout);
     CHECK(oversizedLayout.error().code == rachis::ErrorCode::invalidArgument);
+
+    std::array buffersAndArray{
+        rachis::BindingLayoutEntry{0, rachis::BindingType::uniformBuffer, rachis::ShaderStage::compute, 31},
+        rachis::BindingLayoutEntry{
+            .binding = 31,
+            .type = rachis::BindingType::sampledTexture,
+            .visibility = rachis::ShaderStage::compute,
+            .count = rachis::unboundedBindingCount,
+            .flags = rachis::BindingFlag::variableDescriptorCount | rachis::BindingFlag::partiallyBound,
+        },
+    };
+    auto arrayPastBufferSlots = device.createBindingLayout({.entries = buffersAndArray});
+    REQUIRE_FALSE(arrayPastBufferSlots);
+    CHECK(arrayPastBufferSlots.error().code == rachis::ErrorCode::invalidArgument);
+    buffersAndArray[1].visibility = rachis::ShaderStage::pixel;
+    auto arrayInOtherStage = device.createBindingLayout({.entries = buffersAndArray});
+    REQUIRE(arrayInOtherStage);
+    buffersAndArray[0].count = 30;
+    buffersAndArray[1].visibility = rachis::ShaderStage::compute;
+    auto arrayInLastBufferSlot = device.createBindingLayout({.entries = buffersAndArray});
+    REQUIRE(arrayInLastBufferSlot);
+    for (const auto fitting : {*arrayInOtherStage, *arrayInLastBufferSlot})
+    {
+        auto fittingPipelineLayout = device.createPipelineLayout({.bindingLayouts = std::array{fitting}});
+        REQUIRE(fittingPipelineLayout);
+        REQUIRE(device.destroyPipelineLayout(*fittingPipelineLayout));
+        REQUIRE(device.destroyBindingLayout(fitting));
+    }
     REQUIRE(device.destroyBindingLayout(*arrayLayout));
     REQUIRE(device.destroyBindingLayout(*fullBuffersLayout));
 

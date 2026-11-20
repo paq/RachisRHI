@@ -525,6 +525,64 @@ TEST_CASE("Metal reflection applies argument-buffer arrays only to the entry poi
     }
 }
 
+TEST_CASE("Metal reflection without entry-point bindings keeps other entry points' arrays out",
+          "[size:small][rhi][metal][reflection][binding]")
+{
+    const auto reflection = [](std::string_view scope) {
+        return R"({
+        "parameters": [
+            {"name": "globals", "binding": {"kind": "shaderResource", "space": 2, "index": 0},
+             "type": {"kind": "array", "elementCount": 0, "elementType": {"kind": "resource", "baseShape": "texture2D"}}}
+        ],
+        "entryPoints": [
+            {
+                "name": "firstKernel",
+                "stage": "compute",
+                "parameters": [
+                    {"name": "tex", "binding": {"kind": "shaderResource", "space": 1, "index": 0},
+                     "type": {"kind": "array", "elementCount": 0, "elementType": {"kind": "resource", "baseShape": "texture2D"}}}
+                ],
+                "threadGroupSize": [1, 1, 1],
+                "bindings": [{"name": "globals", "binding": {"kind": "shaderResource", "space": 2, "index": 0, "used": 0}}]
+            },
+            {
+                "name": "secondKernel",
+                "stage": "compute",
+                "threadGroupSize": [1, 1, 1]
+            }
+        ],
+        "rachisBindings": [],
+        "rachisArgumentBuffers": [
+            {"name": "tex", "type": "sampledTexture", "set": 1, "binding": 0, "index": 1, "capacity": 64)" +
+               std::string(scope) + R"(},
+            {"name": "globals", "type": "sampledTexture", "set": 2, "binding": 0, "index": 0, "capacity": 64}
+        ]
+    })";
+    };
+    const std::array globalArray{rachis::ShaderBindingRequirement{
+        2, 0, rachis::ShaderResourceType::sampledTexture, rachis::unboundedBindingCount}};
+    const std::array entryArray{rachis::ShaderBindingRequirement{
+        1, 0, rachis::ShaderResourceType::sampledTexture, rachis::unboundedBindingCount}};
+    for (const std::string_view scope : {std::string_view{}, std::string_view{R"(, "entryPoint": true)"}})
+    {
+        CAPTURE(scope);
+        const auto json = reflection(scope);
+        const auto second = rachis::metal::parseSlangReflectionJson(json, "secondKernel", rachis::ShaderStage::compute);
+        REQUIRE(second.has_value());
+        REQUIRE(second->resources.size() == 1);
+        CHECK(second->resources.front().name == "globals");
+        CHECK(rachis::metal::validateShaderInterface(
+            *second, {.bindings = globalArray, .workgroupSize = rachis::ShaderWorkgroupSize{1, 1, 1}}));
+
+        const auto first = rachis::metal::parseSlangReflectionJson(json, "firstKernel", rachis::ShaderStage::compute);
+        REQUIRE(first.has_value());
+        REQUIRE(first->resources.size() == 1);
+        CHECK(first->resources.front().name == "tex");
+        CHECK(rachis::metal::validateShaderInterface(
+            *first, {.bindings = entryArray, .workgroupSize = rachis::ShaderWorkgroupSize{1, 1, 1}}));
+    }
+}
+
 TEST_CASE("Metal reflection skips an unused unbounded array that has no argument-buffer annotation",
           "[size:small][rhi][metal][reflection][binding]")
 {

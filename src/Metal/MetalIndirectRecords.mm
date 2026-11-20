@@ -25,8 +25,6 @@ struct RachisIndirectClamp
     uint maxRecords;
     uint strideWords;
     uint recordWords;
-    uint zeroFirstWord;
-    uint zeroWordCount;
 };
 
 static void rachisClampRecord(constant RachisIndirectClamp& clamp, uint record)
@@ -35,14 +33,19 @@ static void rachisClampRecord(constant RachisIndirectClamp& clamp, uint record)
     {
         return;
     }
-    const uint active = min(*clamp.count, clamp.maxRecords);
-    device const uint* source = clamp.source + ulong(record) * ulong(clamp.strideWords);
     device uint* destination = clamp.destination + ulong(record) * ulong(clamp.recordWords);
+    if (record >= min(*clamp.count, clamp.maxRecords))
+    {
+        for (uint word = 0; word < clamp.recordWords; ++word)
+        {
+            destination[word] = 0u;
+        }
+        return;
+    }
+    device const uint* source = clamp.source + ulong(record) * ulong(clamp.strideWords);
     for (uint word = 0; word < clamp.recordWords; ++word)
     {
-        const bool zero = record >= active && word >= clamp.zeroFirstWord &&
-                          word < clamp.zeroFirstWord + clamp.zeroWordCount;
-        destination[word] = zero ? 0u : source[word];
+        destination[word] = source[word];
     }
 }
 
@@ -82,12 +85,10 @@ struct RachisClampVertex
             std::uint32_t maxRecords = 0;
             std::uint32_t strideWords = 0;
             std::uint32_t recordWords = 0;
-            std::uint32_t zeroFirstWord = 0;
-            std::uint32_t zeroWordCount = 0;
             std::uint32_t padding = 0;
         };
 
-        static_assert(sizeof(MetalIndirectClampHeader) == 48);
+        static_assert(sizeof(MetalIndirectClampHeader) == 40);
 
         [[nodiscard]] MTL4LibraryFunctionDescriptor* metalClampFunction(id<MTLLibrary> library, NSString* name)
         {
@@ -150,8 +151,18 @@ struct RachisClampVertex
                 return std::unexpected(
                     metalNsError(ErrorCode::nativeFailure, error, "newRenderPipelineState(indirect records)"));
             }
+            id<MTLBuffer> const idleHeader = [native.device newBufferWithLength:sizeof(MetalIndirectClampHeader)
+                                                                        options:MTLResourceStorageModeShared];
+            if (idleHeader == nil)
+            {
+                return std::unexpected(metalSelectionError(
+                    ErrorCode::outOfMemory, "Metal could not allocate the idle indirect-record header."));
+            }
+            idleHeader.label = @"RHI.Metal.IndirectRecordIdleHeader";
+            std::memset(idleHeader.contents, 0, sizeof(MetalIndirectClampHeader));
             native.indirectClampCompute = compute;
             native.indirectClampRender = render;
+            native.indirectClampIdleHeader = idleHeader;
             return {};
         }
 
@@ -166,7 +177,8 @@ struct RachisClampVertex
             return std::unexpected(metalSelectionError(
                 ErrorCode::invalidState, "Indirect calls with a count buffer require an active Metal device."));
         }
-        if (native->indirectClampCompute == nil || native->indirectClampRender == nil)
+        if (native->indirectClampCompute == nil || native->indirectClampRender == nil ||
+            native->indirectClampIdleHeader == nil)
         {
             @autoreleasepool
             {
@@ -179,6 +191,7 @@ struct RachisClampVertex
         return MetalIndirectClampPipelines{
             .compute = native->indirectClampCompute,
             .render = native->indirectClampRender,
+            .idleHeader = native->indirectClampIdleHeader,
         };
     }
 
@@ -214,10 +227,11 @@ struct RachisClampVertex
             .maxRecords = request.maxRecords,
             .strideWords = request.strideBytes / static_cast<std::uint32_t>(sizeof(std::uint32_t)),
             .recordWords = request.recordWords,
-            .zeroFirstWord = request.zeroFirstWord,
-            .zeroWordCount = request.zeroWordCount,
         };
         std::memcpy(scratch.contents, &header, sizeof(header));
+#ifdef RACHIS_TESTING
+        recordMetalIndirectClampScratch(scratch, sizeof(MetalIndirectClampHeader), recordBytes * request.maxRecords);
+#endif
         return MetalClampedRecords{
             .headerAddress = scratch.gpuAddress,
             .recordsAddress = recordsAddress,
@@ -276,6 +290,27 @@ struct RachisClampVertex
 #ifdef RACHIS_TESTING
         recordMetalIndirectClampEncode();
 #endif
+        entry.activeGraphicsPipeline = nullptr;
+        entry.vertexTableDirty = true;
+        return {};
+    }
+
+    Status metalEncodeMeshRecordSeparator(id<MTLDevice> device,
+                                          MetalCommandEntry& entry,
+                                          const MetalPipelineRecord& pipeline)
+    {
+        auto table = acquireMetalArgumentTable(device, entry, MetalArgumentTableStage::object, 1, 0, 0);
+        if (!table)
+        {
+            return std::unexpected(std::move(table.error()));
+        }
+        metalRetainResidency(entry, pipeline.meshRecordSeparatorHeader);
+        [*table setAddress:pipeline.meshRecordSeparatorHeader.gpuAddress atIndex:0];
+        [entry.renderEncoder setRenderPipelineState:pipeline.meshRecordSeparator];
+        [entry.renderEncoder setArgumentTable:*table atStages:MTLRenderStageObject];
+        [entry.renderEncoder drawMeshThreadgroups:MTLSizeMake(1, 1, 1)
+                      threadsPerObjectThreadgroup:MTLSizeMake(kMetalClampThreadgroupSize, 1, 1)
+                        threadsPerMeshThreadgroup:MTLSizeMake(1, 1, 1)];
         entry.activeGraphicsPipeline = nullptr;
         entry.vertexTableDirty = true;
         return {};
