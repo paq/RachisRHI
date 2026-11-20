@@ -171,6 +171,28 @@ TEST_CASE("Shader interface reflection reads Boolean used flags like integer fla
     }
 }
 
+TEST_CASE("Shader interface reflection reads only the entry point it is asked for",
+          "[size:small][rhi][tooling][shader-interface]")
+{
+    constexpr std::string_view json = R"({
+        "parameters": [
+            {"name": "results", "binding": {"kind": "unorderedAccess", "index": 0},
+             "type": {"kind": "resource", "baseShape": "structuredBuffer", "access": "readWrite"}}
+        ],
+        "entryPoints": [{"name": "main", "stage": "compute", "threadGroupSize": [8, 1, 1]}]
+    })";
+    const auto found = reflectShaderInterface(json, InterfaceBackend::d3d12, "main", InterfaceStage::compute);
+    REQUIRE(found.has_value());
+    CHECK(found->workgroupSize == std::array<std::uint32_t, 3>{8, 1, 1});
+    for (const auto backend : {InterfaceBackend::d3d12, InterfaceBackend::vulkan, InterfaceBackend::metal})
+    {
+        INFO("backend " << rachis::shader_tool::interfaceBackendName(backend));
+        const auto other = reflectShaderInterface(json, backend, "typo", InterfaceStage::compute);
+        REQUIRE_FALSE(other.has_value());
+        CHECK(other.error().find("no entry point 'typo'") != std::string::npos);
+    }
+}
+
 TEST_CASE("Shader interface reflection reads vertex input locations per backend",
           "[size:small][rhi][tooling][shader-interface]")
 {

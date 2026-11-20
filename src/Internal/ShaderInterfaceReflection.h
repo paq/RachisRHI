@@ -193,15 +193,14 @@ namespace rachis::shader_tool
             {
                 return nullptr;
             }
-            const auto& list = *entries->asArray();
-            for (const auto& entry : list)
+            for (const auto& entry : *entries->asArray())
             {
                 if (jsonString(entry.find("name")) == entryPoint)
                 {
                     return &entry;
                 }
             }
-            return list.size() == 1 ? &list.front() : nullptr;
+            return nullptr;
         }
 
         [[nodiscard]] inline bool isUsedRecord(const JsonValue& record)
