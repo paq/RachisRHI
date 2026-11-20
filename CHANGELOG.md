@@ -2,34 +2,12 @@
 
 ## Unreleased
 
-- The C ABI is at `RACHIS_ABI_VERSION` 3, and the shared library is
-  `librachis.so.3` and `librachis.3.dylib`. Modules built against version 2
-  must be rebuilt. [C ABI](docs/c-abi.md) describes what version 3 adds:
-  - `rachis_timeline_query`, which says without waiting whether a timeline's
-    submission has completed, and `rachis_timeline_wait_for`, which waits at
-    most a given time, with the `RACHIS_TIMELINE_STATUS_*` values.
-  - `rachis_queue_calibrate_timestamps`, which reads a queue's GPU timestamp
-    together with the CPU's monotonic counter and names that counter:
-    `QueryPerformanceCounter` on Windows, `CLOCK_MONOTONIC` on Linux, and
-    `mach_absolute_time` on macOS. It fills a `rachis_timestamp_calibration`
-    with both frequencies and the maximum deviation.
-  - `rachis_queue_timestamp_valid_bits`, the number of valid bits of a queue's
-    timestamps.
-  - `rachis_device_memory_budget`, which fills a `rachis_memory_budget` with
-    the adapter's local and non-local budget and the process's use of each.
-- `QueueClockCalibration` names its CPU counter in `cpuClock` and reports
-  `maxDeviationNanoseconds`. On Metal, `cpuTimestamp` is now in
-  `mach_absolute_time` ticks at `cpuFrequency`, rather than in nanoseconds.
-- On Vulkan, `calibrateQueueClock` uses `VK_KHR_calibrated_timestamps`, which
-  RachisRHI now enables, and `VK_EXT_calibrated_timestamps` only on devices
-  without it. Where neither calibrates the queue, it fails with
-  `ErrorCode::unsupported`, as on Direct3D 12 and Metal, instead of returning
-  a CPU timestamp with a `gpuTimestamp` of `0`.
-- `MemoryBudgetFeature::driverReported` marks a `MemoryBudget` whose
-  `budgetBytes` and `usageBytes` come from the operating system or the driver:
-  always on Direct3D 12 and Metal, and on Vulkan with `VK_EXT_memory_budget`.
-  On Metal, `queryMemoryBudgets` sums the allocations without copying a
-  snapshot of them, so it is cheap enough to call once a frame.
+- C ABI version 3 (`RACHIS_ABI_VERSION` 3, `librachis.so.3` / `librachis.3.dylib`):
+  - `rachis_timeline_query` and `rachis_timeline_wait_for` (`RACHIS_TIMELINE_STATUS_*`).
+  - `rachis_queue_timestamp_valid_bits` and `rachis_queue_calibrate_timestamps` (`rachis_timestamp_calibration`, `RACHIS_CPU_CLOCK_*`).
+  - `rachis_device_memory_budget` (`rachis_memory_budget`).
+- `QueueClockCalibration` adds `cpuClock` and `maxDeviationNanoseconds` (Metal reports `mach_absolute_time` ticks); Vulkan enables `VK_KHR_calibrated_timestamps` and returns `ErrorCode::unsupported` when calibration is unavailable.
+- `MemoryBudgetFeature::driverReported` marks driver-reported budgets; Metal `queryMemoryBudgets` avoids copying an allocation snapshot.
 - Vulkan: `createSwapchain` uses the surface's current extent on fixed-extent
   surfaces and creates a suspended swapchain on zero extent.
 - Vulkan: `present` suspends minimized or zero-extent swapchains so

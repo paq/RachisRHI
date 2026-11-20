@@ -21,9 +21,7 @@ The C ABI lives in the `rachis` shared library (`Rachis::C` in CMake) and export
   - [Swapchain images](#swapchain-images)
 - [Threads](#threads)
 - [Device loss](#device-loss)
-- [Timeline waits with a timeout](#timeline-waits-with-a-timeout)
-- [Timestamps on the CPU clock](#timestamps-on-the-cpu-clock)
-- [Memory budget](#memory-budget)
+- [Timestamps and memory budget](#timestamps-and-memory-budget)
 
 ## Version
 
@@ -89,12 +87,9 @@ Supported C ABI surface:
 - Vertex, pixel, and compute shader modules; graphics and compute pipelines; graphics and compute push constants; viewport, scissor, draw, and dispatch
 - Vertex buffer layouts, vertex and index buffer binding, and indexed draws
 - Device capabilities for mapping and vertex input
-- Timestamp queries
-- Adapter identification
-- Surfaces, swapchains, and presentation status
-- Timeline queries and waits with a timeout
-- Timestamp calibration against the CPU's monotonic counter, and the valid timestamp bits of each queue
-- The adapter's memory budget and the process's use of it
+- Timestamp queries, valid bits, and CPU-clock calibration
+- Adapter identification and runtime memory budget
+- Surfaces, swapchains, presentation status, and bounded timeline waits/queries
 
 ### C++-only features and stage rules
 
@@ -203,7 +198,8 @@ Each `rachis_mapped_range` is an `offset` from the start of the buffer (not of t
 ### Timelines
 
 `rachis_command_submit` outputs a caller-owned timeline handle:
-- Pass it to `rachis_timeline_wait` and `rachis_swapchain_present` as many times as needed (neither consumes it).
+- Pass it to `rachis_timeline_wait`, `rachis_timeline_wait_for`, `rachis_timeline_query`, and `rachis_swapchain_present` as many times as needed (none consumes it).
+- `rachis_timeline_query` and `rachis_timeline_wait_for` write `RACHIS_TIMELINE_STATUS_PENDING` or `RACHIS_TIMELINE_STATUS_COMPLETE` and return `RACHIS_STATUS_OK` in both cases (`timeout_ns == 0` polls without waiting; values above `INT64_MAX` wait unboundedly).
 - Release it with `rachis_timeline_release` once no further wait or present needs it. Releasing only frees the handle—it neither waits nor cancels GPU work, so it is safe immediately after `submit` (if you don't wait) or right after the last wait/present returns.
 - Failing to release timelines leaks slots until `rachis_command_submit` returns `RACHIS_STATUS_RESOURCE_EXHAUSTED`.
 
@@ -240,7 +236,7 @@ Calls on a single `rachis_device*` are thread-safe, provided nothing else calls 
   - *No call at all:* reading and writing through a pointer from `rachis_buffer_map` takes no lock and never waits for another thread's call (see [Mapped buffers](#mapped-buffers)).
   - *Fairness:* Waiters proceed in arrival order, and adjacent concurrent calls execute together—continuous recording/copying cannot starve exclusive calls, nor vice versa.
 - **Per-command-handle restriction:** Only one thread may record into a given command handle at a time; concurrent recording on the same handle returns `RACHIS_STATUS_INVALID_STATE`.
-- **Non-blocking waits and swapchain serialization:** `rachis_timeline_wait` does not block other calls. Presents serialize per swapchain (and on Vulkan block work targeting the presenting queue during the driver present call). On D3D12 and Vulkan, present may wait for the display; on Metal it does not. `rachis_swapchain_acquire`, `resize`, and `destroy` can block on the GPU or window system while holding device locks.
+- **Non-blocking waits and swapchain serialization:** `rachis_timeline_wait` and `rachis_timeline_wait_for` do not block other calls. Presents serialize per swapchain (and on Vulkan block work targeting the presenting queue during the driver present call). On D3D12 and Vulkan, present may wait for the display; on Metal it does not. `rachis_swapchain_acquire`, `resize`, and `destroy` can block on the GPU or window system while holding device locks.
 - **Vulkan & Metal copy/recording locks:** On Vulkan and Metal, `rachis_buffer_write` and `rachis_buffer_read` hold an internal device-wide lock for the entire copy, blocking other copies (even on different buffers), `rachis_buffer_map`, `rachis_buffer_unmap`, and flushing or invalidating mapped ranges, plus:
   - *Vulkan:* `rachis_command_copy_buffer`, buffer-texture copies, `rachis_command_barriers`, `rachis_command_begin_rendering`, and `rachis_texture_query_transfer_layout` (copies and barriers across distinct command handles also serialize).
   - *Metal:* all command recording calls.
@@ -254,61 +250,9 @@ Calls on a single `rachis_device*` are thread-safe, provided nothing else calls 
 - A pointer mapped before the loss stays valid memory until `rachis_buffer_unmap`: reading and writing through it does not fault, but the bytes read are undefined and writes reach no GPU. `rachis_buffer_unmap` still succeeds, and a mapped buffer still needs it before `rachis_buffer_destroy`.
 - Diagnostics, `destroy`, and `release` calls continue working (including `rachis_swapchain_destroy` while an image is still acquired). Create a new device to recover.
 
-## Timeline waits with a timeout
+## Timestamps and memory budget
 
-`rachis_timeline_wait` returns only once a timeline handle's submission has completed. Two calls let a caller bound that wait or skip it:
-
-- `rachis_timeline_query` writes the state of the submission to `*status` without waiting: `RACHIS_TIMELINE_STATUS_PENDING` or `RACHIS_TIMELINE_STATUS_COMPLETE`.
-- `rachis_timeline_wait_for` waits at most `timeout_ns` nanoseconds and writes the state when it returns. A `timeout_ns` of `0` waits no time, like `rachis_timeline_query`. A timeout longer than `INT64_MAX` nanoseconds, such as `UINT64_MAX`, waits as long as `rachis_timeline_wait`.
-
-Both return `RACHIS_STATUS_OK` whether or not the submission has completed, so read `*status`. A call that fails leaves `RACHIS_TIMELINE_STATUS_PENDING` in `*status`; a released or unknown handle returns `RACHIS_STATUS_INVALID_ARGUMENT`. Like `rachis_timeline_wait`, neither consumes the handle, and neither holds a device lock while it waits, so other threads keep calling into the device.
-
-```c
-uint32_t state = RACHIS_TIMELINE_STATUS_PENDING;
-if (rachis_timeline_wait_for(device, timeline, 2000000000ull, &state, &error) == RACHIS_STATUS_OK
-    && state == RACHIS_TIMELINE_STATUS_PENDING)
-{
-    report_stalled_gpu();
-}
-```
-
-## Timestamps on the CPU clock
-
-`rachis_queue_calibrate_timestamps` reads a queue's GPU timestamp counter and the CPU's monotonic counter at nearly the same moment, so that a timestamp from `rachis_command_resolve_timestamps` can be placed on the CPU's timeline. Set `struct_size` of the `rachis_timestamp_calibration` first.
-
-| Field | Meaning |
-| --- | --- |
-| `cpu_clock` | The CPU counter that `cpu_timestamp` comes from (see below) |
-| `gpu_timestamp`, `gpu_frequency` | The queue's timestamp, and its ticks per second (the value of `rachis_queue_timestamp_frequency`) |
-| `cpu_timestamp`, `cpu_frequency` | The CPU counter's value, and its ticks per second |
-| `max_deviation_ns` | Upper bound, in nanoseconds, on how far apart the two readings were taken |
-
-The CPU counter is the operating system's monotonic counter, read in its own units:
-
-| `cpu_clock` | Where | `cpu_timestamp` | `cpu_frequency` |
-| --- | --- | --- | --- |
-| `RACHIS_CPU_CLOCK_QUERY_PERFORMANCE_COUNTER` | Windows: Direct3D 12 and Vulkan | `QueryPerformanceCounter` | `QueryPerformanceFrequency` |
-| `RACHIS_CPU_CLOCK_MONOTONIC` | Linux: Vulkan | `clock_gettime(CLOCK_MONOTONIC)` in nanoseconds | `1000000000` |
-| `RACHIS_CPU_CLOCK_MACH_ABSOLUTE_TIME` | macOS: Metal | `mach_absolute_time()` | Ticks per second from `mach_timebase_info` (`24000000` on Apple silicon) |
-
-A timestamp $t$ of that queue is at $\text{cpu\_timestamp} + (t - \text{gpu\_timestamp}) \cdot \text{cpu\_frequency} / \text{gpu\_frequency}$ on the CPU counter. The two clocks drift apart slowly, so calibrate again from time to time, for example once a second.
-
-- **Valid bits:** `rachis_queue_timestamp_valid_bits` returns how many low bits of a timestamp of that queue count: `64` on Direct3D 12 and Metal, and the queue family's `timestampValidBits` on Vulkan (`36` to `64`). A counter with fewer than 64 bits wraps to zero, so take the difference of two timestamps modulo $2^{\text{bits}}$. A queue without timestamp queries returns `RACHIS_STATUS_UNSUPPORTED`, as `rachis_queue_timestamp_frequency` does.
-- **Backends:** Direct3D 12 calibrates with `ID3D12CommandQueue::GetClockCalibration`, Metal with `-[MTLDevice sampleTimestamps:gpuTimestamp:]`, and Vulkan with `vkGetCalibratedTimestampsKHR` from `VK_KHR_calibrated_timestamps`, or `vkGetCalibratedTimestampsEXT` from `VK_EXT_calibrated_timestamps`, over the device time domain and the CPU counter's domain. On Direct3D 12 and Metal, `max_deviation_ns` is the time the call took; on Vulkan it is the driver's maximum deviation.
-- **Unsupported:** A queue without timestamp queries, a Vulkan device with neither extension or without both time domains, and Vulkan on macOS (MoltenVK offers `CLOCK_MONOTONIC_RAW`, not `mach_absolute_time`) return `RACHIS_STATUS_UNSUPPORTED`.
-- **Failures:** A call that fails, after checking `struct_size`, leaves every field but `struct_size` zero, and `cpu_clock` `RACHIS_CPU_CLOCK_NONE`. On a lost device it returns `RACHIS_STATUS_DEVICE_LOST`.
-
-## Memory budget
-
-`rachis_device_memory_budget` reports how much memory the operating system gives the process on the device's adapter, and how much of it the process uses now. Set `struct_size` of the `rachis_memory_budget` first. The call reads values the driver keeps up to date and is cheap enough to make once a frame.
-
-| Field | Meaning |
-| --- | --- |
-| `local_budget`, `local_usage` | Budget and current use of the GPU's local memory; on a unified-memory device, all of its memory |
-| `non_local_budget`, `non_local_usage` | Budget and current use of system memory that a discrete GPU reaches over the bus; `0` on Metal |
-
-- **Use:** Counts every allocation of the process on the adapter, from every device and module, not only this device's. It can exceed the budget.
-- **Direct3D 12:** `IDXGIAdapter3::QueryVideoMemoryInfo` for `DXGI_MEMORY_SEGMENT_GROUP_LOCAL` and `DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL`.
-- **Vulkan:** `VK_EXT_memory_budget`: the sums of `heapBudget` and of `heapUsage` over the device-local heaps, and over the other heaps. A device without the extension returns `RACHIS_STATUS_UNSUPPORTED`.
-- **Metal:** `recommendedMaxWorkingSetSize` and `currentAllocatedSize` of the `MTLDevice` as local memory.
-- **Failures:** A call that fails, after checking `struct_size`, leaves every field but `struct_size` zero. On a lost device it returns `RACHIS_STATUS_DEVICE_LOST`.
+- **Valid bits:** `rachis_queue_timestamp_valid_bits` returns the number of low valid bits per queue (`64` on Direct3D 12 and Metal, `timestampValidBits` on Vulkan; take timestamp deltas modulo $2^{\text{bits}}$), or `RACHIS_STATUS_UNSUPPORTED` when the queue has no timestamps.
+- **Clock calibration:** `rachis_queue_calibrate_timestamps` fills `rachis_timestamp_calibration` (set `struct_size` first) with paired GPU and host monotonic counters (`RACHIS_CPU_CLOCK_QUERY_PERFORMANCE_COUNTER` on Windows, `RACHIS_CPU_CLOCK_MONOTONIC` in ns on Linux, `RACHIS_CPU_CLOCK_MACH_ABSOLUTE_TIME` in ticks on macOS Metal), frequencies, and `max_deviation_ns` (see [Queries](using.md#queries) for conversion). Returns `RACHIS_STATUS_UNSUPPORTED` when unavailable (including Vulkan on macOS).
+- **Memory budget:** `rachis_device_memory_budget` fills `rachis_memory_budget` (set `struct_size` first) with process-wide local and non-local adapter budget and usage (`QueryVideoMemoryInfo` on D3D12, `VK_EXT_memory_budget` on Vulkan, `MTLDevice` local-only on Metal; usage may exceed budget). Returns `RACHIS_STATUS_UNSUPPORTED` on Vulkan without `VK_EXT_memory_budget`.
+- **Errors:** On failure (after checking `struct_size`), output structs are zeroed except `struct_size`. Both calls return `RACHIS_STATUS_DEVICE_LOST` on a lost device.
