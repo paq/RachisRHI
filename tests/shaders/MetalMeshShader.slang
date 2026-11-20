@@ -38,6 +38,15 @@ void taskMain()
     DispatchMesh(1, 1, 1, payload);
 }
 
+[shader("amplification")]
+[numthreads(1, 1, 1)]
+void taskFixed()
+{
+    MeshPayload payload;
+    payload.color = float4(0.0F, 0.25F, 0.0F, 1.0F);
+    DispatchMesh(1, 1, 1, payload);
+}
+
 RWStructuredBuffer<uint> meshCounter : register(u1, space0);
 
 [shader("amplification")]

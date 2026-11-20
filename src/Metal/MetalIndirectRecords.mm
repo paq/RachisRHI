@@ -150,8 +150,18 @@ struct RachisClampVertex
                 return std::unexpected(
                     metalNsError(ErrorCode::nativeFailure, error, "newRenderPipelineState(indirect records)"));
             }
+            id<MTLBuffer> const idleHeader = [native.device newBufferWithLength:sizeof(MetalIndirectClampHeader)
+                                                                        options:MTLResourceStorageModeShared];
+            if (idleHeader == nil)
+            {
+                return std::unexpected(metalSelectionError(
+                    ErrorCode::outOfMemory, "Metal could not allocate the idle indirect-record header."));
+            }
+            idleHeader.label = @"RHI.Metal.IndirectRecordIdleHeader";
+            std::memset(idleHeader.contents, 0, sizeof(MetalIndirectClampHeader));
             native.indirectClampCompute = compute;
             native.indirectClampRender = render;
+            native.indirectClampIdleHeader = idleHeader;
             return {};
         }
 
@@ -166,7 +176,8 @@ struct RachisClampVertex
             return std::unexpected(metalSelectionError(
                 ErrorCode::invalidState, "Indirect calls with a count buffer require an active Metal device."));
         }
-        if (native->indirectClampCompute == nil || native->indirectClampRender == nil)
+        if (native->indirectClampCompute == nil || native->indirectClampRender == nil ||
+            native->indirectClampIdleHeader == nil)
         {
             @autoreleasepool
             {
@@ -179,6 +190,7 @@ struct RachisClampVertex
         return MetalIndirectClampPipelines{
             .compute = native->indirectClampCompute,
             .render = native->indirectClampRender,
+            .idleHeader = native->indirectClampIdleHeader,
         };
     }
 
@@ -276,6 +288,27 @@ struct RachisClampVertex
 #ifdef RACHIS_TESTING
         recordMetalIndirectClampEncode();
 #endif
+        entry.activeGraphicsPipeline = nullptr;
+        entry.vertexTableDirty = true;
+        return {};
+    }
+
+    Status metalEncodeMeshRecordSeparator(id<MTLDevice> device,
+                                          MetalCommandEntry& entry,
+                                          const MetalPipelineRecord& pipeline)
+    {
+        auto table = acquireMetalArgumentTable(device, entry, MetalArgumentTableStage::object, 1, 0, 0);
+        if (!table)
+        {
+            return std::unexpected(std::move(table.error()));
+        }
+        metalRetainResidency(entry, pipeline.meshRecordSeparatorHeader);
+        [*table setAddress:pipeline.meshRecordSeparatorHeader.gpuAddress atIndex:0];
+        [entry.renderEncoder setRenderPipelineState:pipeline.meshRecordSeparator];
+        [entry.renderEncoder setArgumentTable:*table atStages:MTLRenderStageObject];
+        [entry.renderEncoder drawMeshThreadgroups:MTLSizeMake(1, 1, 1)
+                      threadsPerObjectThreadgroup:MTLSizeMake(kMetalClampThreadgroupSize, 1, 1)
+                        threadsPerMeshThreadgroup:MTLSizeMake(1, 1, 1)];
         entry.activeGraphicsPipeline = nullptr;
         entry.vertexTableDirty = true;
         return {};

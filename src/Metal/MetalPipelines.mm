@@ -3315,6 +3315,16 @@ namespace rachis::metal
                 pso = *compiled;
             }
             auto record = metalMakeGraphicsPipelineRecord(*inputs, pso, *depthStencil, std::move(*attachments), desc);
+            if (metalMeshRecordsNeedSeparator(*record))
+            {
+                auto separator = metalIndirectClampPipelines(mutex_, native_);
+                if (!separator)
+                {
+                    return std::unexpected(std::move(separator.error()));
+                }
+                record->meshRecordSeparator = separator->render;
+                record->meshRecordSeparatorHeader = separator->idleHeader;
+            }
             std::scoped_lock const lock(mutex_);
             if (native_ == nullptr)
             {

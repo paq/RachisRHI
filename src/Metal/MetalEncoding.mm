@@ -3672,27 +3672,6 @@ namespace rachis::metal
     namespace
     {
 
-        [[nodiscard]] constexpr bool metalStageReadsArgumentTable(const MetalResolvedStageBindings& stage) noexcept
-        {
-            return !stage.resources.empty() || stage.usesPushConstants || stage.usesDrawIndex;
-        }
-
-        [[nodiscard]] Status metalRequireMeshRecordArguments(const MetalPipelineRecord& pipeline,
-                                                             const MetalIndirectRecordLayout& layout)
-        {
-            const bool tablesRead =
-                metalStageReadsArgumentTable(pipeline.meshStageBindings) &&
-                (!pipeline.hasObjectShader || metalStageReadsArgumentTable(pipeline.objectStageBindings));
-            if (layout.maxRecords > 1 && !tablesRead)
-            {
-                return std::unexpected(metalSelectionError(
-                    ErrorCode::unsupported,
-                    "Metal runs an indirect mesh dispatch with more than one record only when the task and mesh "
-                    "shaders each read a binding, push constants, or the draw index."));
-            }
-            return {};
-        }
-
         [[nodiscard]] bool metalMeshDispatchReady(const detail::GraphicsCommandState& state,
                                                   const MetalPipelineRecord* pipeline,
                                                   const MetalCommandEntry* entry)
@@ -3822,10 +3801,6 @@ namespace rachis::metal
         {
             return prefixed;
         }
-        if (auto readable = metalRequireMeshRecordArguments(*pipeline, layout); !readable)
-        {
-            return readable;
-        }
         if (layout.maxRecords == 0 || metalDrawScissoredOut(*entry, *pipeline))
         {
             return metalValidateGraphicsResources(inputs->device, *entry, *pipeline);
@@ -3863,6 +3838,13 @@ namespace rachis::metal
         const MetalDrawIndexRestore restore(*entry);
         for (std::uint32_t record = 0; record < layout.maxRecords; ++record)
         {
+            if (pipeline->meshRecordSeparator != nil)
+            {
+                if (auto separated = metalEncodeMeshRecordSeparator(inputs->device, *entry, *pipeline); !separated)
+                {
+                    return separated;
+                }
+            }
             entry->drawIndex = pipeline->readsDrawIndex ? record : 0U;
             entry->vertexTableDirty = true;
             if (auto applied = metalApplyGraphicsDrawState(inputs->device, *entry, *pipeline, true); !applied)

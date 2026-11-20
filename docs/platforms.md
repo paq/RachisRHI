@@ -250,7 +250,7 @@ Metal has no multi-record indirect calls and no GPU-written counts, so RachisRHI
 - **Several records:** `drawIndirect`, `drawIndexedIndirect`, `dispatchIndirect`, and `dispatchMeshIndirect` encode one Metal call per record, `maxDrawCount` or `maxDispatchCount` of them. The CPU cost of recording grows with that maximum, not with the count the GPU writes.
 - **Count buffer:** before those calls, RachisRHI runs a small internal pass that copies the records into scratch memory and sets the instance or workgroup count of every record at or past the count to zero. Inside a render pass this pass is an object-shader draw with rasterization disabled; in a compute pass it is a compute dispatch. Each such call allocates `maxDrawCount` (or `maxDispatchCount`) times the record size of scratch memory, freed when the command buffer completes.
 - Keep `maxDrawCount` and `maxDispatchCount` close to the real upper bound on Metal.
-- **Mesh dispatches:** each record of a `dispatchMeshIndirect` call rebinds the task and mesh argument tables, so Metal reads that record's arguments. A pipeline whose task or mesh shader reads no binding, push constants, or draw index has no table to rebind, so a call with `maxDispatchCount` above 1 on it fails with `ErrorCode::unsupported`.
+- **Mesh dispatches:** each record of a `dispatchMeshIndirect` call rebinds the task and mesh argument tables, so Metal reads that record's arguments. A pipeline whose task or mesh shader reads no binding, push constants, or draw index has no table to rebind, so RachisRHI runs a small internal object-shader draw with rasterization disabled before each of its records instead, one extra draw per record.
 
 ## Mesh shaders on Metal
 

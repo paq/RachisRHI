@@ -149,7 +149,7 @@ namespace
                 .has_value());
     }
 
-    void setMeshDrawState(rachis::Device& device, rachis::CommandBuffer& command)
+    void setMeshViewport(rachis::Device& device, rachis::CommandBuffer& command)
     {
         REQUIRE(device
                     .setViewport(command,
@@ -160,6 +160,11 @@ namespace
                                  })
                     .has_value());
         REQUIRE(device.setScissor(command, {.width = targetSize, .height = targetSize}).has_value());
+    }
+
+    void setMeshDrawState(rachis::Device& device, rachis::CommandBuffer& command)
+    {
+        setMeshViewport(device, command);
         placeMesh(device, command, MeshPlacement::left);
     }
 
@@ -665,64 +670,135 @@ TEST_CASE("Metal mesh pipelines dispatch directly and indirectly with and withou
         }
     }
 
-    SECTION("A mesh pipeline whose shaders read no argument table runs one record per indirect dispatch")
+    SECTION("Each record runs its own arguments on a mesh pipeline whose task or mesh shader reads no argument table")
     {
-        const auto fixedBytecode = loadPnms("MetalMeshShader.fixed.ms.pnms");
-        REQUIRE_FALSE(fixedBytecode.empty());
-        auto fixedShader = device.createShaderModule({
+        const auto fixedMeshBytecode = loadPnms("MetalMeshShader.fixed.ms.pnms");
+        const auto fixedTaskBytecode = loadPnms("MetalMeshShader.fixed.as.pnms");
+        REQUIRE_FALSE(fixedMeshBytecode.empty());
+        REQUIRE_FALSE(fixedTaskBytecode.empty());
+        auto fixedMesh = device.createShaderModule({
             .stage = rachis::ShaderStage::mesh,
-            .bytecode = fixedBytecode,
+            .bytecode = fixedMeshBytecode,
             .entryPoint = "meshFixed",
             .shaderInterface = rachis::test::computeShaderInterface({1, 1, 1}),
         });
-        REQUIRE(fixedShader.has_value());
+        auto fixedTask = device.createShaderModule({
+            .stage = rachis::ShaderStage::task,
+            .bytecode = fixedTaskBytecode,
+            .entryPoint = "taskFixed",
+            .shaderInterface = rachis::test::computeShaderInterface({1, 1, 1}),
+        });
+        REQUIRE(fixedMesh.has_value());
+        REQUIRE(fixedTask.has_value());
         auto emptyLayout = device.createPipelineLayout({});
         REQUIRE(emptyLayout.has_value());
-        auto fixedPipeline = device.createGraphicsPipeline({
+        auto bindingFreePipeline = device.createGraphicsPipeline({
             .layout = *emptyLayout,
             .pixelShader = *pixelShader,
-            .meshShader = *fixedShader,
+            .meshShader = *fixedMesh,
             .cullMode = rachis::CullMode::none,
             .colorTargets = colorTargets,
             .label = "Metal binding-free mesh pipeline",
         });
-        REQUIRE(fixedPipeline.has_value());
-
-        const auto target = createMeshTarget(device);
-        auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::graphics);
-        REQUIRE(command.has_value());
-        beginMeshRendering(device, *command, target);
-        REQUIRE(device.bindGraphicsPipeline(*command, *fixedPipeline).has_value());
-        REQUIRE(device
-                    .setViewport(*command,
-                                 {
-                                     .width = static_cast<float>(targetSize),
-                                     .height = static_cast<float>(targetSize),
-                                     .maxDepth = 1.0F,
-                                 })
-                    .has_value());
-        REQUIRE(device.setScissor(*command, {.width = targetSize, .height = targetSize}).has_value());
-        const std::array<rachis::DispatchIndirectArguments, 2> twoRecords{dispatchArguments, dispatchArguments};
-        auto twoRecordBuffer = device.createBuffer({
-            .size = sizeof(twoRecords),
-            .usage = rachis::BufferUsage::indirect,
-            .memoryType = rachis::MemoryType::upload,
+        auto bindingFreeTaskPipeline = device.createGraphicsPipeline({
+            .layout = *pipelineLayout,
+            .pixelShader = *pixelShader,
+            .taskShader = *fixedTask,
+            .meshShader = *meshShader,
+            .cullMode = rachis::CullMode::none,
+            .colorTargets = colorTargets,
+            .label = "Metal mesh pipeline with a binding-free task shader",
         });
-        REQUIRE(twoRecordBuffer.has_value());
-        const auto several =
-            device.dispatchMeshIndirect(*command, {.argumentBuffer = *twoRecordBuffer, .maxDispatchCount = 2});
-        REQUIRE_FALSE(several.has_value());
-        CHECK(several.error().code == rachis::ErrorCode::unsupported);
-        REQUIRE(device.dispatchMeshIndirect(*command, {.argumentBuffer = *arguments, .argumentOffset = argumentOffset})
-                    .has_value());
-        finishMeshRendering(device, std::move(*command), target);
-        checkMeshCoverage(device, target, MeshCoverage{.left = 1, .middle = 0, .right = 0, .corner = 0});
-        destroyMeshTarget(device, target);
+        REQUIRE(bindingFreePipeline.has_value());
+        REQUIRE(bindingFreeTaskPipeline.has_value());
 
-        REQUIRE(device.destroyBuffer(*twoRecordBuffer).has_value());
-        REQUIRE(device.destroyPipeline(*fixedPipeline).has_value());
+        const rachis::DispatchIndirectArguments one{1, 1, 1};
+        const rachis::DispatchIndirectArguments none{0, 0, 0};
+        struct RecordCase final
+        {
+            std::array<rachis::DispatchIndirectArguments, 3> records{};
+            std::uint32_t draws = 0;
+        };
+        const std::array cases{
+            RecordCase{.records = {one, none, none}, .draws = 1},
+            RecordCase{.records = {none, one, none}, .draws = 1},
+            RecordCase{.records = {one, none, one}, .draws = 2},
+            RecordCase{.records = {none, none, one}, .draws = 1},
+        };
+        for (const bool taskStage : {false, true})
+        {
+            for (const bool separateCalls : {false, true})
+            {
+                for (const auto& recordCase : cases)
+                {
+                    CAPTURE(taskStage, separateCalls, recordCase.draws);
+                    auto recordBuffer = device.createBuffer({
+                        .size = sizeof(recordCase.records),
+                        .usage = rachis::BufferUsage::indirect,
+                        .memoryType = rachis::MemoryType::upload,
+                    });
+                    REQUIRE(recordBuffer.has_value());
+                    auto mappedRecords = device.mapBuffer(*recordBuffer);
+                    REQUIRE(mappedRecords.has_value());
+                    std::memcpy(mappedRecords->data, recordCase.records.data(), sizeof(recordCase.records));
+                    REQUIRE(device.unmapBuffer(*recordBuffer).has_value());
+
+                    const auto target = createMeshTarget(device);
+                    auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::graphics);
+                    REQUIRE(command.has_value());
+                    beginMeshRendering(device, *command, target);
+                    REQUIRE(device
+                                .bindGraphicsPipeline(*command,
+                                                      taskStage ? *bindingFreeTaskPipeline : *bindingFreePipeline)
+                                .has_value());
+                    if (taskStage)
+                    {
+                        REQUIRE(device.bindGraphicsBindingSet(*command, 0, *bindingSet).has_value());
+                        setMeshDrawState(device, *command);
+                    }
+                    else
+                    {
+                        setMeshViewport(device, *command);
+                    }
+                    if (separateCalls)
+                    {
+                        for (std::uint64_t record = 0; record < recordCase.records.size(); ++record)
+                        {
+                            REQUIRE(device
+                                        .dispatchMeshIndirect(
+                                            *command,
+                                            {
+                                                .argumentBuffer = *recordBuffer,
+                                                .argumentOffset = record * sizeof(rachis::DispatchIndirectArguments),
+                                            })
+                                        .has_value());
+                        }
+                    }
+                    else
+                    {
+                        REQUIRE(device
+                                    .dispatchMeshIndirect(*command,
+                                                          {
+                                                              .argumentBuffer = *recordBuffer,
+                                                              .maxDispatchCount = static_cast<std::uint32_t>(
+                                                                  recordCase.records.size()),
+                                                          })
+                                    .has_value());
+                    }
+                    finishMeshRendering(device, std::move(*command), target);
+                    checkMeshCoverage(
+                        device, target, MeshCoverage{.left = recordCase.draws, .middle = 0, .right = 0, .corner = 0});
+                    destroyMeshTarget(device, target);
+                    REQUIRE(device.destroyBuffer(*recordBuffer).has_value());
+                }
+            }
+        }
+
+        REQUIRE(device.destroyPipeline(*bindingFreeTaskPipeline).has_value());
+        REQUIRE(device.destroyPipeline(*bindingFreePipeline).has_value());
         REQUIRE(device.destroyPipelineLayout(*emptyLayout).has_value());
-        REQUIRE(device.destroyShaderModule(*fixedShader).has_value());
+        REQUIRE(device.destroyShaderModule(*fixedTask).has_value());
+        REQUIRE(device.destroyShaderModule(*fixedMesh).has_value());
     }
 
     SECTION("Counted mesh dispatch draws only the number of records a GPU fill wrote")
