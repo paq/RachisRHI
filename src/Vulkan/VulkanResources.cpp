@@ -1099,19 +1099,21 @@ namespace rachis::vulkan
             const auto& budget = vmaBudgets[i];
             const auto exportedBytes = exportedMemory_->bytes[i].load(std::memory_order_relaxed);
             const auto exportedAllocations = exportedMemory_->allocations[i].load(std::memory_order_relaxed);
+            const bool reported = driverBudgetsRead && driverBudgets.heapBudget[i] != 0;
+            const auto estimatedBudget = budget.budget != 0 ? budget.budget : heap.size;
+            const auto estimatedUsage = memoryBudget_ ? budget.usage : budget.usage + exportedBytes;
             budgets.push_back(MemoryBudget{
                 .heapIndex = i,
                 .properties = (heap.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0 ? MemoryHeapProperty::deviceLocal
                                                                                   : MemoryHeapProperty::none,
-                .features = driverBudgetsRead && driverBudgets.heapBudget[i] != 0
-                                ? MemoryBudgetFeature::allocationStatistics | MemoryBudgetFeature::driverReported
-                                : MemoryBudgetFeature::allocationStatistics,
+                .features = reported ? MemoryBudgetFeature::allocationStatistics | MemoryBudgetFeature::driverReported
+                                     : MemoryBudgetFeature::allocationStatistics,
                 .blockBytes = budget.statistics.blockBytes + exportedBytes,
                 .allocationBytes = budget.statistics.allocationBytes + exportedBytes,
                 .blockCount = budget.statistics.blockCount + exportedAllocations,
                 .allocationCount = budget.statistics.allocationCount + exportedAllocations,
-                .budgetBytes = budget.budget != 0 ? budget.budget : heap.size,
-                .usageBytes = memoryBudget_ ? budget.usage : budget.usage + exportedBytes,
+                .budgetBytes = reported ? driverBudgets.heapBudget[i] : estimatedBudget,
+                .usageBytes = reported ? driverBudgets.heapUsage[i] : estimatedUsage,
                 .availableForReservationBytes = 0,
                 .reservationBytes = 0,
             });
