@@ -5885,7 +5885,17 @@ TEST_CASE("Vulkan buffers for acceleration-structure build inputs get 16-byte al
     CHECK(alignment(BufferUsage::accelerationStructureBuildInput | BufferUsage::shaderBindingTable) == sbtAlignment);
     CHECK(alignment(BufferUsage::accelerationStructureScratch) == scratchAlignment);
     CHECK(alignment(BufferUsage::shaderBindingTable) == sbtAlignment);
-    CHECK(alignment(BufferUsage::storage | BufferUsage::indirect) == 1);
+    CHECK(alignment(BufferUsage::storage) == 1);
+}
+
+TEST_CASE("Vulkan indirect-argument buffers get device addresses aligned for their records",
+          "[size:small][rhi][vulkan][vuid][indirect]")
+{
+    using rachis::BufferUsage;
+    const auto alignment = [](BufferUsage usage) { return rachis::vulkan::bufferAddressAlignment(usage, 64, 128); };
+    CHECK(alignment(BufferUsage::indirect) == rachis::indirectArgumentAlignment);
+    CHECK(alignment(BufferUsage::storage | BufferUsage::indirect) == rachis::indirectArgumentAlignment);
+    CHECK(alignment(BufferUsage::indirect | BufferUsage::accelerationStructureBuildInput) == 16);
 }
 
 TEST_CASE("Vulkan acceleration-structure size queries accept a driver that needs no build scratch",

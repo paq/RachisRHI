@@ -161,6 +161,10 @@ namespace rachis::vulkan
         {
             alignment = std::max(alignment, accelerationStructureInstanceAddressAlignment);
         }
+        if (hasAny(usage, BufferUsage::indirect))
+        {
+            alignment = std::max(alignment, VkDeviceSize{indirectArgumentAlignment});
+        }
         return alignment;
     }
 

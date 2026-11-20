@@ -2573,12 +2573,15 @@ namespace rachis::vulkan
             return {};
         }
 
-        if (arguments->argumentAddress == 0 || arguments->countAddress == 0)
+        if (arguments->argumentAddress == 0 || arguments->countAddress == 0 ||
+            (arguments->argumentAddress + desc.argumentOffset) % indirectArgumentAlignment != 0 ||
+            (arguments->countAddress + desc.countOffset) % indirectArgumentAlignment != 0)
         {
             return std::unexpected(Error{
                 ErrorCode::unsupported,
                 0,
-                "GPU-counted indirect dispatch requires device-addressable argument and count buffers.",
+                "GPU-counted indirect dispatch requires device-addressable argument and count buffers whose "
+                "records start at 4-byte aligned device addresses.",
             });
         }
         const auto queueType = commandBuffer.queueType();
@@ -3472,7 +3475,8 @@ namespace rachis::vulkan
         }
         auto arguments = resources_->resolveBindingBuffer(desc.argumentBuffer);
         if (!arguments || !hasAny(arguments->desc.usage, BufferUsage::indirect) || arguments->deviceAddress == 0 ||
-            desc.argumentOffset % 4 != 0 || desc.argumentOffset > arguments->desc.size ||
+            desc.argumentOffset % 4 != 0 || (arguments->deviceAddress + desc.argumentOffset) % 4 != 0 ||
+            desc.argumentOffset > arguments->desc.size ||
             sizeof(DispatchIndirectArguments) > arguments->desc.size - desc.argumentOffset)
         {
             return std::unexpected(Error{
