@@ -6,7 +6,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <span>
@@ -335,23 +334,18 @@ TEST_CASE("Vulkan conditional execution gates dispatches, rejects copies, and re
     REQUIRE(device.wait(*submitted).has_value());
     device.collectGarbage();
 
-    auto mapped = device.mapBuffer(*readback);
-    REQUIRE(mapped.has_value());
     std::array<std::uint32_t, caseCount> executed{};
     for (std::size_t index = 0; index < caseCount; ++index)
     {
-        std::memcpy(&executed[index], mapped->data + index * caseStride, sizeof(std::uint32_t));
+        REQUIRE(device.readBuffer(*readback, index * caseStride, std::as_writable_bytes(std::span(&executed[index], 1)))
+                    .has_value());
     }
     CHECK(executed == std::array<std::uint32_t, caseCount>{0, 1, 0, 1});
-    REQUIRE(device.unmapBuffer(*readback).has_value());
     REQUIRE(device.destroyBuffer(*readback).has_value());
 
-    auto copyMapped = device.mapBuffer(*copyReadback);
-    REQUIRE(copyMapped.has_value());
     std::array<std::uint64_t, 2> copyResults{};
-    std::memcpy(copyResults.data(), copyMapped->data, sizeof(copyResults));
+    REQUIRE(device.readBuffer(*copyReadback, 0, std::as_writable_bytes(std::span(copyResults))).has_value());
     CHECK(copyResults == predicateValues);
-    REQUIRE(device.unmapBuffer(*copyReadback).has_value());
     REQUIRE(device.destroyBuffer(*copyReadback).has_value());
 
     const auto diagnostics = device.diagnosticCounts();

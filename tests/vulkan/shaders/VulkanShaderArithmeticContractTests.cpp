@@ -158,11 +158,8 @@ namespace
         auto submitted = device.submit(std::move(*command));
         REQUIRE(submitted);
         REQUIRE(device.wait(*submitted));
-        auto mapped = device.mapBuffer(*readback);
-        REQUIRE(mapped);
         LaneCounts lanes(laneCountInvocations);
-        std::memcpy(lanes.data(), mapped->data, laneCountBytes);
-        REQUIRE(device.unmapBuffer(*readback));
+        REQUIRE(device.readBuffer(*readback, 0, std::as_writable_bytes(std::span(lanes))));
 
         REQUIRE(device.destroyPipeline(*pipeline));
         REQUIRE(device.destroyPipelineLayout(*pipelineLayout));
@@ -624,12 +621,9 @@ TEST_CASE("Vulkan 16-bit and 64-bit shader arithmetic produce exact GPU results"
     REQUIRE(submitted);
     REQUIRE(device.wait(*submitted));
 
-    auto mapped16 = device.mapBuffer(*readback);
-    REQUIRE(mapped16);
     std::array<std::uint32_t, 2> result16{};
-    std::memcpy(result16.data(), mapped16->data, output16);
+    REQUIRE(device.readBuffer(*readback, 0, std::as_writable_bytes(std::span(result16)).first(output16)));
     CHECK(result16 == std::array<std::uint32_t, 2>{8, 364});
-    REQUIRE(device.unmapBuffer(*readback));
 
     auto command64 = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
     REQUIRE(command64);
@@ -668,12 +662,9 @@ TEST_CASE("Vulkan 16-bit and 64-bit shader arithmetic produce exact GPU results"
     REQUIRE(submitted64);
     REQUIRE(device.wait(*submitted64));
 
-    auto mapped64 = device.mapBuffer(*readback);
-    REQUIRE(mapped64);
     std::array<std::uint32_t, 4> result64{};
-    std::memcpy(result64.data(), mapped64->data, output64);
+    REQUIRE(device.readBuffer(*readback, 0, std::as_writable_bytes(std::span(result64)).first(output64)));
     CHECK(result64 == std::array<std::uint32_t, 4>{376, 768, 106, 128});
-    REQUIRE(device.unmapBuffer(*readback));
 
     REQUIRE(device.destroyPipeline(*pipeline16));
     REQUIRE(device.destroyPipeline(*pipeline64));
@@ -868,12 +859,9 @@ TEST_CASE("Vulkan group-shared and typed 64-bit atomics accumulate every compute
     auto groupSubmitted = device.submit(std::move(*groupCommand));
     REQUIRE(groupSubmitted);
     REQUIRE(device.wait(*groupSubmitted));
-    auto groupMapped = device.mapBuffer(*groupReadback);
-    REQUIRE(groupMapped);
     std::array<std::uint32_t, 2> groupResult{};
-    std::memcpy(groupResult.data(), groupMapped->data, groupBytes);
+    REQUIRE(device.readBuffer(*groupReadback, 0, std::as_writable_bytes(std::span(groupResult)).first(groupBytes)));
     CHECK(groupResult == std::array<std::uint32_t, 2>{static_cast<std::uint32_t>(atomicSum), 0});
-    REQUIRE(device.unmapBuffer(*groupReadback));
 
     auto typedShader = device.createShaderModule({
         .stage = rachis::ShaderStage::compute,
@@ -960,12 +948,9 @@ TEST_CASE("Vulkan group-shared and typed 64-bit atomics accumulate every compute
     auto typedSubmitted = device.submit(std::move(*typedCommand));
     REQUIRE(typedSubmitted);
     REQUIRE(device.wait(*typedSubmitted));
-    auto typedMapped = device.mapBuffer(*typedReadback);
-    REQUIRE(typedMapped);
     std::uint64_t typedResult = 0;
-    std::memcpy(&typedResult, typedMapped->data, sizeof(typedResult));
+    REQUIRE(device.readBuffer(*typedReadback, 0, std::as_writable_bytes(std::span(&typedResult, 1))));
     CHECK(typedResult == atomicSum);
-    REQUIRE(device.unmapBuffer(*typedReadback));
 
     REQUIRE(device.destroyPipeline(*typedPipeline));
     REQUIRE(device.destroyPipelineLayout(*typedPipelineLayout));
@@ -1090,12 +1075,9 @@ TEST_CASE("Vulkan storage-buffer 64-bit atomics keep the unsigned maximum and mi
     auto submitted = device.submit(std::move(*command));
     REQUIRE(submitted);
     REQUIRE(device.wait(*submitted));
-    auto mapped = device.mapBuffer(*readback);
-    REQUIRE(mapped);
     std::array<std::uint64_t, 2> result{};
-    std::memcpy(result.data(), mapped->data, extremesBytes);
+    REQUIRE(device.readBuffer(*readback, 0, std::as_writable_bytes(std::span(result)).first(extremesBytes)));
     CHECK(result == expectedStorageAtomicExtremes());
-    REQUIRE(device.unmapBuffer(*readback));
 
     REQUIRE(device.destroyPipeline(*pipeline));
     REQUIRE(device.destroyPipelineLayout(*pipelineLayout));
@@ -1263,14 +1245,11 @@ TEST_CASE("Vulkan subgroup operations and specialization constants produce exact
     auto subgroupSubmitted = device.submit(std::move(*subgroupCommand));
     REQUIRE(subgroupSubmitted);
     REQUIRE(device.wait(*subgroupSubmitted));
-    auto subgroupMapped = device.mapBuffer(*subgroupReadback);
-    REQUIRE(subgroupMapped);
+    std::vector<std::array<std::uint32_t, valuesPerInvocation>> lanes(invocationCount);
+    REQUIRE(device.readBuffer(*subgroupReadback, 0, std::as_writable_bytes(std::span(lanes))));
     for (std::uint32_t invocation = 0; invocation < invocationCount; ++invocation)
     {
-        std::array<std::uint32_t, 4> lane{};
-        std::memcpy(lane.data(),
-                    subgroupMapped->data + std::size_t{invocation} * valuesPerInvocation * sizeof(std::uint32_t),
-                    sizeof(lane));
+        const auto& lane = lanes[invocation];
         CAPTURE(invocation, lane[0], lane[1], lane[2], lane[3]);
         CHECK(lane[0] >= subgroup.minSize);
         CHECK(lane[0] <= subgroup.maxSize);
@@ -1279,7 +1258,6 @@ TEST_CASE("Vulkan subgroup operations and specialization constants produce exact
         CHECK(lane[2] <= lane[0]);
         CHECK(lane[3] == lane[2] * (lane[2] - 1) / 2);
     }
-    REQUIRE(device.unmapBuffer(*subgroupReadback));
 
     const auto spec13 = rachis::SpecializationConstant::makeUnsignedInt32(7, 13);
     std::array specValues{spec13};
@@ -1365,12 +1343,9 @@ TEST_CASE("Vulkan subgroup operations and specialization constants produce exact
     auto specSubmitted = device.submit(std::move(*specCommand));
     REQUIRE(specSubmitted);
     REQUIRE(device.wait(*specSubmitted));
-    auto specMapped = device.mapBuffer(*specReadback);
-    REQUIRE(specMapped);
     std::uint32_t specResult = 0;
-    std::memcpy(&specResult, specMapped->data, sizeof(specResult));
+    REQUIRE(device.readBuffer(*specReadback, 0, std::as_writable_bytes(std::span(&specResult, 1))));
     CHECK(specResult == 13);
-    REQUIRE(device.unmapBuffer(*specReadback));
 
     REQUIRE(device.destroyPipeline(*specPipeline));
     REQUIRE(device.destroyPipelineLayout(*specPipelineLayout));

@@ -323,12 +323,8 @@ namespace
             REQUIRE(submitted.has_value());
             REQUIRE(device_.wait(*submitted).has_value());
             device_.collectGarbage();
-            auto mapped = device_.mapBuffer(readback_);
-            REQUIRE(mapped.has_value());
-            REQUIRE(mapped->size == outputSize);
             std::array<std::uint32_t, valueCount> values{};
-            std::memcpy(values.data(), mapped->data, sizeof(values));
-            REQUIRE(device_.unmapBuffer(readback_).has_value());
+            REQUIRE(device_.readBuffer(readback_, 0, std::as_writable_bytes(std::span(values))).has_value());
             return values;
         }
 
@@ -871,13 +867,10 @@ TEST_CASE("Vulkan GPU-counted indirect dispatch clamps the count to maxDispatchC
     REQUIRE(submitted.has_value());
     REQUIRE(device.wait(*submitted).has_value());
 
-    auto mapped = device.mapBuffer(*readback);
-    REQUIRE(mapped.has_value());
     std::array<std::uint32_t, valueCount> values{};
-    std::memcpy(values.data(), mapped->data, sizeof(values));
+    REQUIRE(device.readBuffer(*readback, 0, std::as_writable_bytes(std::span(values))).has_value());
     CHECK(values.front() == 3);
     CHECK(values.back() == 3);
-    REQUIRE(device.unmapBuffer(*readback).has_value());
 
     REQUIRE(device.destroyPipeline(*pipeline).has_value());
     REQUIRE(device.destroyPipelineLayout(*pipelineLayout).has_value());
