@@ -1953,6 +1953,7 @@ TEST_CASE("C ABI mesh pipelines dispatch directly, through counted indirect reco
                      RACHIS_BUFFER_STORAGE | RACHIS_BUFFER_COPY_DESTINATION | RACHIS_BUFFER_INDIRECT,
                      RACHIS_MEMORY_DEVICE_LOCAL,
                      error);
+    const auto directCells = createCellTarget(device.get(), error);
     const auto cells = createCellTarget(device.get(), error);
 
     rachis_handle pool = 0;
@@ -1971,12 +1972,15 @@ TEST_CASE("C ABI mesh pipelines dispatch directly, through counted indirect reco
                                        RACHIS_ACCESS_INDIRECT_ARGUMENT);
     requireOk(recordBarriers(device.get(), command, &toCount, 1, nullptr, 0, error), error);
 
-    beginCellRendering(device.get(), command, cells, error);
+    beginCellRendering(device.get(), command, directCells, error);
     requireOk(rachis_command_bind_graphics_pipeline(device.get(), command, meshPipeline, &error), error);
     CHECK(rachis_command_dispatch_mesh(nullptr, command, 1, 1, 1, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
     CHECK(rachis_command_dispatch_mesh(device.get(), 0, 1, 1, 1, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
     requireOk(rachis_command_dispatch_mesh(device.get(), command, textureSize, 1, 1, &error), error);
+    endCellRendering(device.get(), command, directCells, error);
 
+    beginCellRendering(device.get(), command, cells, error);
+    requireOk(rachis_command_bind_graphics_pipeline(device.get(), command, meshPipeline, &error), error);
     rachis_indirect_mesh_dispatch_desc dispatch{};
     dispatch.struct_size = sizeof(dispatch);
     dispatch.abi_version = RACHIS_ABI_VERSION;
@@ -2015,15 +2019,18 @@ TEST_CASE("C ABI mesh pipelines dispatch directly, through counted indirect reco
     endCellRendering(device.get(), command, cells, error);
     submitAndWait(device.get(), command, error);
 
+    const CellRow directRow{redTexel, clearTexel, clearTexel, clearTexel};
+    checkCells(readCells(device.get(), directCells, error), {directRow, directRow, directRow, directRow});
     const auto lastCell = taskShaders ? magentaTexel : clearTexel;
     checkCells(readCells(device.get(), cells, error),
                {CellRow{redTexel, greenTexel, blueTexel, clearTexel},
-                CellRow{redTexel, greenTexel, blueTexel, clearTexel},
-                CellRow{redTexel, clearTexel, blueTexel, clearTexel},
-                CellRow{redTexel, clearTexel, clearTexel, lastCell}});
+                CellRow{clearTexel, greenTexel, blueTexel, clearTexel},
+                CellRow{clearTexel, clearTexel, blueTexel, clearTexel},
+                CellRow{clearTexel, clearTexel, clearTexel, lastCell}});
 
     requireOk(rachis_command_pool_destroy(device.get(), pool, &error), error);
     destroyCellTarget(device.get(), cells, error);
+    destroyCellTarget(device.get(), directCells, error);
     requireOk(rachis_buffer_destroy(device.get(), argumentBuffer, &error), error);
     requireOk(rachis_buffer_destroy(device.get(), countBuffer, &error), error);
     if (taskShaders)
