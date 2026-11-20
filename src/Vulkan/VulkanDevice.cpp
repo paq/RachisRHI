@@ -704,7 +704,7 @@ namespace rachis::vulkan
                 "calibrateQueueClock requested a queue that was not created.",
             });
         }
-        return queries_.calibrateQueueClock(record_.physical, queueType, record_);
+        return observe(queries_.calibrateQueueClock(record_.physical, queueType, record_));
     }
 
     DiagnosticCounts VulkanDevice::diagnosticCounts() const noexcept

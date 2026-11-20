@@ -3293,9 +3293,30 @@ namespace
             REQUIRE(capabilities.has_value());
             if (!capabilities->sharedTimelineHandles)
             {
-                SKIP("The device cannot share a timeline with itself to hold a point back.");
+                SKIP("The device cannot import a shared timeline to hold a point back.");
             }
-            auto pool = native_->createCommandPool({
+#if RACHIS_CABI_FAULT_BACKEND_VULKAN
+            auto created = rachis::createDevice(rachis::DeviceDesc{
+                .backend = rachis::Backend::d3d12,
+                .adapterPreference = rachis::AdapterPreference::highPerformance,
+            });
+            if (!created)
+            {
+                SKIP("A Vulkan point is held back behind a Direct3D 12 fence, and no Direct3D 12 device opened.");
+            }
+            const auto consumerAdapter = native_->adapterInfo();
+            const auto producerAdapter = created->adapterInfo();
+            if (!consumerAdapter || !producerAdapter || consumerAdapter->vendorId != producerAdapter->vendorId ||
+                consumerAdapter->deviceId != producerAdapter->deviceId)
+            {
+                SKIP("The Direct3D 12 producer and the Vulkan device use different adapters.");
+            }
+            producerDevice_ = std::move(*created);
+            producer_ = &producerDevice_;
+#else
+            producer_ = native_;
+#endif
+            auto pool = producer_->createCommandPool({
                 .queueType = rachis::QueueType::compute,
                 .maxCommandBuffers = 4,
                 .label = "C ABI held timeline producer",
@@ -3304,7 +3325,7 @@ namespace
             pool_ = *pool;
             auto first = submitProducer();
             REQUIRE(first.has_value());
-            auto shared = native_->exportTimelinePoint(*first);
+            auto shared = producer_->exportTimelinePoint(*first);
             REQUIRE(shared.has_value());
             auto held = native_->enqueueSharedTimelineWait(
                 rachis::QueueType::graphics, {.handle = shared->handle.view(), .value = shared->value + 1});
@@ -3326,10 +3347,14 @@ namespace
 #if RACHIS_CABI_FAULT_BACKEND_METAL
             static_cast<void>(rachis_command_pool_destroy(device_, pool_, &error));
 #else
-            if (native_ != nullptr && pool_.isValid())
+            if (native_ != nullptr)
             {
                 static_cast<void>(native_->waitIdle());
-                static_cast<void>(native_->destroyCommandPool(pool_));
+            }
+            if (producer_ != nullptr && pool_.isValid())
+            {
+                static_cast<void>(producer_->waitIdle());
+                static_cast<void>(producer_->destroyCommandPool(pool_));
             }
 #endif
         }
@@ -3362,12 +3387,12 @@ namespace
         {
             try
             {
-                auto command = native_->acquireCommandBuffer(pool_);
+                auto command = producer_->acquireCommandBuffer(pool_);
                 if (!command)
                 {
                     return std::unexpected(std::move(command.error()));
                 }
-                return native_->submit(std::move(*command));
+                return producer_->submit(std::move(*command));
             }
             catch (...)
             {
@@ -3384,6 +3409,8 @@ namespace
         std::shared_ptr<rachis::metal::MetalCommitFeedbackGate> gate_;
 #else
         rachis::Device* native_ = nullptr;
+        rachis::Device* producer_ = nullptr;
+        rachis::Device producerDevice_;
         rachis::CommandPoolHandle pool_ = {};
 #endif
     };
