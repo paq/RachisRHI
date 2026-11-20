@@ -377,9 +377,28 @@ namespace rachis::metal
             return std::nullopt;
         }
 
-        [[nodiscard]] Result<std::vector<MetalReflectedResource>> parseArgumentBufferAnnotations(NSDictionary* root)
+        struct ArgumentBufferAnnotation final
         {
-            std::vector<MetalReflectedResource> arrays;
+            MetalReflectedResource resource;
+            bool entryPoint = false;
+        };
+
+        [[nodiscard]] std::optional<bool> argumentBufferScope(id flag)
+        {
+            if (flag == nil)
+            {
+                return false;
+            }
+            if (![flag isKindOfClass:[NSNumber class]] || CFGetTypeID((__bridge CFTypeRef)flag) != CFBooleanGetTypeID())
+            {
+                return std::nullopt;
+            }
+            return [flag boolValue] == YES;
+        }
+
+        [[nodiscard]] Result<std::vector<ArgumentBufferAnnotation>> parseArgumentBufferAnnotations(NSDictionary* root)
+        {
+            std::vector<ArgumentBufferAnnotation> arrays;
             if (root[@"rachisArgumentBuffers"] == nil)
             {
                 return arrays;
@@ -398,26 +417,33 @@ namespace rachis::metal
                 const auto binding = uintValue(annotation[@"binding"]);
                 const auto index = uintValue(annotation[@"index"]);
                 const auto capacity = uintValue(annotation[@"capacity"]);
+                const auto entryPoint = argumentBufferScope(annotation[@"entryPoint"]);
                 const char* const utf8 = name != nil ? name.UTF8String : nullptr;
-                if (utf8 == nullptr || !type || !set || !binding || !index || !capacity || *set >= maxBindingSets ||
-                    *index >= 31 || *capacity == 0)
+                if (utf8 == nullptr || !type || !set || !binding || !index || !capacity || !entryPoint ||
+                    *set >= maxBindingSets || *index >= 31 || *capacity == 0)
                 {
                     return std::unexpected(manifestError("Metal rachisArgumentBuffers entries are malformed."));
                 }
-                if (std::ranges::any_of(arrays,
-                                        [&](const MetalReflectedResource& other) { return other.name == utf8; }))
+                if (std::ranges::any_of(arrays, [&](const ArgumentBufferAnnotation& other) {
+                        return other.resource.name == utf8 && other.entryPoint == *entryPoint;
+                    }))
                 {
-                    return std::unexpected(manifestError("Metal rachisArgumentBuffers entries repeat a name."));
+                    return std::unexpected(
+                        manifestError("Metal rachisArgumentBuffers entries repeat a name in one scope."));
                 }
-                arrays.push_back(MetalReflectedResource{
-                    .name = utf8,
-                    .type = *type,
-                    .metalIndex = *index,
-                    .count = unboundedBindingCount,
-                    .set = *set,
-                    .binding = *binding,
-                    .argumentBuffer = true,
-                    .argumentCapacity = *capacity,
+                arrays.push_back(ArgumentBufferAnnotation{
+                    .resource =
+                        MetalReflectedResource{
+                            .name = utf8,
+                            .type = *type,
+                            .metalIndex = *index,
+                            .count = unboundedBindingCount,
+                            .set = *set,
+                            .binding = *binding,
+                            .argumentBuffer = true,
+                            .argumentCapacity = *capacity,
+                        },
+                    .entryPoint = *entryPoint,
                 });
             }
             return arrays;
@@ -892,23 +918,39 @@ namespace rachis::metal
                 return std::unexpected(std::move(argumentBuffers.error()));
             }
 
-            std::vector<std::string> activeArrays;
-            const auto annotatedArray = [&](const char* name) -> const MetalReflectedResource* {
-                if (name == nullptr)
+            std::vector<bool> activeArrays(argumentBuffers->size(), false);
+            const auto annotatedArray = [&](NSString* name, bool entryPoint) -> std::optional<std::size_t> {
+                const char* const utf8 = name != nil ? name.UTF8String : nullptr;
+                if (utf8 == nullptr)
                 {
-                    return nullptr;
+                    return std::nullopt;
                 }
-                const auto found = std::ranges::find_if(
-                    *argumentBuffers, [&](const MetalReflectedResource& array) { return array.name == name; });
-                return found != argumentBuffers->end() ? &*found : nullptr;
+                for (std::size_t index = 0; index < argumentBuffers->size(); ++index)
+                {
+                    const auto& annotation = (*argumentBuffers)[index];
+                    if (annotation.entryPoint == entryPoint && annotation.resource.name == utf8)
+                    {
+                        return index;
+                    }
+                }
+                return std::nullopt;
             };
-            const auto activateArray = [&](NSDictionary* parameter, const MetalReflectedResource& array) -> Status {
-                if (auto valid = validateArgumentBufferParameter(parameter, array); !valid)
+            const auto activateArray = [&](NSDictionary* parameter, std::size_t index) -> Status {
+                if (auto valid = validateArgumentBufferParameter(parameter, (*argumentBuffers)[index].resource);
+                    !valid)
                 {
                     return valid;
                 }
-                activeArrays.push_back(array.name);
+                activeArrays[index] = true;
                 return {};
+            };
+            const auto activateUsedArray = [&](NSDictionary* parameter, std::size_t index) -> Status {
+                auto used = activeBindingIsUsed(parameter);
+                if (!used)
+                {
+                    return std::unexpected(std::move(used.error()));
+                }
+                return *used ? activateArray(parameter, index) : Status{};
             };
             for (id item in array(entry[@"bindings"]))
             {
@@ -923,7 +965,7 @@ namespace rachis::metal
                 {
                     continue;
                 }
-                if (const auto* annotated = annotatedArray(activeName != nil ? activeName.UTF8String : nullptr))
+                if (const auto annotated = annotatedArray(activeName, false))
                 {
                     NSDictionary* parameter = findNamedParameter(array(root[@"parameters"]), activeName);
                     if (parameter == nil)
@@ -945,33 +987,42 @@ namespace rachis::metal
             {
                 NSDictionary* const parameter = dictionary(item);
                 NSString* const parameterName = string(parameter[@"name"]);
-                const auto* annotated = annotatedArray(parameterName != nil ? parameterName.UTF8String : nullptr);
-                if (annotated == nullptr || std::ranges::find(activeArrays, annotated->name) != activeArrays.end())
+                auto annotated = annotatedArray(parameterName, true);
+                if (!annotated)
+                {
+                    annotated = annotatedArray(parameterName, false);
+                }
+                if (!annotated || activeArrays[*annotated])
                 {
                     continue;
                 }
-                auto used = activeBindingIsUsed(parameter);
-                if (!used)
-                {
-                    return std::unexpected(std::move(used.error()));
-                }
-                if (!*used)
-                {
-                    continue;
-                }
-                if (auto activated = activateArray(parameter, *annotated); !activated)
+                if (auto activated = activateUsedArray(parameter, *annotated); !activated)
                 {
                     return std::unexpected(std::move(activated.error()));
                 }
             }
-            const bool entryListsBindings = array(entry[@"bindings"]) != nil;
-            for (auto& array : *argumentBuffers)
+            if (array(entry[@"bindings"]) == nil)
             {
-                if (entryListsBindings && std::ranges::find(activeArrays, array.name) == activeArrays.end())
+                for (id item in array(root[@"parameters"]))
                 {
-                    continue;
+                    NSDictionary* const parameter = dictionary(item);
+                    const auto annotated = annotatedArray(string(parameter[@"name"]), false);
+                    if (!annotated || activeArrays[*annotated])
+                    {
+                        continue;
+                    }
+                    if (auto activated = activateUsedArray(parameter, *annotated); !activated)
+                    {
+                        return std::unexpected(std::move(activated.error()));
+                    }
                 }
-                layout.resources.push_back(std::move(array));
+            }
+            for (std::size_t index = 0; index < argumentBuffers->size(); ++index)
+            {
+                if (activeArrays[index])
+                {
+                    layout.resources.push_back(std::move((*argumentBuffers)[index].resource));
+                }
             }
             return layout;
         }

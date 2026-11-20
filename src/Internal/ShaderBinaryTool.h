@@ -67,6 +67,7 @@ namespace rachis::shader_tool
         std::uint32_t binding = 0;
         std::uint32_t metalIndex = 0;
         std::uint32_t capacity = 0;
+        bool entryPoint = false;
     };
 
     namespace detail
@@ -1734,7 +1735,8 @@ namespace rachis::shader_tool
             text += array.resourceType;
             text += "\", \"set\": " + std::to_string(array.set) + ", \"binding\": " + std::to_string(array.binding) +
                     ", \"index\": " + std::to_string(array.metalIndex) +
-                    ", \"capacity\": " + std::to_string(array.capacity) + "}";
+                    ", \"capacity\": " + std::to_string(array.capacity) +
+                    (array.entryPoint ? ", \"entryPoint\": true}" : "}");
         }
     } // namespace detail
 
@@ -2596,6 +2598,7 @@ namespace rachis::shader_tool
             std::string name;
             const detail::JsonValue* metal = nullptr;
             const detail::JsonValue* spirv = nullptr;
+            bool entryPoint = false;
         };
         std::vector<ResolvedArray> resolved;
         resolved.reserve(parameters.size());
@@ -2611,6 +2614,7 @@ namespace rachis::shader_tool
                 if (found.metal != nullptr && found.spirv != nullptr)
                 {
                     found.name = std::string(entryName);
+                    found.entryPoint = true;
                 }
             }
             if (found.metal == nullptr || found.spirv == nullptr)
@@ -2664,6 +2668,7 @@ namespace rachis::shader_tool
                 .metalIndex = static_cast<std::uint32_t>(std::distance(occupied.begin(), free)),
                 .capacity =
                     *resourceType == "sampler" ? metalArgumentBufferSamplerLimit : metalArgumentBufferResourceLimit,
+                .entryPoint = resolved[index].entryPoint,
             });
         }
         return arrays;
