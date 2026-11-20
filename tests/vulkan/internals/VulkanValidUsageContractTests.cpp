@@ -4862,6 +4862,85 @@ TEST_CASE("Vulkan publishes update-after-bind binding arrays with exactly the up
     }
 }
 
+namespace
+{
+
+    thread_local VkSubgroupFeatureFlags gMockSubgroupOperations = 0;
+
+    VKAPI_ATTR void VKAPI_CALL mockGetSubgroupProperties2(VkPhysicalDevice physical,
+                                                          VkPhysicalDeviceProperties2* pProperties)
+    {
+        mockGetPhysicalDeviceProperties(physical, &pProperties->properties);
+        for (auto* next = static_cast<VkBaseOutStructure*>(pProperties->pNext); next != nullptr; next = next->pNext)
+        {
+            if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES)
+            {
+                auto* v11 = reinterpret_cast<VkPhysicalDeviceVulkan11Properties*>(next);
+                v11->subgroupSize = 32;
+                v11->subgroupSupportedStages = VK_SHADER_STAGE_COMPUTE_BIT;
+                v11->subgroupSupportedOperations = gMockSubgroupOperations;
+            }
+            else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES)
+            {
+                auto* v13 = reinterpret_cast<VkPhysicalDeviceVulkan13Properties*>(next);
+                v13->minSubgroupSize = 16;
+                v13->maxSubgroupSize = 64;
+                v13->maxComputeWorkgroupSubgroups = 64;
+                v13->requiredSubgroupSizeStages = VK_SHADER_STAGE_COMPUTE_BIT;
+            }
+        }
+    }
+
+    VKAPI_ATTR void VKAPI_CALL mockGetSubgroupSizeControlFeatures2(VkPhysicalDevice,
+                                                                   VkPhysicalDeviceFeatures2* pFeatures)
+    {
+        for (auto* next = static_cast<VkBaseOutStructure*>(pFeatures->pNext); next != nullptr; next = next->pNext)
+        {
+            if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES)
+            {
+                auto* v13 = reinterpret_cast<VkPhysicalDeviceVulkan13Features*>(next);
+                v13->subgroupSizeControl = VK_TRUE;
+                v13->computeFullSubgroups = VK_TRUE;
+            }
+        }
+    }
+
+} // namespace
+
+TEST_CASE("Vulkan publishes required compute subgroup sizes whether or not the device has subgroup arithmetic",
+          "[size:small][rhi][vulkan][vuid]")
+{
+    rachis::vulkan::VulkanInstanceTable instanceTable{};
+    instanceTable.vkEnumeratePhysicalDevices = &mockEnumeratePhysicalDevices;
+    instanceTable.vkGetPhysicalDeviceProperties = &mockGetPhysicalDeviceProperties;
+    instanceTable.vkGetPhysicalDeviceProperties2 = &mockGetSubgroupProperties2;
+    instanceTable.vkGetPhysicalDeviceMemoryProperties = &mockGetPhysicalDeviceMemoryProperties;
+    instanceTable.vkGetPhysicalDeviceFeatures2 = &mockGetSubgroupSizeControlFeatures2;
+    instanceTable.vkEnumerateDeviceExtensionProperties = &mockEnumerateDeviceExtensionProperties;
+    instanceTable.vkGetPhysicalDeviceQueueFamilyProperties = &mockGetPhysicalDeviceQueueFamilyProperties;
+    const auto publish = [&](VkSubgroupFeatureFlags operations) {
+        gMockSubgroupOperations = operations;
+        auto records = rachis::vulkan::discoverVulkanPhysicalDevices(
+            fakeHandle<VkInstance>(0x13), instanceTable, rachis::VulkanInstanceReport{.apiMajor = 1, .apiMinor = 3});
+        gMockSubgroupOperations = 0;
+        REQUIRE(records.has_value());
+        REQUIRE(records->size() == 1);
+        return rachis::vulkan::publishVulkanCapabilities(instanceTable, records->front(), false);
+    };
+
+    for (const VkSubgroupFeatureFlags operations :
+         {VkSubgroupFeatureFlags{VK_SUBGROUP_FEATURE_BASIC_BIT},
+          VkSubgroupFeatureFlags{VK_SUBGROUP_FEATURE_BASIC_BIT | VK_SUBGROUP_FEATURE_ARITHMETIC_BIT}})
+    {
+        CAPTURE(operations);
+        const auto capabilities = publish(operations);
+        CHECK(capabilities.subgroupOperations == ((operations & VK_SUBGROUP_FEATURE_ARITHMETIC_BIT) != 0));
+        CHECK(capabilities.subgroup.requiredSizeStages == rachis::ShaderStage::compute);
+        CHECK(capabilities.subgroup.minSize == 16);
+        CHECK(capabilities.subgroup.maxSize == 64);
+    }
+}
+
 TEST_CASE("Vulkan update-after-bind sets come from an update-after-bind pool and change in place while bound",
           "[size:small][rhi][vulkan][vuid][bindings-mock]")
 {

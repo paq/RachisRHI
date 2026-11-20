@@ -1721,9 +1721,9 @@ namespace rachis::vulkan
                 properties.v13.minSubgroupSize != 0 ? properties.v13.minSubgroupSize : properties.v11.subgroupSize;
             const auto maxSubgroup =
                 properties.v13.maxSubgroupSize != 0 ? properties.v13.maxSubgroupSize : properties.v11.subgroupSize;
-            record.subgroupOperations =
-                computeSubgroups && portableSubgroupOps && minSubgroup > 0 && maxSubgroup >= minSubgroup;
-            if (record.subgroupOperations)
+            const bool validSizes = minSubgroup > 0 && maxSubgroup >= minSubgroup;
+            record.subgroupOperations = computeSubgroups && portableSubgroupOps && validSizes;
+            if (validSizes)
             {
                 record.subgroupMinSize = minSubgroup;
                 record.subgroupMaxSize = maxSubgroup;
@@ -3083,10 +3083,10 @@ namespace rachis::vulkan
             capabilities.shaderInt64AtomicTypedResource = record.shaderInt64 && record.shaderImageInt64Atomics;
             capabilities.shaderInt64AtomicStorageBuffer = record.shaderInt64 && record.shaderBufferInt64Atomics;
             capabilities.subgroupOperations = record.subgroupOperations;
-            if (capabilities.subgroupOperations)
+            const bool requiredComputeSize = record.subgroupSizeControl && record.subgroupMinSize > 0 &&
+                                             (record.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
+            if (capabilities.subgroupOperations || requiredComputeSize)
             {
-                const bool requiredComputeSize = record.subgroupSizeControl &&
-                                                 (record.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
                 capabilities.subgroup = {
                     .minSize = record.subgroupMinSize,
                     .maxSize = record.subgroupMaxSize,

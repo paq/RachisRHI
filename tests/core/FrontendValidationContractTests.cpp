@@ -2150,14 +2150,18 @@ TEST_CASE("Device frontend checks a required subgroup size against the device an
 
     raw->caps.subgroup.requiredSizeStages = ShaderStage::none;
     checkRejected(16, ErrorCode::unsupported, "This device cannot require a subgroup size for compute pipelines.");
+    CHECK(raw->backendInvocations == 4);
     raw->caps.subgroup.requiredSizeStages = ShaderStage::compute;
     raw->caps.subgroupOperations = false;
-    checkRejected(16, ErrorCode::unsupported, "This device cannot require a subgroup size for compute pipelines.");
-    CHECK(raw->backendInvocations == 4);
+    const ComputePipelineDesc withoutSubgroupOperations{.requiredSubgroupSize = 16};
+    CHECK(device.createComputePipeline(withoutSubgroupOperations).has_value());
+    CHECK(device.beginComputePipelineCompilation(withoutSubgroupOperations).has_value());
+    CHECK(raw->backendInvocations == 6);
 
+    raw->caps.subgroup.requiredSizeStages = ShaderStage::none;
     raw->state = DeviceOperationalState::lost;
     const auto lost = device.createComputePipeline(ComputePipelineDesc{.requiredSubgroupSize = 16});
     REQUIRE_FALSE(lost.has_value());
     CHECK(lost.error().code == ErrorCode::deviceLost);
-    CHECK(raw->backendInvocations == 4);
+    CHECK(raw->backendInvocations == 6);
 }
