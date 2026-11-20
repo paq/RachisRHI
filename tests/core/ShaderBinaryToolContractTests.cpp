@@ -2217,6 +2217,53 @@ struct KernelContext_0
 #endif
 }
 
+TEST_CASE("ShaderBinaryTool rejects a Metal resource or unbounded array in a binding set above 3",
+          "[size:small][rhi][shader][tooling]")
+{
+    constexpr std::string_view source = R"msl(#include <metal_stdlib>
+using namespace metal;
+[[kernel]] void farMain(float device* outputs_0 [[buffer(0)]], texture2d<float, access::read>  textures_0[])
+{
+    *outputs_0 = textures_0[1].read(uint2(0U, 0U)).x;
+}
+)msl";
+    const auto spirvJson = [](std::string_view space) {
+        return R"({"parameters": [
+        {"name": "outputs", "binding": {"kind": "descriptorTableSlot", "index": 0}},
+        {"name": "textures", "binding": {"kind": "descriptorTableSlot", "space": )" +
+               std::string(space) + R"(, "index": 0}}]})";
+    };
+    constexpr std::string_view metalJson = R"({"parameters": [
+        {"name": "outputs", "binding": {"kind": "constantBuffer", "index": 0},
+         "type": {"kind": "resource", "baseShape": "structuredBuffer", "access": "readWrite"}},
+        {"name": "textures", "binding": {"kind": "shaderResource", "index": 0, "count": 0},
+         "type": {"kind": "array", "elementCount": 0, "elementType": {"kind": "resource", "baseShape": "texture2D"}}}]})";
+    REQUIRE(rachis::shader_tool::planMetalArgumentBufferArrays(source, spirvJson("3"), metalJson).has_value());
+    REQUIRE(rachis::shader_tool::planMetalShaderBindings(spirvJson("3"), metalJson).has_value());
+    for (const std::string_view space : {std::string_view{"6"}, std::string_view{"12"}})
+    {
+        CAPTURE(space);
+        const auto planned = rachis::shader_tool::planMetalArgumentBufferArrays(source, spirvJson(space), metalJson);
+        REQUIRE_FALSE(planned.has_value());
+        CHECK(planned.error().contains("'textures' is in binding set " + std::string(space)));
+        const auto cookPlan = rachis::shader_tool::planMetalShaderBindings(spirvJson(space), metalJson);
+        REQUIRE_FALSE(cookPlan.has_value());
+        CHECK(cookPlan.error().contains("binding sets are 0 to 3"));
+    }
+
+    constexpr std::string_view plainSpirvJson = R"({"parameters": [
+        {"name": "outputs", "binding": {"kind": "descriptorTableSlot", "index": 0}},
+        {"name": "farTexture", "binding": {"kind": "descriptorTableSlot", "space": 6, "index": 0}}]})";
+    constexpr std::string_view plainMetalJson = R"({"parameters": [
+        {"name": "outputs", "binding": {"kind": "constantBuffer", "index": 0},
+         "type": {"kind": "resource", "baseShape": "structuredBuffer", "access": "readWrite"}},
+        {"name": "farTexture", "binding": {"kind": "shaderResource", "index": 0},
+         "type": {"kind": "resource", "baseShape": "texture2D"}}]})";
+    const auto plain = rachis::shader_tool::planMetalShaderBindings(plainSpirvJson, plainMetalJson);
+    REQUIRE_FALSE(plain.has_value());
+    CHECK(plain.error().contains("The resource 'farTexture' is in binding set 6"));
+}
+
 TEST_CASE("ShaderBinaryTool gives an unbounded array the buffer slot its reflection reports",
           "[size:small][rhi][shader][tooling]")
 {

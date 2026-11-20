@@ -49,6 +49,7 @@ namespace rachis::shader_tool
     inline constexpr std::uint32_t metalArgumentBufferResourceLimit = 500'000;
     inline constexpr std::uint32_t metalArgumentBufferSamplerLimit = 1024;
     inline constexpr std::uint32_t metalArgumentTableBufferSlots = 31;
+    inline constexpr std::uint32_t metalPortableBindingSets = 4;
 
     struct MetalUnboundedArrayParameter final
     {
@@ -1338,6 +1339,16 @@ namespace rachis::shader_tool
             }
         }
 
+        [[nodiscard]] inline std::string metalBindingSetLimitError(std::string_view kind,
+                                                                   std::string_view name,
+                                                                   std::uint32_t set)
+        {
+            return "The " + std::string(kind) + " '" + std::string(name) + "' is in binding set " +
+                   std::to_string(set) +
+                   ". RachisRHI binding sets are 0 to 3; register space 4 is reserved for push constants and space 5 "
+                   "for the draw index.";
+        }
+
     } // namespace detail
 
     [[nodiscard]] inline std::expected<MetalCookPlan, std::string> planMetalShaderBindings(
@@ -1370,6 +1381,10 @@ namespace rachis::shader_tool
         plan.bindings.reserve(candidates.size());
         for (const auto& item : candidates)
         {
+            if (!item.pushConstant && !item.drawIndex && item.logicalSet >= metalPortableBindingSets)
+            {
+                return std::unexpected(detail::metalBindingSetLimitError("resource", item.metal.name, item.logicalSet));
+            }
             plan.bindings.push_back(MetalLogicalParameterBinding{
                 .name = item.metal.name,
                 .pushConstant = item.pushConstant,
@@ -2649,6 +2664,11 @@ namespace rachis::shader_tool
             {
                 return std::unexpected("The unbounded Metal resource array '" + name +
                                        "' has an unsupported element type or binding.");
+            }
+            if (slot->set >= metalPortableBindingSets)
+            {
+                return std::unexpected(
+                    detail::metalBindingSetLimitError("unbounded Metal resource array", name, slot->set));
             }
             const auto free = std::ranges::find(occupied, false);
             if (free == occupied.end())
