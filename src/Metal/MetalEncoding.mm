@@ -1886,7 +1886,8 @@ namespace rachis::metal
             return validated;
         }
         const auto& pipeline = *entry->boundComputePipeline;
-        if (auto valid = metalValidateStageResources(device, pipeline.computeStageBindings, entry->boundComputeVersions);
+        if (auto valid =
+                metalValidateStageResources(device, pipeline.computeStageBindings, entry->boundComputeVersions);
             !valid)
         {
             return valid;

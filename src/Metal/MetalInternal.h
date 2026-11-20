@@ -625,8 +625,9 @@ namespace rachis::metal
 
     [[nodiscard]] inline bool metalMeshRecordsNeedSeparator(const MetalPipelineRecord& pipeline) noexcept
     {
-        return pipeline.mesh && (!metalStageReadsArgumentTable(pipeline.meshStageBindings) ||
-                                 (pipeline.hasObjectShader && !metalStageReadsArgumentTable(pipeline.objectStageBindings)));
+        return pipeline.mesh &&
+               (!metalStageReadsArgumentTable(pipeline.meshStageBindings) ||
+                (pipeline.hasObjectShader && !metalStageReadsArgumentTable(pipeline.objectStageBindings)));
     }
 
     struct MetalBoundBuffer final

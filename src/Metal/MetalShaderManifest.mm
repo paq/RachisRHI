@@ -936,8 +936,7 @@ namespace rachis::metal
                 return std::nullopt;
             };
             const auto activateArray = [&](NSDictionary* parameter, std::size_t index) -> Status {
-                if (auto valid = validateArgumentBufferParameter(parameter, (*argumentBuffers)[index].resource);
-                    !valid)
+                if (auto valid = validateArgumentBufferParameter(parameter, (*argumentBuffers)[index].resource); !valid)
                 {
                     return valid;
                 }

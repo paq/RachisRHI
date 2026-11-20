@@ -2206,10 +2206,10 @@ struct KernelContext_0
     });
     CHECK(arrays == 2);
     const std::array requirements{
-        rachis::ShaderBindingRequirement{0, 0, rachis::ShaderResourceType::readOnlyStorageBuffer,
-                                         rachis::unboundedBindingCount},
-        rachis::ShaderBindingRequirement{1, 0, rachis::ShaderResourceType::readOnlyStorageBuffer,
-                                         rachis::unboundedBindingCount},
+        rachis::ShaderBindingRequirement{
+            0, 0, rachis::ShaderResourceType::readOnlyStorageBuffer, rachis::unboundedBindingCount},
+        rachis::ShaderBindingRequirement{
+            1, 0, rachis::ShaderResourceType::readOnlyStorageBuffer, rachis::unboundedBindingCount},
         rachis::ShaderBindingRequirement{2, 0, rachis::ShaderResourceType::storageBuffer, 1},
     };
     CHECK(rachis::metal::validateShaderInterface(

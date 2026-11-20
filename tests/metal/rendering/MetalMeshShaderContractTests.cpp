@@ -747,10 +747,10 @@ TEST_CASE("Metal mesh pipelines dispatch directly and indirectly with and withou
                     auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::graphics);
                     REQUIRE(command.has_value());
                     beginMeshRendering(device, *command, target);
-                    REQUIRE(device
-                                .bindGraphicsPipeline(*command,
-                                                      taskStage ? *bindingFreeTaskPipeline : *bindingFreePipeline)
-                                .has_value());
+                    REQUIRE(
+                        device
+                            .bindGraphicsPipeline(*command, taskStage ? *bindingFreeTaskPipeline : *bindingFreePipeline)
+                            .has_value());
                     if (taskStage)
                     {
                         REQUIRE(device.bindGraphicsBindingSet(*command, 0, *bindingSet).has_value());
@@ -777,12 +777,12 @@ TEST_CASE("Metal mesh pipelines dispatch directly and indirectly with and withou
                     else
                     {
                         REQUIRE(device
-                                    .dispatchMeshIndirect(*command,
-                                                          {
-                                                              .argumentBuffer = *recordBuffer,
-                                                              .maxDispatchCount = static_cast<std::uint32_t>(
-                                                                  recordCase.records.size()),
-                                                          })
+                                    .dispatchMeshIndirect(
+                                        *command,
+                                        {
+                                            .argumentBuffer = *recordBuffer,
+                                            .maxDispatchCount = static_cast<std::uint32_t>(recordCase.records.size()),
+                                        })
                                     .has_value());
                     }
                     finishMeshRendering(device, std::move(*command), target);
