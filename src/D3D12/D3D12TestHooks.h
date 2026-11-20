@@ -63,6 +63,12 @@ namespace rachis::d3d12::test
         return s_value;
     }
 
+    [[nodiscard]] inline std::atomic_uint64_t& inPlaceResidencyGatherCount() noexcept
+    {
+        static std::atomic_uint64_t s_value = 0;
+        return s_value;
+    }
+
     [[nodiscard]] inline std::atomic_bool& nextSubmissionCloseFailure() noexcept
     {
         static std::atomic_bool s_value = false;
@@ -141,6 +147,12 @@ namespace rachis::d3d12::test
     }
 
     [[nodiscard]] inline std::atomic_bool& nextSparseMappingSignalFailure() noexcept
+    {
+        static std::atomic_bool s_value = false;
+        return s_value;
+    }
+
+    [[nodiscard]] inline std::atomic_bool& nextLegacyOrderedStateCopyFailure() noexcept
     {
         static std::atomic_bool s_value = false;
         return s_value;
@@ -229,6 +241,18 @@ namespace rachis::d3d12::test
     [[nodiscard]] inline StorageTextureClearSnapshot& lastStorageTextureClear() noexcept
     {
         static thread_local StorageTextureClearSnapshot s_value;
+        return s_value;
+    }
+
+    struct InPlaceReplacedStorage final
+    {
+        std::size_t count = 0;
+        std::size_t capacity = 0;
+    };
+
+    [[nodiscard]] inline InPlaceReplacedStorage& lastInPlaceReplacedStorage() noexcept
+    {
+        static thread_local InPlaceReplacedStorage s_value;
         return s_value;
     }
 

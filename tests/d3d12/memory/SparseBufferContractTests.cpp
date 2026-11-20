@@ -4,6 +4,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
@@ -606,6 +607,152 @@ TEST_CASE("sparse buffer remaps slice leases whose retired ancestors are still r
         enqueue(std::array{unmap(1, 2)});
         remapFreedTilesAfterRetirement(std::array{map(1, 2)});
     }
+}
+
+TEST_CASE("acceleration-structure serialization into a sparse buffer retains the buffer's mapping generation",
+          "[size:medium][rhi][buffer][sparse][mapping][ray-query][warp]")
+{
+    auto created = rachis::createDevice(rachis::DeviceDesc{
+        .adapterPreference = rachis::AdapterPreference::warp,
+        .validation = rachis::ValidationLevel::standard,
+        .requireValidation = false,
+        .enableDred = true,
+        .diagnosticCallback = &printDiagnostic,
+    });
+    REQUIRE(created.has_value());
+    auto device = std::move(*created);
+    const auto capabilities = rachis::test::requireCapabilities(device);
+    if (!capabilities.sparseBuffers || !capabilities.rayTracing)
+    {
+        SKIP("WARP reports no sparse buffers or no acceleration structures.");
+    }
+
+    const std::array vertices{
+        std::array{-1.0F, -1.0F, 0.0F},
+        std::array{0.0F, 1.0F, 0.0F},
+        std::array{1.0F, -1.0F, 0.0F},
+    };
+    auto vertexBuffer = device.createBuffer({
+        .size = sizeof(vertices),
+        .usage = rachis::BufferUsage::accelerationStructureBuildInput,
+        .memoryType = rachis::MemoryType::upload,
+    });
+    REQUIRE(vertexBuffer.has_value());
+    REQUIRE(device.writeBuffer(*vertexBuffer, 0, std::as_bytes(std::span(vertices))).has_value());
+    const std::array geometry{
+        rachis::AccelerationStructureGeometry{
+            .data =
+                rachis::AccelerationStructureTriangleGeometry{
+                    .vertexBuffer = *vertexBuffer,
+                    .vertexCount = 3,
+                    .vertexStride = sizeof(vertices[0]),
+                    .vertexFormat = rachis::AccelerationStructureVertexFormat::float32x3,
+                },
+            .flags = rachis::AccelerationStructureGeometryFlag::opaque,
+        },
+    };
+    const rachis::BottomLevelAccelerationStructureBuildInput input{.geometries = geometry};
+    const auto sizes = device.queryBottomLevelAccelerationStructureBuildSizes(input);
+    REQUIRE(sizes.has_value());
+    auto storage = device.createBuffer({
+        .size = sizes->accelerationStructureSize,
+        .usage = rachis::BufferUsage::accelerationStructureStorage,
+        .memoryType = rachis::MemoryType::deviceLocal,
+    });
+    auto scratch = device.createBuffer({
+        .size = (std::max)(sizes->buildScratchSize, std::uint64_t{256}),
+        .usage = rachis::BufferUsage::accelerationStructureScratch,
+        .memoryType = rachis::MemoryType::deviceLocal,
+    });
+    REQUIRE(storage.has_value());
+    REQUIRE(scratch.has_value());
+    auto bottomLevel = device.createAccelerationStructure({
+        .type = rachis::AccelerationStructureType::bottomLevel,
+        .storage = *storage,
+    });
+    REQUIRE(bottomLevel.has_value());
+    {
+        auto build = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+        REQUIRE(build.has_value());
+        REQUIRE(device
+                    .buildBottomLevelAccelerationStructure(
+                        *build, {.destination = *bottomLevel, .input = input, .scratch = *scratch})
+                    .has_value());
+        auto built = device.submit(std::move(*build));
+        REQUIRE(built.has_value());
+        REQUIRE(device.wait(*built).has_value());
+    }
+
+    constexpr std::uint64_t tileSize = 64ULL * 1024ULL;
+    const rachis::BufferDesc archiveDesc{
+        .size = tileSize,
+        .usage = rachis::BufferUsage::storage | rachis::BufferUsage::copySource,
+        .memoryType = rachis::MemoryType::deviceLocal,
+        .label = "Sparse acceleration-structure archive",
+    };
+    const auto archive = device.createSparseBuffer(archiveDesc);
+    const auto unmapped = device.createSparseBuffer(archiveDesc);
+    const auto heap = device.createResourceHeap({
+        .size = tileSize * 2,
+        .memoryType = rachis::MemoryType::deviceLocal,
+        .resourceClass = rachis::ResourceHeapClass::buffer,
+        .flags = rachis::ResourceHeapFlag::sparseBacking,
+    });
+    REQUIRE(archive.has_value());
+    REQUIRE(unmapped.has_value());
+    REQUIRE(heap.has_value());
+    const auto mapTo = [&](std::uint32_t heapTile) {
+        return std::array{rachis::SparseBufferTileMapping{
+            .buffer = *archive,
+            .bufferTileOffset = 0,
+            .tileCount = 1,
+            .heap = *heap,
+            .heapTileOffset = heapTile,
+        }};
+    };
+    const auto mapped = device.enqueueSparseBufferMappings(rachis::QueueType::graphics, mapTo(0));
+    REQUIRE(mapped.has_value());
+    REQUIRE(device.wait(*mapped).has_value());
+
+    {
+        auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::compute);
+        REQUIRE(command.has_value());
+        const auto unmappedSerialization = device.serializeAccelerationStructure(
+            *command, {.source = *bottomLevel, .destination = *unmapped, .serializedSize = tileSize});
+        REQUIRE_FALSE(unmappedSerialization.has_value());
+        CHECK(unmappedSerialization.error().code == rachis::ErrorCode::invalidState);
+
+        const auto before = rachis::d3d12::test::commandDependencySnapshot(*command);
+        REQUIRE(before.has_value());
+        REQUIRE(device
+                    .serializeAccelerationStructure(
+                        *command, {.source = *bottomLevel, .destination = *archive, .serializedSize = tileSize})
+                    .has_value());
+        const auto after = rachis::d3d12::test::commandDependencySnapshot(*command);
+        REQUIRE(after.has_value());
+        CHECK(after->sparseMappingDependencies == before->sparseMappingDependencies + 1);
+
+        const auto remapped = device.enqueueSparseBufferMappings(rachis::QueueType::graphics, mapTo(1));
+        REQUIRE_FALSE(remapped.has_value());
+        CHECK(remapped.error().code == rachis::ErrorCode::invalidState);
+    }
+
+    const auto remapped = device.enqueueSparseBufferMappings(rachis::QueueType::graphics, mapTo(1));
+    REQUIRE(remapped.has_value());
+    REQUIRE(device.wait(*remapped).has_value());
+    device.collectGarbage();
+
+    REQUIRE(device.destroyBuffer(*archive).has_value());
+    REQUIRE(device.destroyBuffer(*unmapped).has_value());
+    REQUIRE(device.destroyResourceHeap(*heap).has_value());
+    REQUIRE(device.destroyAccelerationStructure(*bottomLevel).has_value());
+    REQUIRE(device.destroyBuffer(*scratch).has_value());
+    REQUIRE(device.destroyBuffer(*storage).has_value());
+    REQUIRE(device.destroyBuffer(*vertexBuffer).has_value());
+    device.collectGarbage();
+    const auto diagnostics = device.diagnosticCounts();
+    CHECK(diagnostics.errors == 0);
+    CHECK(diagnostics.corruptions == 0);
 }
 
 TEST_CASE("an unpublished sparse mapping generation cannot be copied or superseded",

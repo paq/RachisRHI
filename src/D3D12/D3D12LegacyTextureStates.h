@@ -294,11 +294,30 @@ namespace rachis::d3d12
         std::vector<std::uint8_t> layoutSet;
         std::vector<std::uint8_t> layoutEntryRequired;
         std::vector<TextureLayout> layoutEntry;
+        std::vector<TextureLayout> layoutEntryAlternative;
         std::vector<TextureLayout> layoutCurrent;
 
         [[nodiscard]] std::optional<TextureLayout> layoutLeft(std::uint32_t subresource) const noexcept
         {
             return layoutSet[subresource] != 0 ? std::optional{layoutCurrent[subresource]} : std::nullopt;
+        }
+
+        [[nodiscard]] bool entryAccepts(std::uint32_t subresource, TextureLayout layout) const noexcept
+        {
+            return layout != TextureLayout::undefined &&
+                   (layoutEntry[subresource] == layout || layoutEntryAlternative[subresource] == layout);
+        }
+
+        [[nodiscard]] std::optional<TextureLayout> earlierRequirement(std::uint32_t subresource,
+                                                                      TextureLayout layout,
+                                                                      TextureLayout alternative) const noexcept
+        {
+            if (layoutSet[subresource] != 0 || layoutEntryRequired[subresource] == 0 ||
+                entryAccepts(subresource, layout) || entryAccepts(subresource, alternative))
+            {
+                return std::nullopt;
+            }
+            return layoutEntry[subresource];
         }
 
         void recordLayout(std::uint32_t subresource, TextureLayout before, TextureLayout after) noexcept
@@ -310,9 +329,37 @@ namespace rachis::d3d12
                 {
                     layoutEntryRequired[subresource] = 1;
                     layoutEntry[subresource] = before;
+                    layoutEntryAlternative[subresource] = TextureLayout::undefined;
                 }
             }
             layoutCurrent[subresource] = after;
+        }
+
+        void requireLayout(std::uint32_t subresource, TextureLayout layout, TextureLayout alternative) noexcept
+        {
+            if (layoutSet[subresource] != 0)
+            {
+                return;
+            }
+            if (layoutEntryRequired[subresource] == 0)
+            {
+                layoutEntryRequired[subresource] = 1;
+                layoutEntry[subresource] = layout;
+                layoutEntryAlternative[subresource] = alternative;
+                return;
+            }
+            const auto accepted = [&](TextureLayout candidate) {
+                return candidate != TextureLayout::undefined && (candidate == layout || candidate == alternative);
+            };
+            if (accepted(layoutEntry[subresource]) && accepted(layoutEntryAlternative[subresource]))
+            {
+                return;
+            }
+            if (!accepted(layoutEntry[subresource]))
+            {
+                layoutEntry[subresource] = layoutEntryAlternative[subresource];
+            }
+            layoutEntryAlternative[subresource] = TextureLayout::undefined;
         }
     };
 
@@ -331,6 +378,7 @@ namespace rachis::d3d12
                     .layoutSet = std::vector<std::uint8_t>(count, 0),
                     .layoutEntryRequired = std::vector<std::uint8_t>(count, 0),
                     .layoutEntry = std::vector<TextureLayout>(count, TextureLayout::undefined),
+                    .layoutEntryAlternative = std::vector<TextureLayout>(count, TextureLayout::undefined),
                     .layoutCurrent = std::vector<TextureLayout>(count, TextureLayout::undefined),
                 };
             });
@@ -457,6 +505,33 @@ namespace rachis::d3d12
         };
     }
 
+    [[nodiscard]] inline std::string textureLayoutChoiceName(TextureLayout layout, TextureLayout alternative)
+    {
+        auto name = std::string(textureLayoutName(layout));
+        if (alternative != TextureLayout::undefined)
+        {
+            name += " or ";
+            name += textureLayoutName(alternative);
+        }
+        return name;
+    }
+
+    [[nodiscard]] inline Error textureLayoutRequirementMismatch(std::string_view operation,
+                                                                TextureLayout layout,
+                                                                TextureLayout alternative,
+                                                                TextureLayout current,
+                                                                std::uint32_t subresource,
+                                                                std::string_view where)
+    {
+        return Error{
+            ErrorCode::invalidState,
+            0,
+            std::string(operation) + " requires the " + textureLayoutChoiceName(layout, alternative) + " layout, but " +
+                std::string(where) + " subresource " + std::to_string(subresource) + " in " +
+                std::string(textureLayoutName(current)) + ".",
+        };
+    }
+
     [[nodiscard]] inline Status checkTextureLayoutEntries(
         std::span<const LegacyTextureStateRecording* const> recordings)
     {
@@ -488,8 +563,18 @@ namespace rachis::d3d12
                     {
                         const auto current = state.touched[subresource] != 0 ? state.layouts[subresource]
                                                                              : use.tracker->layoutLocked(subresource);
-                        if (current != externallyUnknownTextureLayout && current != use.layoutEntry[subresource])
+                        if (current != externallyUnknownTextureLayout && !use.entryAccepts(subresource, current))
                         {
+                            if (use.layoutEntryAlternative[subresource] != TextureLayout::undefined)
+                            {
+                                return std::unexpected(
+                                    textureLayoutRequirementMismatch("A copy in the command buffer",
+                                                                     use.layoutEntry[subresource],
+                                                                     use.layoutEntryAlternative[subresource],
+                                                                     current,
+                                                                     subresource,
+                                                                     "the work submitted before it leaves"));
+                            }
                             return std::unexpected(textureLayoutMismatch(use.layoutEntry[subresource],
                                                                          current,
                                                                          subresource,

@@ -405,6 +405,201 @@ TEST_CASE("D3D12 texture barriers must name the current layout of every subresou
     CHECK(counts.corruptions == 0);
 }
 
+TEST_CASE("D3D12 copies need a copy layout or common on every texture subresource they access",
+          "[size:medium][rhi][d3d12][warp][barrier][layout][copy]")
+{
+    const bool legacy = GENERATE(false, true);
+    CAPTURE(legacy);
+    const ForceLegacyBarriers forced(legacy);
+    auto desc = rachis::test::d3d12WarpDeviceDesc();
+    desc.diagnosticCallback = &printDiagnostic;
+    auto created = rachis::createDevice(desc);
+    REQUIRE(created.has_value());
+    auto device = std::move(*created);
+    REQUIRE(rachis::test::requireCapabilities(device).enhancedBarriers == !legacy);
+
+    constexpr std::uint32_t size = 8;
+    constexpr std::uint32_t rowPitch = 256;
+    const rachis::TextureDesc textureDesc{
+        .width = size,
+        .height = size,
+        .mipLevels = 2,
+        .format = rachis::Format::rgba8Unorm,
+        .usage = rachis::TextureUsage::copySource | rachis::TextureUsage::copyDestination |
+                 rachis::TextureUsage::sampled | rachis::TextureUsage::storage,
+        .label = "D3D12 copy layout texture",
+    };
+    auto texture = device.createTexture(textureDesc);
+    auto other = device.createTexture(textureDesc);
+    auto buffer = device.createBuffer({
+        .size = rowPitch * size,
+        .usage = rachis::BufferUsage::copySource | rachis::BufferUsage::copyDestination,
+        .label = "D3D12 copy layout buffer",
+    });
+    REQUIRE(texture.has_value());
+    REQUIRE(other.has_value());
+    REQUIRE(buffer.has_value());
+    const rachis::BufferTextureCopy textureToBuffer{
+        .buffer = *buffer,
+        .bytesPerRow = rowPitch,
+        .rowsPerImage = size,
+        .texture = *texture,
+        .extent = {size, size, 1},
+    };
+    const rachis::TextureCopy textureToTexture{
+        .source = *texture,
+        .destination = *other,
+        .extent = {size, size, 1},
+    };
+    const auto requireRejected = [&](rachis::CommandBuffer& command, const rachis::Status& status, const char* text) {
+        REQUIRE_FALSE(status.has_value());
+        CHECK(status.error().code == rachis::ErrorCode::invalidState);
+        CHECK(status.error().message.find(text) != std::string::npos);
+        static_cast<void>(command);
+    };
+
+    SECTION("a texture-to-buffer copy from the unorderedAccess layout fails while recording")
+    {
+        auto command = acquire(device);
+        REQUIRE(device
+                    .textureBarrier(command,
+                                    layoutBarrier(*texture, TextureLayout::undefined, TextureLayout::unorderedAccess))
+                    .has_value());
+        const auto before = rachis::d3d12::test::commandDependencySnapshot(command);
+        REQUIRE(before.has_value());
+        requireRejected(command,
+                        device.copyTextureToBuffer(command, textureToBuffer),
+                        "copyTextureToBuffer requires the copySource or common layout");
+        CHECK(rachis::d3d12::test::commandDependencySnapshot(command) == before);
+        REQUIRE(device
+                    .textureBarrier(command,
+                                    layoutBarrier(*texture, TextureLayout::unorderedAccess, TextureLayout::copySource))
+                    .has_value());
+        REQUIRE(device.copyTextureToBuffer(command, textureToBuffer).has_value());
+        submitAndWait(device, std::move(command));
+    }
+
+    SECTION("buffer-to-texture and texture copies check each texture they access")
+    {
+        auto command = acquire(device);
+        REQUIRE(device
+                    .textureBarrier(command,
+                                    layoutBarrier(*texture, TextureLayout::undefined, TextureLayout::shaderResource))
+                    .has_value());
+        REQUIRE(
+            device.textureBarrier(command, layoutBarrier(*other, TextureLayout::undefined, TextureLayout::copySource))
+                .has_value());
+        requireRejected(command,
+                        device.copyBufferToTexture(command, textureToBuffer),
+                        "copyBufferToTexture requires the copyDestination or common layout");
+        requireRejected(command, device.copyTexture(command, textureToTexture), "copyTexture requires the copySource");
+        REQUIRE(device
+                    .textureBarrier(command,
+                                    layoutBarrier(*texture, TextureLayout::shaderResource, TextureLayout::copySource))
+                    .has_value());
+        requireRejected(
+            command, device.copyTexture(command, textureToTexture), "copyTexture requires the copyDestination");
+        REQUIRE(device
+                    .textureBarrier(command,
+                                    layoutBarrier(*other, TextureLayout::copySource, TextureLayout::copyDestination))
+                    .has_value());
+        REQUIRE(device.copyTexture(command, textureToTexture).has_value());
+        submitAndWait(device, std::move(command));
+    }
+
+    SECTION("copies accept the common layout, and a later barrier must start where a copy needs the texture")
+    {
+        auto command = acquire(device);
+        REQUIRE(device.copyBufferToTexture(command, textureToBuffer).has_value());
+        const auto before = rachis::d3d12::test::commandDependencySnapshot(command);
+        REQUIRE(before.has_value());
+        requireRejected(command,
+                        device.textureBarrier(
+                            command, layoutBarrier(*texture, TextureLayout::shaderResource, TextureLayout::copySource)),
+                        "an earlier copy in this command buffer needs it in copyDestination");
+        CHECK(rachis::d3d12::test::commandDependencySnapshot(command) == before);
+        submitAndWait(device, std::move(command));
+    }
+
+    SECTION("a copy's entry layout is checked against earlier submissions")
+    {
+        auto entering = acquire(device);
+        REQUIRE(device
+                    .textureBarrier(entering,
+                                    layoutBarrier(*texture, TextureLayout::common, TextureLayout::unorderedAccess))
+                    .has_value());
+        submitAndWait(device, std::move(entering));
+
+        std::array copying{acquire(device)};
+        REQUIRE(device.copyTextureToBuffer(copying[0], textureToBuffer).has_value());
+        const auto rejected = device.submit(copying);
+        REQUIRE_FALSE(rejected.has_value());
+        CHECK(rejected.error().code == rachis::ErrorCode::invalidState);
+        CHECK(rejected.error().message.find("copySource or common") != std::string::npos);
+        CHECK(rejected.error().message.find("leaves subresource 0 in unorderedAccess") != std::string::npos);
+
+        auto leaving = acquire(device);
+        REQUIRE(device
+                    .textureBarrier(leaving,
+                                    layoutBarrier(*texture, TextureLayout::unorderedAccess, TextureLayout::copySource))
+                    .has_value());
+        submitAndWait(device, std::move(leaving));
+        submitAndWait(device, std::move(copying[0]));
+    }
+
+    REQUIRE(device.destroyBuffer(*buffer).has_value());
+    REQUIRE(device.destroyTexture(*other).has_value());
+    REQUIRE(device.destroyTexture(*texture).has_value());
+    const auto counts = device.diagnosticCounts();
+    CHECK(counts.errors == 0);
+    CHECK(counts.corruptions == 0);
+}
+
+TEST_CASE("D3D12 a legacy-barrier mipmap generation that runs out of memory leaves no layout tracking behind",
+          "[size:medium][rhi][d3d12][warp][barrier][layout][mipmap][failure]")
+{
+    const ForceLegacyBarriers forced(true);
+    auto desc = rachis::test::d3d12WarpDeviceDesc();
+    desc.diagnosticCallback = &printDiagnostic;
+    auto created = rachis::createDevice(desc);
+    REQUIRE(created.has_value());
+    auto device = std::move(*created);
+    REQUIRE_FALSE(rachis::test::requireCapabilities(device).enhancedBarriers);
+
+    auto texture = device.createTexture({
+        .width = 8,
+        .height = 8,
+        .mipLevels = 2,
+        .format = rachis::Format::rgba8Unorm,
+        .usage = rachis::TextureUsage::copySource | rachis::TextureUsage::copyDestination |
+                 rachis::TextureUsage::sampled | rachis::TextureUsage::storage,
+        .label = "D3D12 failed mipmap texture",
+    });
+    REQUIRE(texture.has_value());
+    const rachis::TextureMipmapGeneration generation{
+        .texture = *texture,
+        .baseLayout = TextureLayout::common,
+        .finalLayout = TextureLayout::shaderResource,
+    };
+
+    auto command = acquire(device);
+    const auto before = rachis::d3d12::test::commandDependencySnapshot(command);
+    REQUIRE(before.has_value());
+    rachis::d3d12::test::nextLegacyOrderedStateCopyFailure().store(true, std::memory_order_relaxed);
+    const auto failed = device.generateMipmaps(command, generation);
+    rachis::d3d12::test::nextLegacyOrderedStateCopyFailure().store(false, std::memory_order_relaxed);
+    REQUIRE_FALSE(failed.has_value());
+    CHECK(failed.error().code == rachis::ErrorCode::outOfMemory);
+    CHECK(rachis::d3d12::test::commandDependencySnapshot(command) == before);
+
+    REQUIRE(device.generateMipmaps(command, generation).has_value());
+    submitAndWait(device, std::move(command));
+    REQUIRE(device.destroyTexture(*texture).has_value());
+    const auto counts = device.diagnosticCounts();
+    CHECK(counts.errors == 0);
+    CHECK(counts.corruptions == 0);
+}
+
 TEST_CASE("D3D12 a discard recorded after a storage clear starts from the clear's layout",
           "[size:medium][rhi][d3d12][warp][barrier][layout][clear]")
 {

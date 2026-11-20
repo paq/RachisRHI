@@ -683,6 +683,10 @@ namespace rachis::d3d12
                                                        Origin3D origin,
                                                        Extent3D extent) noexcept;
 
+        [[nodiscard]] bool sparseBufferRangeIsMapped(const BufferRecord& record,
+                                                     std::uint64_t offset,
+                                                     std::uint64_t size) noexcept;
+
         struct TextureLayoutUse final
         {
             LegacyTextureStateRecording* recording = nullptr;
@@ -702,6 +706,25 @@ namespace rachis::d3d12
                                                                        std::string_view operation);
 
         void commitTextureLayoutUse(const TextureLayoutUse& use) noexcept;
+
+        struct TextureLayoutRequirement final
+        {
+            LegacyTextureStateRecording* recording = nullptr;
+            std::size_t use = 0;
+            std::span<const std::uint32_t> subresources;
+            TextureLayout layout = TextureLayout::undefined;
+            TextureLayout alternative = TextureLayout::undefined;
+        };
+
+        [[nodiscard]] Result<TextureLayoutRequirement> prepareTextureLayoutRequirement(
+            LegacyTextureStateRecording& recording,
+            const TextureRecord& texture,
+            std::span<const std::uint32_t> subresources,
+            TextureLayout layout,
+            TextureLayout alternative,
+            std::string_view operation);
+
+        void commitTextureLayoutRequirement(const TextureLayoutRequirement& requirement) noexcept;
 
         [[nodiscard]] Status requireFormatSupport(ID3D12Device& device,
                                                   DXGI_FORMAT format,

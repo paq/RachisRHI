@@ -169,3 +169,71 @@ TEST_CASE("Direct3D 12 rejects draw-index modules whose DXIL resource table cann
         CHECK(unverifiable.error().code == rachis::ErrorCode::invalidArgument);
     }
 }
+
+TEST_CASE("Direct3D 12 rejects ray-tracing library entries that read the draw index",
+          "[size:medium][rhi][draw-index][ray-tracing-pipeline][warp]")
+{
+    auto created = rachis::createDevice(rachis::DeviceDesc{
+        .adapterPreference = rachis::AdapterPreference::warp,
+        .validation = rachis::ValidationLevel::standard,
+        .requireValidation = false,
+        .diagnosticCallback = &printDiagnostic,
+    });
+    if (!created)
+    {
+        INFO(created.error().message);
+    }
+    REQUIRE(created.has_value());
+    auto device = std::move(*created);
+    const auto library = loadShader(RACHIS_TEST_RAY_TRACING_PIPELINE_SHADER_PATH);
+    REQUIRE_FALSE(library.empty());
+
+    struct Entry final
+    {
+        rachis::ShaderStage stage = rachis::ShaderStage::none;
+        const char* name = nullptr;
+        bool readsDrawIndex = false;
+    };
+    constexpr std::array entries{
+        Entry{rachis::ShaderStage::rayGeneration, "rayGenerationReadingDrawIndex", true},
+        Entry{rachis::ShaderStage::closestHit, "closestHitReadingDrawIndex", true},
+        Entry{rachis::ShaderStage::rayGeneration, "rayGenerationWithoutRecord", false},
+        Entry{rachis::ShaderStage::closestHit, "closestHitShader", false},
+    };
+    std::vector<rachis::ShaderLibraryEntryDesc> libraryEntries;
+    for (const auto& entry : entries)
+    {
+        libraryEntries.push_back({.stage = entry.stage, .bytecode = library, .entryPoint = entry.name});
+    }
+    auto shaderLibrary = device.createShaderLibrary({.entries = libraryEntries});
+    REQUIRE(shaderLibrary.has_value());
+
+    for (const auto& entry : entries)
+    {
+        INFO("Entry point: " << entry.name);
+        auto direct = device.createShaderModule({
+            .stage = entry.stage,
+            .bytecode = library,
+            .entryPoint = entry.name,
+        });
+        auto fromLibrary = device.createShaderModule({
+            .stage = entry.stage,
+            .entryPoint = entry.name,
+            .library = *shaderLibrary,
+        });
+        for (auto* module : {&direct, &fromLibrary})
+        {
+            if (entry.readsDrawIndex)
+            {
+                REQUIRE_FALSE(module->has_value());
+                CHECK(module->error().code == rachis::ErrorCode::invalidArgument);
+            }
+            else
+            {
+                REQUIRE(module->has_value());
+                REQUIRE(device.destroyShaderModule(**module).has_value());
+            }
+        }
+    }
+    REQUIRE(device.destroyShaderLibrary(*shaderLibrary).has_value());
+}

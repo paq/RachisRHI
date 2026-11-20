@@ -308,9 +308,10 @@ namespace
             return *buffer;
         }
 
-        [[nodiscard]] rachis::CommandBuffer record(std::span<const Selection> selections)
+        [[nodiscard]] rachis::CommandBuffer record(std::span<const Selection> selections,
+                                                   rachis::QueueType queue = rachis::QueueType::compute)
         {
-            auto command = rachis::test::acquireCommandBuffer(device_, rachis::QueueType::compute);
+            auto command = rachis::test::acquireCommandBuffer(device_, queue);
             REQUIRE(command.has_value());
             recordInto(*command, selections);
             return std::move(*command);
@@ -484,7 +485,7 @@ namespace
     class QueueBlocker final
     {
     public:
-        explicit QueueBlocker(rachis::Device& device)
+        explicit QueueBlocker(rachis::Device& device, rachis::QueueType queue = rachis::QueueType::compute)
         {
             REQUIRE(rachis::test::requireCapabilities(device).sharedTimelineHandles);
             Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
@@ -503,7 +504,7 @@ namespace
                     },
                 .value = 1,
             };
-            auto waited = device.enqueueSharedTimelineWait(rachis::QueueType::compute, point);
+            auto waited = device.enqueueSharedTimelineWait(queue, point);
             if (!waited)
             {
                 UNSCOPED_INFO(waited.error().message);
@@ -769,6 +770,43 @@ TEST_CASE("an update-after-bind element written in place stays alive for submitt
     checkCleanDiagnostics(device);
 }
 
+TEST_CASE("update-after-bind writes grow the elements kept for work in flight geometrically",
+          "[size:medium][rhi][binding][compute][lifetime][warp]")
+{
+    auto device = createWarpDevice();
+    REQUIRE(rachis::test::requireCapabilities(device).updateAfterBindBindingArrays);
+    LargeArrayFixture fixture(device, rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind);
+    QueueBlocker blocker(device);
+
+    const std::array selections{Selection{.element = 0, .slot = 0}};
+    auto command = fixture.record(selections);
+    fixture.recordReadback(command);
+    auto submitted = device.submit(std::move(command));
+    REQUIRE(submitted.has_value());
+
+    constexpr std::uint32_t updates = 1000;
+    std::size_t capacity = 0;
+    std::uint32_t growths = 0;
+    for (std::uint32_t index = 0; index < updates; ++index)
+    {
+        REQUIRE(update(device, fixture.set(), 1, 2 + index, slice(fixture.values(), index % sliceValues.size()))
+                    .has_value());
+        const auto storage = rachis::d3d12::test::lastInPlaceReplacedStorage();
+        REQUIRE(storage.count == index + 1);
+        if (storage.capacity != capacity)
+        {
+            capacity = storage.capacity;
+            ++growths;
+        }
+    }
+    CHECK(growths <= 16);
+
+    blocker.release();
+    REQUIRE(device.wait(*submitted).has_value());
+    CHECK(fixture.result(0) == sliceValues[0]);
+    checkCleanDiagnostics(device);
+}
+
 TEST_CASE("update-after-bind elements that no submission saw are released when they are replaced",
           "[size:medium][rhi][binding][compute][warp]")
 {
@@ -803,6 +841,54 @@ TEST_CASE("update-after-bind elements that no submission saw are released when t
     CHECK_FALSE(memoryEntry(device, labels.back()).has_value());
     CHECK(fixture.result(0) == sliceValues[0]);
 
+    checkCleanDiagnostics(device);
+}
+
+TEST_CASE("work in flight keeps alive only the update-after-bind elements it could have seen",
+          "[size:medium][rhi][binding][compute][lifetime][warp]")
+{
+    auto device = createWarpDevice();
+    REQUIRE(rachis::test::requireCapabilities(device).updateAfterBindBindingArrays);
+    LargeArrayFixture fixture(device, rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind);
+    constexpr std::string_view seenLabel = "Element seen by stalled work";
+    const auto seen = fixture.createValueBuffer(replacementValues, seenLabel);
+    REQUIRE(update(device, fixture.set(), 1, 1, slice(seen, 0)).has_value());
+
+    QueueBlocker blocker(device, rachis::QueueType::graphics);
+    const std::array stalledSelections{Selection{.element = 0, .slot = 0}};
+    auto stalled = device.submit(fixture.record(stalledSelections, rachis::QueueType::graphics));
+    REQUIRE(stalled.has_value());
+
+    constexpr std::array<std::string_view, 4> labels{
+        "Streamed after stalled work 0",
+        "Streamed after stalled work 1",
+        "Streamed after stalled work 2",
+        "Streamed after stalled work 3",
+    };
+    for (const auto label : labels)
+    {
+        const auto streamed = fixture.createValueBuffer(replacementValues, label);
+        REQUIRE(update(device, fixture.set(), 1, 1, slice(streamed, 0)).has_value());
+        const std::array selections{Selection{.element = 1, .slot = 1}};
+        auto reading = device.submit(fixture.record(selections));
+        REQUIRE(reading.has_value());
+        REQUIRE(device.wait(*reading).has_value());
+        device.collectGarbage();
+        REQUIRE(device.destroyBuffer(streamed).has_value());
+    }
+    REQUIRE(device.destroyBuffer(seen).has_value());
+    checkRetainedAfterDestruction(device, seenLabel);
+    for (std::size_t index = 0; index + 1 < labels.size(); ++index)
+    {
+        CAPTURE(labels[index]);
+        CHECK_FALSE(memoryEntry(device, labels[index]).has_value());
+    }
+    checkRetainedAfterDestruction(device, labels.back());
+
+    blocker.release();
+    REQUIRE(device.wait(*stalled).has_value());
+    device.collectGarbage();
+    CHECK_FALSE(memoryEntry(device, seenLabel).has_value());
     checkCleanDiagnostics(device);
 }
 
@@ -911,6 +997,46 @@ TEST_CASE("a refused submission keeps no residency of update-after-bind elements
     evicted.destroySet();
     REQUIRE(device.destroyBuffer(residentBuffer).has_value());
     REQUIRE(device.destroyBuffer(evictedBuffer).has_value());
+    checkCleanDiagnostics(device);
+}
+
+TEST_CASE("a submission gathers the residency of each update-after-bind set once however often it is bound",
+          "[size:medium][rhi][binding][compute][residency][warp]")
+{
+    auto device = createWarpDevice();
+    REQUIRE(rachis::test::requireCapabilities(device).updateAfterBindBindingArrays);
+    REQUIRE(rachis::test::requireCapabilities(device).manualResidency);
+    LargeArrayFixture first(device, rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind);
+    LargeArrayFixture second(device, rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind);
+    const auto firstManual =
+        first.createValueBuffer(replacementValues, replacementLabel, rachis::ResourceAllocationFlag::manualResidency);
+    const auto secondManual = second.createValueBuffer(
+        replacementValues, "Second manual update-after-bind element", rachis::ResourceAllocationFlag::manualResidency);
+    REQUIRE(update(device, first.set(), 1, 1, slice(firstManual, 0)).has_value());
+    REQUIRE(update(device, second.set(), 1, 1, slice(secondManual, 0)).has_value());
+
+    constexpr std::size_t alternations = 32;
+    const std::array selections{Selection{.element = 1, .slot = 0}};
+    auto command = first.record(selections);
+    for (std::size_t index = 0; index < alternations; ++index)
+    {
+        second.recordInto(command, selections);
+        first.recordInto(command, selections);
+    }
+    first.recordReadback(command);
+
+    auto& gathered = rachis::d3d12::test::inPlaceResidencyGatherCount();
+    const auto before = gathered.load(std::memory_order_relaxed);
+    auto submitted = device.submit(std::move(command));
+    REQUIRE(submitted.has_value());
+    CHECK(gathered.load(std::memory_order_relaxed) - before == 2);
+    REQUIRE(device.wait(*submitted).has_value());
+    CHECK(first.result(0) == replacementValues[0]);
+
+    first.destroySet();
+    second.destroySet();
+    REQUIRE(device.destroyBuffer(firstManual).has_value());
+    REQUIRE(device.destroyBuffer(secondManual).has_value());
     checkCleanDiagnostics(device);
 }
 

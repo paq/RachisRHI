@@ -58,6 +58,11 @@ namespace rachis::d3d12
             return false;
         }
 
+    } // namespace
+
+    namespace resource_detail
+    {
+
         [[nodiscard]] bool sparseBufferRangeIsMapped(const BufferRecord& record,
                                                      std::uint64_t offset,
                                                      std::uint64_t size) noexcept
@@ -78,11 +83,6 @@ namespace rachis::d3d12
                                            static_cast<std::uint32_t>(firstTile),
                                            static_cast<std::uint32_t>(tileLimit - firstTile));
         }
-
-    } // namespace
-
-    namespace resource_detail
-    {
 
         [[nodiscard]] bool sparseTextureRegionIsMapped(const TextureRecord& record,
                                                        std::uint32_t subresource,
@@ -1879,6 +1879,69 @@ namespace rachis::d3d12
             draw.pipelineContinuation.restore(commandList);
         }
 
+        using CopiedSubresources = SmallVector<std::uint32_t, 2>;
+
+        [[nodiscard]] CopiedSubresources copiedSubresources(std::span<const LinearTextureLayout> layouts)
+        {
+            CopiedSubresources subresources;
+            subresources.reserve(layouts.size());
+            for (const auto& layout : layouts)
+            {
+                subresources.push_back(layout.subresource.index);
+            }
+            return subresources;
+        }
+
+        struct CopiedTextureSubresources final
+        {
+            CopiedSubresources sources;
+            CopiedSubresources destinations;
+            CopiedSubresources shared;
+        };
+
+        void removeSubresources(CopiedSubresources& subresources, std::span<const std::uint32_t> removed) noexcept
+        {
+            const auto kept = std::ranges::remove_if(subresources, [&](std::uint32_t subresource) {
+                return std::ranges::binary_search(removed, subresource);
+            });
+            subresources.truncate(static_cast<std::size_t>(kept.begin() - subresources.begin()));
+        }
+
+        void sortUniqueSubresources(CopiedSubresources& subresources) noexcept
+        {
+            std::ranges::sort(subresources);
+            const auto duplicates = std::ranges::unique(subresources);
+            subresources.truncate(static_cast<std::size_t>(duplicates.begin() - subresources.begin()));
+        }
+
+        [[nodiscard]] CopiedTextureSubresources copiedSubresources(const PreparedTextureCopyBatch& batch)
+        {
+            CopiedTextureSubresources copied;
+            copied.sources.reserve(batch.regions.size());
+            copied.destinations.reserve(batch.regions.size());
+            for (const auto& region : batch.regions)
+            {
+                copied.sources.push_back(region.sourceSubresource.index);
+                copied.destinations.push_back(region.destinationSubresource.index);
+            }
+            if (batch.source != batch.destination)
+            {
+                return copied;
+            }
+            sortUniqueSubresources(copied.sources);
+            sortUniqueSubresources(copied.destinations);
+            for (const auto subresource : copied.sources)
+            {
+                if (std::ranges::binary_search(copied.destinations, subresource))
+                {
+                    copied.shared.push_back(subresource);
+                }
+            }
+            removeSubresources(copied.sources, copied.shared.span());
+            removeSubresources(copied.destinations, copied.shared.span());
+            return copied;
+        }
+
     } // namespace
 
     Status ResourceManager::copyBufferRegions(QueueManager& queues,
@@ -2017,6 +2080,23 @@ namespace rachis::d3d12
         {
             return std::unexpected(std::move(prepared.error()));
         }
+        auto layoutRecording = queues.legacyTextureStates(commandBuffer);
+        if (!layoutRecording)
+        {
+            return std::unexpected(std::move(layoutRecording.error()));
+        }
+        LegacyTextureStateInsertionGuard insertions(*layoutRecording);
+        const auto copied = copiedSubresources((*prepared)->layouts.span());
+        auto layouts = prepareTextureLayoutRequirement(**layoutRecording,
+                                                       *(*prepared)->texture,
+                                                       copied.span(),
+                                                       TextureLayout::copyDestination,
+                                                       TextureLayout::common,
+                                                       "copyBufferToTexture");
+        if (!layouts)
+        {
+            return std::unexpected(std::move(layouts.error()));
+        }
 
         auto commandList = retainCopyBatchForRecording(queues, commandBuffer, *prepared);
         if (!commandList)
@@ -2024,6 +2104,8 @@ namespace rachis::d3d12
             return std::unexpected(std::move(commandList.error()));
         }
         recordBufferToTextureCopies(**commandList, **prepared);
+        commitTextureLayoutRequirement(*layouts);
+        insertions.commit();
         test::noteResourceCommandRecorded();
         return {};
     }
@@ -2078,6 +2160,23 @@ namespace rachis::d3d12
         {
             return std::unexpected(std::move(prepared.error()));
         }
+        auto layoutRecording = queues.legacyTextureStates(commandBuffer);
+        if (!layoutRecording)
+        {
+            return std::unexpected(std::move(layoutRecording.error()));
+        }
+        LegacyTextureStateInsertionGuard insertions(*layoutRecording);
+        const auto copied = copiedSubresources((*prepared)->layouts.span());
+        auto layouts = prepareTextureLayoutRequirement(**layoutRecording,
+                                                       *(*prepared)->texture,
+                                                       copied.span(),
+                                                       TextureLayout::copySource,
+                                                       TextureLayout::common,
+                                                       "copyTextureToBuffer");
+        if (!layouts)
+        {
+            return std::unexpected(std::move(layouts.error()));
+        }
 
         auto commandList = retainCopyBatchForRecording(queues, commandBuffer, *prepared);
         if (!commandList)
@@ -2085,6 +2184,8 @@ namespace rachis::d3d12
             return std::unexpected(std::move(commandList.error()));
         }
         recordTextureToBufferCopies(**commandList, **prepared);
+        commitTextureLayoutRequirement(*layouts);
+        insertions.commit();
         test::noteResourceCommandRecorded();
         return {};
     }
@@ -2139,6 +2240,43 @@ namespace rachis::d3d12
         {
             return std::unexpected(std::move(prepared.error()));
         }
+        auto layoutRecording = queues.legacyTextureStates(commandBuffer);
+        if (!layoutRecording)
+        {
+            return std::unexpected(std::move(layoutRecording.error()));
+        }
+        LegacyTextureStateInsertionGuard insertions(*layoutRecording);
+        const auto copied = copiedSubresources(**prepared);
+        auto sourceLayouts = prepareTextureLayoutRequirement(**layoutRecording,
+                                                             *(*prepared)->source,
+                                                             copied.sources.span(),
+                                                             TextureLayout::copySource,
+                                                             TextureLayout::common,
+                                                             "copyTexture");
+        if (!sourceLayouts)
+        {
+            return std::unexpected(std::move(sourceLayouts.error()));
+        }
+        auto destinationLayouts = prepareTextureLayoutRequirement(**layoutRecording,
+                                                                  *(*prepared)->destination,
+                                                                  copied.destinations.span(),
+                                                                  TextureLayout::copyDestination,
+                                                                  TextureLayout::common,
+                                                                  "copyTexture");
+        if (!destinationLayouts)
+        {
+            return std::unexpected(std::move(destinationLayouts.error()));
+        }
+        auto sharedLayouts = prepareTextureLayoutRequirement(**layoutRecording,
+                                                             *(*prepared)->source,
+                                                             copied.shared.span(),
+                                                             TextureLayout::common,
+                                                             TextureLayout::undefined,
+                                                             "copyTexture");
+        if (!sharedLayouts)
+        {
+            return std::unexpected(std::move(sharedLayouts.error()));
+        }
 
         auto commandList = retainCopyBatchForRecording(queues, commandBuffer, *prepared);
         if (!commandList)
@@ -2146,6 +2284,10 @@ namespace rachis::d3d12
             return std::unexpected(std::move(commandList.error()));
         }
         recordTextureCopies(**commandList, **prepared);
+        commitTextureLayoutRequirement(*sourceLayouts);
+        commitTextureLayoutRequirement(*destinationLayouts);
+        commitTextureLayoutRequirement(*sharedLayouts);
+        insertions.commit();
         test::noteResourceCommandRecorded();
         return {};
     }

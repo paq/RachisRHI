@@ -96,4 +96,21 @@ void anyHitAlphaTest(inout RayPayload payload, in BuiltInTriangleIntersectionAtt
         IgnoreHit();
     }
 }
+
+cbuffer RachisDrawIndex : register(b0, space5)
+{
+    uint drawIndexValue;
+};
+
+[shader("raygeneration")]
+void rayGenerationReadingDrawIndex()
+{
+    outputBuffer[0] = drawIndexValue;
+}
+
+[shader("closesthit")]
+void closestHitReadingDrawIndex(inout RayPayload payload, in BuiltInTriangleIntersectionAttributes attributes)
+{
+    payload.value = drawIndexValue;
+}
 #endif

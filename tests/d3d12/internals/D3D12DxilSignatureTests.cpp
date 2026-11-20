@@ -2,6 +2,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -355,16 +356,216 @@ TEST_CASE("Direct3D 12 draw-index declarations need a readable PSV0 resource tab
     for (const bool declared : {true, false})
     {
         INFO("Declared: " << declared);
-        const auto result = validateDrawIndexDeclaration(programWithoutPsv, 0, 5, declared);
+        const auto result = validateDrawIndexDeclaration(programWithoutPsv, 0, 5, declared, "rayGeneration");
         REQUIRE_FALSE(result.has_value());
         CHECK(result.error().code == rachis::ErrorCode::invalidArgument);
     }
-    CHECK(validateDrawIndexDeclaration(programWithoutPsv, 0, 5, false, false).has_value());
 
     CHECK(validateDrawIndexDeclaration(std::vector<std::byte>(8), 0, 5, false).has_value());
     CHECK_FALSE(validateDrawIndexDeclaration(std::vector<std::byte>(8), 0, 5, true).has_value());
     auto headerOnly = std::vector<std::byte>(binding.begin(), binding.begin() + 8);
     CHECK_FALSE(validateDrawIndexDeclaration(headerOnly, 0, 5, false).has_value());
+}
+
+namespace
+{
+
+    struct LibraryResource final
+    {
+        std::uint32_t resourceClass = 2;
+        std::uint32_t space = 5;
+        std::uint32_t lowerBound = 0;
+        std::uint32_t upperBound = 0;
+    };
+
+    struct LibraryFunction final
+    {
+        std::string_view name;
+        std::uint32_t kind = 7;
+        std::vector<std::uint32_t> resources;
+        std::optional<std::uint32_t> list;
+    };
+
+    constexpr std::size_t libraryRuntimeDataOffset = 48;
+
+    [[nodiscard]] std::vector<std::byte> libraryContainer(const std::vector<LibraryResource>& resources,
+                                                          const std::vector<LibraryFunction>& functions)
+    {
+        std::vector<std::byte> strings{std::byte{0}};
+        std::vector<std::uint32_t> names;
+        for (const auto& function : functions)
+        {
+            names.push_back(static_cast<std::uint32_t>(strings.size()));
+            for (const char ch : function.name)
+            {
+                strings.push_back(static_cast<std::byte>(ch));
+            }
+            strings.push_back(std::byte{0});
+        }
+        strings.resize((strings.size() + 3) & ~std::size_t{3});
+
+        std::vector<std::byte> indices;
+        std::vector<std::uint32_t> lists;
+        for (const auto& function : functions)
+        {
+            if (function.resources.empty())
+            {
+                lists.push_back(0xFFFFFFFFU);
+                continue;
+            }
+            lists.push_back(function.list.value_or(static_cast<std::uint32_t>(indices.size() / sizeof(std::uint32_t))));
+            appendU32(indices, static_cast<std::uint32_t>(function.resources.size()));
+            for (const auto resource : function.resources)
+            {
+                appendU32(indices, resource);
+            }
+        }
+
+        std::vector<std::byte> resourceTable;
+        appendU32(resourceTable, static_cast<std::uint32_t>(resources.size()));
+        appendU32(resourceTable, 32);
+        for (const auto& resource : resources)
+        {
+            for (const std::uint32_t value :
+                 {resource.resourceClass, 13U, 0U, resource.space, resource.lowerBound, resource.upperBound, 0U, 0U})
+            {
+                appendU32(resourceTable, value);
+            }
+        }
+
+        std::vector<std::byte> functionTable;
+        appendU32(functionTable, static_cast<std::uint32_t>(functions.size()));
+        appendU32(functionTable, 44);
+        for (std::size_t index = 0; index < functions.size(); ++index)
+        {
+            for (const std::uint32_t value :
+                 {names[index], names[index], lists[index], 0xFFFFFFFFU, functions[index].kind})
+            {
+                appendU32(functionTable, value);
+            }
+            for (std::size_t field = 0; field < 6; ++field)
+            {
+                appendU32(functionTable, 0);
+            }
+        }
+
+        const std::array<std::pair<std::uint32_t, const std::vector<std::byte>*>, 4> parts{{
+            {1U, &strings},
+            {3U, &resourceTable},
+            {4U, &functionTable},
+            {2U, &indices},
+        }};
+        std::vector<std::byte> runtimeData;
+        appendU32(runtimeData, 0x10);
+        appendU32(runtimeData, static_cast<std::uint32_t>(parts.size()));
+        std::uint32_t partOffset = 8 + static_cast<std::uint32_t>(parts.size() * sizeof(std::uint32_t));
+        for (const auto& [type, part] : parts)
+        {
+            appendU32(runtimeData, partOffset);
+            partOffset += 8 + static_cast<std::uint32_t>(part->size());
+        }
+        for (const auto& [type, part] : parts)
+        {
+            appendU32(runtimeData, type);
+            appendU32(runtimeData, static_cast<std::uint32_t>(part->size()));
+            runtimeData.insert(runtimeData.end(), part->begin(), part->end());
+        }
+
+        std::vector<std::byte> bytes;
+        for (const char ch : std::string_view("DXBC"))
+        {
+            bytes.push_back(static_cast<std::byte>(ch));
+        }
+        bytes.resize(24);
+        appendU32(bytes, 0);
+        appendU32(bytes, 2);
+        appendU32(bytes, 40);
+        appendU32(bytes, static_cast<std::uint32_t>(40 + 8 + runtimeData.size()));
+        for (const auto& [fourCC, part] : {std::pair{std::string_view("RDAT"), runtimeData},
+                                           std::pair{std::string_view("DXIL"), std::vector<std::byte>(16)}})
+        {
+            for (const char ch : fourCC)
+            {
+                bytes.push_back(static_cast<std::byte>(ch));
+            }
+            appendU32(bytes, static_cast<std::uint32_t>(part.size()));
+            bytes.insert(bytes.end(), part.begin(), part.end());
+        }
+        writeU32(bytes, 24, static_cast<std::uint32_t>(bytes.size()));
+        return bytes;
+    }
+
+    [[nodiscard]] rachis::ErrorCode libraryDrawIndexError(const std::vector<std::byte>& library,
+                                                          bool declared,
+                                                          std::string_view entryPoint)
+    {
+        const auto result = validateDrawIndexDeclaration(library, 0, 5, declared, entryPoint);
+        REQUIRE_FALSE(result.has_value());
+        return result.error().code;
+    }
+
+} // namespace
+
+TEST_CASE("Direct3D 12 reads a ray-tracing library entry's draw-index binding from the RDAT resource lists",
+          "[size:small][rhi][d3d12][draw-index]")
+{
+    const std::vector<LibraryResource> resources{{}, {.resourceClass = 1, .space = 0}};
+    const auto library = libraryContainer(resources,
+                                          {
+                                              {.name = "reads", .resources = {1, 0}},
+                                              {.name = "plain", .resources = {1}},
+                                              {.name = "empty", .kind = 10},
+                                          });
+    CHECK(validateDrawIndexDeclaration(library, 0, 5, false, "plain").has_value());
+    CHECK(validateDrawIndexDeclaration(library, 0, 5, false, "empty").has_value());
+    CHECK(libraryDrawIndexError(library, false, "reads") == rachis::ErrorCode::invalidArgument);
+    CHECK(validateDrawIndexDeclaration(library, 0, 5, true, "reads").has_value());
+    CHECK(libraryDrawIndexError(library, true, "plain") == rachis::ErrorCode::invalidArgument);
+    CHECK(libraryDrawIndexError(library, false, "missing") == rachis::ErrorCode::invalidArgument);
+
+    const auto helper = libraryContainer(resources,
+                                         {
+                                             {.name = "plain", .resources = {1}},
+                                             {.name = "helper", .kind = 6, .resources = {0}},
+                                         });
+    CHECK(libraryDrawIndexError(helper, false, "plain") == rachis::ErrorCode::invalidArgument);
+
+    const auto unbounded =
+        libraryContainer({{.lowerBound = 0, .upperBound = 0xFFFFFFFFU}}, {{.name = "reads", .resources = {0}}});
+    CHECK(libraryDrawIndexError(unbounded, false, "reads") == rachis::ErrorCode::invalidArgument);
+    const auto elsewhere = libraryContainer({{.space = 4}, {.resourceClass = 0}, {.lowerBound = 1, .upperBound = 1}},
+                                            {{.name = "reads", .resources = {0, 1, 2}}});
+    CHECK(validateDrawIndexDeclaration(elsewhere, 0, 5, false, "reads").has_value());
+    CHECK(validateDrawIndexDeclaration(elsewhere, 0, 5, false, "missing").has_value());
+}
+
+TEST_CASE("Direct3D 12 rejects ray-tracing libraries whose RDAT part cannot be read",
+          "[size:small][rhi][d3d12][draw-index]")
+{
+    const auto library = libraryContainer({{}}, {{.name = "plain"}});
+    REQUIRE(validateDrawIndexDeclaration(library, 0, 5, false, "plain").has_value());
+
+    auto unknownVersion = library;
+    writeU32(unknownVersion, libraryRuntimeDataOffset, 0x11);
+    CHECK(libraryDrawIndexError(unknownVersion, false, "plain") == rachis::ErrorCode::invalidArgument);
+
+    auto truncatedParts = library;
+    writeU32(truncatedParts, libraryRuntimeDataOffset + 4, 1000);
+    CHECK(libraryDrawIndexError(truncatedParts, false, "plain") == rachis::ErrorCode::invalidArgument);
+
+    auto partOutside = library;
+    writeU32(partOutside, libraryRuntimeDataOffset + 8, 0x10000);
+    CHECK(libraryDrawIndexError(partOutside, false, "plain") == rachis::ErrorCode::invalidArgument);
+
+    const auto missingResource = libraryContainer({{}}, {{.name = "plain", .resources = {7}}});
+    CHECK(libraryDrawIndexError(missingResource, false, "plain") == rachis::ErrorCode::invalidArgument);
+
+    const auto listOutside = libraryContainer({{}}, {{.name = "plain", .resources = {0}, .list = 50}});
+    CHECK(libraryDrawIndexError(listOutside, false, "plain") == rachis::ErrorCode::invalidArgument);
+
+    auto withoutRuntimeData = library;
+    withoutRuntimeData[40] = std::byte{'X'};
+    CHECK(libraryDrawIndexError(withoutRuntimeData, false, "plain") == rachis::ErrorCode::invalidArgument);
 }
 
 namespace
