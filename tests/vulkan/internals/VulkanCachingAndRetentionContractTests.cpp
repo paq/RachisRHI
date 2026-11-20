@@ -4286,11 +4286,30 @@ TEST_CASE("VulkanSwapchainManager deduplicates WSI capability queries while pres
         {
             const auto restoredTiming = fixture.swapchains.queryFrameTiming(*swapchain);
             REQUIRE(restoredTiming.has_value());
-            CHECK_FALSE(restoredTiming->hidden);
+            CHECK(restoredTiming->hidden);
+        }
+        VkSwapchainKHR original = VK_NULL_HANDLE;
+        {
+            const std::scoped_lock lock(mock.state.mutex);
+            REQUIRE(mock.state.createdSwapchains.size() == 1U);
+            original = mock.state.createdSwapchains.front();
+        }
+        {
+            const auto refused = fixture.swapchains.acquireNextImage(*swapchain);
+            REQUIRE_FALSE(refused.has_value());
+            CHECK(refused.error().code == rachis::ErrorCode::invalidState);
+        }
+        REQUIRE(fixture.swapchains.resizeSwapchain(*swapchain, 128, 128).has_value());
+        {
+            const std::scoped_lock lock(mock.state.mutex);
+            REQUIRE(mock.state.createdSwapchains.size() == 2U);
+            CHECK(mock.state.oldSwapchains.back() == original);
+            CHECK(std::ranges::count(mock.state.destroyedSwapchains, original) == 1);
         }
         {
             const auto restoredAcquire = fixture.swapchains.acquireNextImage(*swapchain);
             REQUIRE(restoredAcquire.has_value());
+            CHECK(restoredAcquire->generation != acquired->generation);
             const auto restoredPoint = fixture.submitEmptyGraphicsWork();
             const auto restoredPresent = fixture.swapchains.present(*swapchain, restoredPoint, injectedLoss);
             REQUIRE(restoredPresent.has_value());
@@ -4298,6 +4317,60 @@ TEST_CASE("VulkanSwapchainManager deduplicates WSI capability queries while pres
             CHECK(mock.state.queuePresentCalls.load() == 1U);
         }
 
+        REQUIRE(fixture.swapchains.destroySwapchain(*swapchain).has_value());
+    }
+
+    SECTION("XCB swapchains without image release suspend when the present finds a zero extent")
+    {
+        ScopedPerfMock mock;
+        mock.state.surfaceCurrentExtent = {128, 128};
+        rachis::vulkan::VulkanPerformanceSwapchainTestAccess fixture(
+            rachis::SurfaceKind::xcb, rachis::VulkanPresentCompletionStrategy::imageLifetimeAssociation, false);
+
+        const auto swapchain = fixture.swapchains.createSwapchain({
+            .surface = fixture.surfaceHandle,
+            .width = 128,
+            .height = 128,
+            .imageCount = 2,
+            .format = rachis::Format::rgba8Unorm,
+            .colorSpace = rachis::SurfaceColorSpace::srgbNonlinear,
+            .usage = rachis::TextureUsage::renderTarget,
+            .presentMode = rachis::PresentMode::fifo,
+        });
+        REQUIRE(swapchain.has_value());
+        const auto acquired = fixture.swapchains.acquireNextImage(*swapchain);
+        REQUIRE(acquired.has_value());
+        {
+            const std::scoped_lock lock(mock.state.mutex);
+            mock.state.surfaceCurrentExtent = {0, 0};
+        }
+        mock.state.queuePresentCalls.store(0);
+        const auto point = fixture.submitEmptyGraphicsWork();
+        bool injectedLoss = false;
+        const auto occludedPresent = fixture.swapchains.present(*swapchain, point, injectedLoss);
+        REQUIRE(occludedPresent.has_value());
+        CHECK(*occludedPresent == rachis::PresentStatus::occluded);
+        CHECK(mock.state.queuePresentCalls.load() == 1U);
+
+        {
+            const std::scoped_lock lock(mock.state.mutex);
+            mock.state.surfaceCurrentExtent = {128, 128};
+        }
+        const auto refused = fixture.swapchains.acquireNextImage(*swapchain);
+        REQUIRE_FALSE(refused.has_value());
+        CHECK(refused.error().code == rachis::ErrorCode::invalidState);
+        REQUIRE(fixture.swapchains.resizeSwapchain(*swapchain, 128, 128).has_value());
+        {
+            const std::scoped_lock lock(mock.state.mutex);
+            CHECK(mock.state.createdSwapchains.size() == 2U);
+        }
+        const auto restored = fixture.swapchains.acquireNextImage(*swapchain);
+        REQUIRE(restored.has_value());
+        CHECK(restored->generation != acquired->generation);
+        const auto restoredPoint = fixture.submitEmptyGraphicsWork();
+        const auto restoredPresent = fixture.swapchains.present(*swapchain, restoredPoint, injectedLoss);
+        REQUIRE(restoredPresent.has_value());
+        CHECK(*restoredPresent == rachis::PresentStatus::presented);
         REQUIRE(fixture.swapchains.destroySwapchain(*swapchain).has_value());
     }
 }

@@ -1893,7 +1893,8 @@ namespace rachis::vulkan
             return std::unexpected(Error{
                 ErrorCode::invalidState,
                 0,
-                "A minimized or zero-extent swapchain cannot acquire an image.",
+                "A swapchain suspended by a minimized or zero-extent surface cannot acquire an image until it is "
+                "resized.",
             });
         }
         if (record.surface != nullptr && surfaceExtentIsZero(record))
@@ -2188,6 +2189,7 @@ namespace rachis::vulkan
         }
         record.acquired = false;
         record.acquireWaitSubmitted = false;
+        record.suspended = record.suspended || hiddenSurfaceHasZeroExtent(record);
         recordPresentCompletion(record);
         return true;
     }
@@ -2290,6 +2292,7 @@ namespace rachis::vulkan
         }
         if (surfaceIsHidden(record))
         {
+            record.suspended = record.suspended || hiddenSurfaceHasZeroExtent(record);
             return PresentStatus::occluded;
         }
         return PresentStatus::presented;
@@ -2386,6 +2389,18 @@ namespace rachis::vulkan
         }
 #endif
         return surfaceExtentIsZero(record);
+    }
+
+    bool VulkanSwapchainManager::hiddenSurfaceHasZeroExtent(const SwapchainRecord& record) const noexcept
+    {
+#ifdef _WIN32
+        if (record.surface != nullptr && record.surface->kind == SurfaceKind::win32)
+        {
+            return surfaceExtentIsZero(record);
+        }
+#endif
+        static_cast<void>(record);
+        return true;
     }
 
     bool VulkanSwapchainManager::surfaceExtentIsZero(const SwapchainRecord& record) const noexcept

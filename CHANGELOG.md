@@ -9,6 +9,12 @@
   minimized Win32 window, it creates a suspended swapchain: `acquireNextImage`
   fails with `ErrorCode::invalidState` until a `resizeSwapchain` finds an
   extent.
+- On Vulkan, a `present` that finds its Win32 window minimized, or its surface
+  at a zero extent, suspends the swapchain as well as returning
+  `PresentStatus::occluded`. After the window is restored, even at the same
+  size, `acquireNextImage` asks for a `resizeSwapchain`, which replaces the
+  native swapchain, instead of acquiring from the one whose image was released
+  while the window was minimized. Frames on that one could stop for good.
 
 ## 0.2.0
 

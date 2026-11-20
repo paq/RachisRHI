@@ -807,3 +807,85 @@ TEST_CASE("Vulkan swapchain creation on a minimized Win32 window gives a suspend
     REQUIRE(device.destroySurface(*surface).has_value());
     CHECK(device.diagnosticCounts().errors == 0);
 }
+
+TEST_CASE("Vulkan swapchain minimized between acquire and present is replaced after a restore at the same size",
+          "[size:medium][requires:InteractiveDesktop][requires:HardwareVulkan][rhi][vulkan][resize]")
+{
+    using namespace std::chrono_literals;
+    auto created = rachis::createDevice(vulkanDesc());
+    if (rachis::test::skipWithoutCreatedDevice(created))
+    {
+        return;
+    }
+    auto device = std::move(*created);
+
+    TestWindow const window(true);
+    REQUIRE(window.get() != nullptr);
+    auto surface = device.createSurface({
+        .kind = rachis::SurfaceKind::win32,
+        .windowHandle = window.get(),
+        .label = "Vulkan minimize before present surface",
+    });
+    REQUIRE(surface);
+    auto capabilities = device.querySurfaceCapabilities(*surface);
+    REQUIRE(capabilities);
+    const auto width = capabilities->preferredWidth == 0 ? 96 : capabilities->preferredWidth;
+    const auto height = capabilities->preferredHeight == 0 ? 64 : capabilities->preferredHeight;
+    auto swapchain = device.createSwapchain(swapchainDesc(*surface, *capabilities, width, height));
+    REQUIRE(swapchain);
+
+    auto first = acquireWithin(device, *swapchain);
+    REQUIRE(first);
+    auto firstSubmit = drawAcquired(device, *first);
+    REQUIRE(firstSubmit);
+    auto firstPresent = device.present(*swapchain, *firstSubmit);
+    REQUIRE(firstPresent);
+    CHECK(*firstPresent == rachis::PresentStatus::presented);
+
+    auto acquired = acquireWithin(device, *swapchain);
+    REQUIRE(acquired);
+    auto submitted = drawAcquired(device, *acquired);
+    REQUIRE(submitted);
+    showWindow(window.get(), SW_MINIMIZE);
+    REQUIRE(IsIconic(window.get()) != FALSE);
+    auto occluded = device.present(*swapchain, *submitted);
+    REQUIRE(occluded);
+    CHECK(*occluded == rachis::PresentStatus::occluded);
+
+    showWindow(window.get(), SW_RESTORE);
+    REQUIRE(IsIconic(window.get()) == FALSE);
+    auto restoredCaps = device.querySurfaceCapabilities(*surface);
+    REQUIRE(restoredCaps);
+    CHECK(restoredCaps->preferredWidth == width);
+    CHECK(restoredCaps->preferredHeight == height);
+
+    auto refused = device.acquireNextImage(*swapchain);
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error().code == rachis::ErrorCode::invalidState);
+    auto resized = device.resizeSwapchain(*swapchain, width, height);
+    if (!resized)
+    {
+        INFO(resized.error().message);
+        REQUIRE(resized);
+    }
+
+    for (int frame = 0; frame < 8; ++frame)
+    {
+        CAPTURE(frame);
+        auto image = acquireWithin(device, *swapchain);
+        REQUIRE(image);
+        CHECK(image->generation != acquired->generation);
+        auto point = drawAcquired(device, *image);
+        REQUIRE(point);
+        auto presented = device.present(*swapchain, *point);
+        REQUIRE(presented);
+        CHECK(*presented == rachis::PresentStatus::presented);
+        auto waited = device.wait(*point, 5s);
+        REQUIRE(waited);
+        CHECK(*waited == rachis::TimelinePointStatus::complete);
+    }
+
+    REQUIRE(device.destroySwapchain(*swapchain).has_value());
+    REQUIRE(device.destroySurface(*surface).has_value());
+    CHECK(device.diagnosticCounts().errors == 0);
+}
