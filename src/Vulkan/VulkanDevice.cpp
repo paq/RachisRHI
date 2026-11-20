@@ -590,7 +590,9 @@ namespace rachis::vulkan
 
     std::vector<VkTimeDomainEXT> VulkanDevice::calibrateableTimeDomains() const
     {
-        auto* const getCalibrateableDomains = instance_.table.vkGetPhysicalDeviceCalibrateableTimeDomainsEXT;
+        auto* const getCalibrateableDomains = record_.calibratedTimestampsKhr
+                                                  ? instance_.table.vkGetPhysicalDeviceCalibrateableTimeDomainsKHR
+                                                  : instance_.table.vkGetPhysicalDeviceCalibrateableTimeDomainsEXT;
         if (!record_.calibratedTimestamps || getCalibrateableDomains == nullptr || record_.physical == VK_NULL_HANDLE)
         {
             return {};

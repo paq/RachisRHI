@@ -8,6 +8,21 @@
   - `rachis_timeline_query`, which says without waiting whether a timeline's
     submission has completed, and `rachis_timeline_wait_for`, which waits at
     most a given time, with the `RACHIS_TIMELINE_STATUS_*` values.
+  - `rachis_queue_calibrate_timestamps`, which reads a queue's GPU timestamp
+    together with the CPU's monotonic counter and names that counter:
+    `QueryPerformanceCounter` on Windows, `CLOCK_MONOTONIC` on Linux, and
+    `mach_absolute_time` on macOS. It fills a `rachis_timestamp_calibration`
+    with both frequencies and the maximum deviation.
+  - `rachis_queue_timestamp_valid_bits`, the number of valid bits of a queue's
+    timestamps.
+- `QueueClockCalibration` names its CPU counter in `cpuClock` and reports
+  `maxDeviationNanoseconds`. On Metal, `cpuTimestamp` is now in
+  `mach_absolute_time` ticks at `cpuFrequency`, rather than in nanoseconds.
+- On Vulkan, `calibrateQueueClock` uses `VK_KHR_calibrated_timestamps`, which
+  RachisRHI now enables, and `VK_EXT_calibrated_timestamps` only on devices
+  without it. Where neither calibrates the queue, it fails with
+  `ErrorCode::unsupported`, as on Direct3D 12 and Metal, instead of returning
+  a CPU timestamp with a `gpuTimestamp` of `0`.
 - Vulkan: `createSwapchain` uses the surface's current extent on fixed-extent
   surfaces and creates a suspended swapchain on zero extent.
 - Vulkan: `present` suspends minimized or zero-extent swapchains so

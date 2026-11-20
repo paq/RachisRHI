@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -25,6 +26,10 @@
 #include <Windows.h>
 #else
 #include <dlfcn.h>
+#include <time.h>
+#endif
+#ifdef __APPLE__
+#include <mach/mach_time.h>
 #endif
 
 #ifdef RACHIS_CABI_D3D12_DEVICE_REMOVAL
@@ -3474,6 +3479,61 @@ TEST_CASE("C ABI opens the D3D12 WARP adapter by ID under the hardware preferenc
 }
 #endif
 
+namespace
+{
+    struct CpuCounterReading final
+    {
+        std::uint32_t clock = RACHIS_CPU_CLOCK_NONE;
+        std::uint64_t value = 0;
+        std::uint64_t frequency = 0;
+    };
+
+    [[nodiscard]] CpuCounterReading readCpuCounter() noexcept
+    {
+#ifdef _WIN32
+        LARGE_INTEGER frequency{};
+        LARGE_INTEGER counter{};
+        static_cast<void>(QueryPerformanceFrequency(&frequency));
+        static_cast<void>(QueryPerformanceCounter(&counter));
+        return {
+            RACHIS_CPU_CLOCK_QUERY_PERFORMANCE_COUNTER,
+            static_cast<std::uint64_t>(counter.QuadPart),
+            static_cast<std::uint64_t>(frequency.QuadPart),
+        };
+#elif defined(__APPLE__)
+        mach_timebase_info_data_t timebase{};
+        static_cast<void>(mach_timebase_info(&timebase));
+        return {
+            RACHIS_CPU_CLOCK_MACH_ABSOLUTE_TIME,
+            mach_absolute_time(),
+            1'000'000'000ULL * timebase.denom / timebase.numer,
+        };
+#else
+        timespec now{};
+        static_cast<void>(clock_gettime(CLOCK_MONOTONIC, &now));
+        return {
+            RACHIS_CPU_CLOCK_MONOTONIC,
+            static_cast<std::uint64_t>(now.tv_sec) * 1'000'000'000ULL + static_cast<std::uint64_t>(now.tv_nsec),
+            1'000'000'000ULL,
+        };
+#endif
+    }
+
+    [[nodiscard]] constexpr bool vulkanFeatureIsOptional() noexcept
+    {
+#ifdef _WIN32
+        return false;
+#else
+        return RACHIS_SMOKE_BACKEND == RACHIS_BACKEND_VULKAN;
+#endif
+    }
+
+    [[nodiscard]] double tickSeconds(std::uint64_t ticks, std::uint64_t frequency) noexcept
+    {
+        return static_cast<double>(ticks) / static_cast<double>(frequency);
+    }
+} // namespace
+
 TEST_CASE("C ABI timeline queries and bounded waits report a finished submission as complete",
           RACHIS_CABI_DEVICE_SIZE RACHIS_CABI_DEVICE_REQUIRES "[rachis][cabi][timeline]")
 {
@@ -3521,4 +3581,100 @@ TEST_CASE("C ABI timeline queries and bounded waits report a finished submission
     CHECK(status == RACHIS_TIMELINE_STATUS_PENDING);
     CHECK(rachis_timeline_wait_for(device.get(), timeline, 0, &status, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
     requireOk(rachis_command_pool_destroy(device.get(), pool, &error), error);
+}
+
+TEST_CASE("C ABI calibrates queue timestamps against the platform's monotonic CPU counter",
+          RACHIS_CABI_DEVICE_SIZE RACHIS_CABI_DEVICE_REQUIRES "[rachis][cabi][query][calibration]")
+{
+    using namespace std::chrono_literals;
+    auto error = makeError();
+    rachis_timestamp_calibration calibration{};
+    calibration.struct_size = sizeof(calibration);
+    std::uint32_t validBits = 99;
+    CHECK(rachis_queue_calibrate_timestamps(nullptr, RACHIS_QUEUE_GRAPHICS, &calibration, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_queue_timestamp_valid_bits(nullptr, RACHIS_QUEUE_GRAPHICS, &validBits, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+
+    auto device = createDevice(error);
+    CHECK(rachis_queue_timestamp_valid_bits(device.get(), RACHIS_QUEUE_GRAPHICS, nullptr, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    validBits = 99;
+    CHECK(rachis_queue_timestamp_valid_bits(device.get(), RACHIS_QUEUE_COPY + 1, &validBits, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(validBits == 0);
+    CHECK(rachis_queue_calibrate_timestamps(device.get(), RACHIS_QUEUE_GRAPHICS, nullptr, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    calibration.struct_size = sizeof(calibration) - 1;
+    calibration.cpu_clock = 99;
+    CHECK(rachis_queue_calibrate_timestamps(device.get(), RACHIS_QUEUE_GRAPHICS, &calibration, &error) ==
+          RACHIS_STATUS_ABI_MISMATCH);
+    CHECK(calibration.cpu_clock == 99);
+    calibration.struct_size = sizeof(calibration);
+    CHECK(rachis_queue_calibrate_timestamps(device.get(), RACHIS_QUEUE_COPY + 1, &calibration, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(calibration.cpu_clock == RACHIS_CPU_CLOCK_NONE);
+
+    const auto platform = readCpuCounter();
+    for (const std::uint32_t queue : {RACHIS_QUEUE_GRAPHICS, RACHIS_QUEUE_COMPUTE, RACHIS_QUEUE_COPY})
+    {
+        INFO("queue " << queue);
+        std::uint64_t frequency = 0;
+        const auto frequencyStatus = rachis_queue_timestamp_frequency(device.get(), queue, &frequency, &error);
+        validBits = 99;
+        const auto bitsStatus = rachis_queue_timestamp_valid_bits(device.get(), queue, &validBits, &error);
+        CHECK(bitsStatus == frequencyStatus);
+        calibration = {};
+        calibration.struct_size = sizeof(calibration);
+        if (frequencyStatus != RACHIS_STATUS_OK)
+        {
+            CHECK(frequencyStatus == RACHIS_STATUS_UNSUPPORTED);
+            CHECK(validBits == 0);
+            CHECK(rachis_queue_calibrate_timestamps(device.get(), queue, &calibration, &error) ==
+                  RACHIS_STATUS_UNSUPPORTED);
+            continue;
+        }
+        CHECK(validBits >= 36U);
+        CHECK(validBits <= 64U);
+
+        const auto firstBefore = readCpuCounter();
+        const auto firstStatus = rachis_queue_calibrate_timestamps(device.get(), queue, &calibration, &error);
+        const auto firstAfter = readCpuCounter();
+        if (firstStatus == RACHIS_STATUS_UNSUPPORTED && vulkanFeatureIsOptional())
+        {
+            INFO(error.message);
+            CHECK(calibration.cpu_clock == RACHIS_CPU_CLOCK_NONE);
+            continue;
+        }
+        requireOk(firstStatus, error);
+        const auto first = calibration;
+        CHECK(first.struct_size == sizeof(first));
+        CHECK(first.cpu_clock == platform.clock);
+        CHECK(first.cpu_frequency == platform.frequency);
+        CHECK(first.gpu_frequency == frequency);
+        CHECK(first.cpu_timestamp >= firstBefore.value);
+        CHECK(first.cpu_timestamp <= firstAfter.value);
+        CHECK(first.max_deviation_ns < 1'000'000'000ULL);
+
+        std::this_thread::sleep_for(50ms);
+        calibration = {};
+        calibration.struct_size = sizeof(calibration);
+        const auto secondBefore = readCpuCounter();
+        requireOk(rachis_queue_calibrate_timestamps(device.get(), queue, &calibration, &error), error);
+        const auto secondAfter = readCpuCounter();
+        const auto second = calibration;
+        CHECK(second.cpu_timestamp >= secondBefore.value);
+        CHECK(second.cpu_timestamp <= secondAfter.value);
+        CHECK(second.cpu_timestamp > first.cpu_timestamp);
+
+        const auto mask = validBits == 64U ? ~std::uint64_t{0} : (std::uint64_t{1} << validBits) - 1U;
+        const auto cpuSeconds = tickSeconds(second.cpu_timestamp - first.cpu_timestamp, first.cpu_frequency);
+        const auto gpuSeconds = tickSeconds((second.gpu_timestamp - first.gpu_timestamp) & mask, first.gpu_frequency);
+        const auto toleranceSeconds =
+            0.002 + static_cast<double>(first.max_deviation_ns + second.max_deviation_ns) / 1'000'000'000.0;
+        CAPTURE(first.gpu_timestamp, second.gpu_timestamp, first.cpu_timestamp, second.cpu_timestamp);
+        CAPTURE(cpuSeconds, gpuSeconds, toleranceSeconds);
+        CHECK(cpuSeconds >= 0.045);
+        CHECK(std::abs(cpuSeconds - gpuSeconds) <= toleranceSeconds);
+    }
 }

@@ -28,12 +28,23 @@ namespace rachis
         std::uint64_t timestampFrequency = 0;
     };
 
+    enum class CpuClock : std::uint8_t
+    {
+        none,
+        queryPerformanceCounter,
+        monotonic,
+        monotonicRaw,
+        machAbsoluteTime,
+    };
+
     struct QueueClockCalibration final
     {
         std::uint64_t gpuTimestamp = 0;
         std::uint64_t cpuTimestamp = 0;
         std::uint64_t gpuFrequency = 0;
         std::uint64_t cpuFrequency = 0;
+        std::uint64_t maxDeviationNanoseconds = 0;
+        CpuClock cpuClock = CpuClock::none;
     };
 
     inline constexpr std::uint64_t predicateValueSize = sizeof(std::uint64_t);

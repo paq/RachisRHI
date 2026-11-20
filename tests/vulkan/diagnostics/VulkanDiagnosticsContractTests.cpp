@@ -290,10 +290,15 @@ TEST_CASE("valid Vulkan bootstrap produces no unexplained diagnostics", "[size:m
     CHECK(report->allocations.empty());
 
     auto clock = created->calibrateQueueClock(rachis::QueueType::graphics);
-    REQUIRE(clock);
+    if (!clock)
+    {
+        CHECK(clock.error().code == rachis::ErrorCode::unsupported);
+        return;
+    }
     CHECK(clock->cpuTimestamp > 0);
     CHECK(clock->cpuFrequency > 0);
     CHECK(clock->gpuFrequency == created->queueProperties(rachis::QueueType::graphics).timestampFrequency);
+    CHECK(created->diagnosticCounts().errors == 0);
 }
 
 TEST_CASE("intentional invalid Vulkan work produces attributed diagnostics", "[size:medium][rhi][vulkan][diagnostics]")

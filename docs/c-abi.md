@@ -22,6 +22,7 @@ The C ABI lives in the `rachis` shared library (`Rachis::C` in CMake) and export
 - [Threads](#threads)
 - [Device loss](#device-loss)
 - [Timeline waits with a timeout](#timeline-waits-with-a-timeout)
+- [Timestamps on the CPU clock](#timestamps-on-the-cpu-clock)
 
 ## Version
 
@@ -91,6 +92,7 @@ Supported C ABI surface:
 - Adapter identification
 - Surfaces, swapchains, and presentation status
 - Timeline queries and waits with a timeout
+- Timestamp calibration against the CPU's monotonic counter, and the valid timestamp bits of each queue
 
 ### C++-only features and stage rules
 
@@ -267,3 +269,29 @@ if (rachis_timeline_wait_for(device, timeline, 2000000000ull, &state, &error) ==
     report_stalled_gpu();
 }
 ```
+
+## Timestamps on the CPU clock
+
+`rachis_queue_calibrate_timestamps` reads a queue's GPU timestamp counter and the CPU's monotonic counter at nearly the same moment, so that a timestamp from `rachis_command_resolve_timestamps` can be placed on the CPU's timeline. Set `struct_size` of the `rachis_timestamp_calibration` first.
+
+| Field | Meaning |
+| --- | --- |
+| `cpu_clock` | The CPU counter that `cpu_timestamp` comes from (see below) |
+| `gpu_timestamp`, `gpu_frequency` | The queue's timestamp, and its ticks per second (the value of `rachis_queue_timestamp_frequency`) |
+| `cpu_timestamp`, `cpu_frequency` | The CPU counter's value, and its ticks per second |
+| `max_deviation_ns` | Upper bound, in nanoseconds, on how far apart the two readings were taken |
+
+The CPU counter is the operating system's monotonic counter, read in its own units:
+
+| `cpu_clock` | Where | `cpu_timestamp` | `cpu_frequency` |
+| --- | --- | --- | --- |
+| `RACHIS_CPU_CLOCK_QUERY_PERFORMANCE_COUNTER` | Windows: Direct3D 12 and Vulkan | `QueryPerformanceCounter` | `QueryPerformanceFrequency` |
+| `RACHIS_CPU_CLOCK_MONOTONIC` | Linux: Vulkan | `clock_gettime(CLOCK_MONOTONIC)` in nanoseconds | `1000000000` |
+| `RACHIS_CPU_CLOCK_MACH_ABSOLUTE_TIME` | macOS: Metal | `mach_absolute_time()` | Ticks per second from `mach_timebase_info` (`24000000` on Apple silicon) |
+
+A timestamp $t$ of that queue is at $\text{cpu\_timestamp} + (t - \text{gpu\_timestamp}) \cdot \text{cpu\_frequency} / \text{gpu\_frequency}$ on the CPU counter. The two clocks drift apart slowly, so calibrate again from time to time, for example once a second.
+
+- **Valid bits:** `rachis_queue_timestamp_valid_bits` returns how many low bits of a timestamp of that queue count: `64` on Direct3D 12 and Metal, and the queue family's `timestampValidBits` on Vulkan (`36` to `64`). A counter with fewer than 64 bits wraps to zero, so take the difference of two timestamps modulo $2^{\text{bits}}$. A queue without timestamp queries returns `RACHIS_STATUS_UNSUPPORTED`, as `rachis_queue_timestamp_frequency` does.
+- **Backends:** Direct3D 12 calibrates with `ID3D12CommandQueue::GetClockCalibration`, Metal with `-[MTLDevice sampleTimestamps:gpuTimestamp:]`, and Vulkan with `vkGetCalibratedTimestampsKHR` from `VK_KHR_calibrated_timestamps`, or `vkGetCalibratedTimestampsEXT` from `VK_EXT_calibrated_timestamps`, over the device time domain and the CPU counter's domain. On Direct3D 12 and Metal, `max_deviation_ns` is the time the call took; on Vulkan it is the driver's maximum deviation.
+- **Unsupported:** A queue without timestamp queries, a Vulkan device with neither extension or without both time domains, and Vulkan on macOS (MoltenVK offers `CLOCK_MONOTONIC_RAW`, not `mach_absolute_time`) return `RACHIS_STATUS_UNSUPPORTED`.
+- **Failures:** A call that fails, after checking `struct_size`, leaves every field but `struct_size` zero, and `cpu_clock` `RACHIS_CPU_CLOCK_NONE`. On a lost device it returns `RACHIS_STATUS_DEVICE_LOST`.

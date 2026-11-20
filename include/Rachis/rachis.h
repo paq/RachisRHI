@@ -1289,6 +1289,34 @@ extern "C"
     RACHIS_API rachis_status rachis_timeline_wait_for(
         rachis_device* device, rachis_handle timeline, uint64_t timeout_ns, uint32_t* status, rachis_error* error);
 
+    enum
+    {
+        RACHIS_CPU_CLOCK_NONE = 0,
+        RACHIS_CPU_CLOCK_QUERY_PERFORMANCE_COUNTER = 1,
+        RACHIS_CPU_CLOCK_MONOTONIC = 2,
+        RACHIS_CPU_CLOCK_MACH_ABSOLUTE_TIME = 3
+    };
+
+    typedef struct rachis_timestamp_calibration
+    {
+        uint32_t struct_size;
+        uint32_t cpu_clock;
+        uint64_t gpu_timestamp;
+        uint64_t gpu_frequency;
+        uint64_t cpu_timestamp;
+        uint64_t cpu_frequency;
+        uint64_t max_deviation_ns;
+    } rachis_timestamp_calibration;
+
+    RACHIS_API rachis_status rachis_queue_timestamp_valid_bits(rachis_device* device,
+                                                               uint32_t queue_type,
+                                                               uint32_t* output,
+                                                               rachis_error* error);
+    RACHIS_API rachis_status rachis_queue_calibrate_timestamps(rachis_device* device,
+                                                               uint32_t queue_type,
+                                                               rachis_timestamp_calibration* output,
+                                                               rachis_error* error);
+
 #ifdef __cplusplus
 }
 #endif

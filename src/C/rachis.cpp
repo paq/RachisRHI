@@ -4034,6 +4034,22 @@ namespace
         return *entry;
     }
 
+    [[nodiscard]] std::uint32_t cpuClockOf(rachis::CpuClock clock) noexcept
+    {
+        switch (clock)
+        {
+        case rachis::CpuClock::queryPerformanceCounter:
+            return RACHIS_CPU_CLOCK_QUERY_PERFORMANCE_COUNTER;
+        case rachis::CpuClock::monotonic:
+            return RACHIS_CPU_CLOCK_MONOTONIC;
+        case rachis::CpuClock::machAbsoluteTime:
+            return RACHIS_CPU_CLOCK_MACH_ABSOLUTE_TIME;
+        case rachis::CpuClock::none:
+        case rachis::CpuClock::monotonicRaw:
+            return RACHIS_CPU_CLOCK_NONE;
+        }
+        return RACHIS_CPU_CLOCK_NONE;
+    }
 } // namespace
 
 extern "C"
@@ -4087,6 +4103,79 @@ extern "C"
                 return result(error, waited.error());
             }
             *status = timelineStatusOf(*waited);
+            return RACHIS_STATUS_OK;
+        });
+    }
+
+    rachis_status rachis_queue_timestamp_valid_bits(rachis_device* device,
+                                                    std::uint32_t queueType,
+                                                    std::uint32_t* output,
+                                                    rachis_error* error)
+    {
+        return boundary(error, [&]() -> rachis_status {
+            if (device == nullptr || output == nullptr)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "device or output valid bits is null");
+            }
+            *output = 0;
+            if (queueType > RACHIS_QUEUE_COPY)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "invalid queue type");
+            }
+            std::shared_lock const lock(device->mutex);
+            const auto properties = device->native.queueProperties(static_cast<rachis::QueueType>(queueType));
+            if (!properties.timestampQueries || properties.timestampValidBits == 0)
+            {
+                return fail(error, RACHIS_STATUS_UNSUPPORTED, "the queue does not support timestamp queries");
+            }
+            *output = properties.timestampValidBits;
+            return RACHIS_STATUS_OK;
+        });
+    }
+
+    rachis_status rachis_queue_calibrate_timestamps(rachis_device* device,
+                                                    std::uint32_t queueType,
+                                                    rachis_timestamp_calibration* output,
+                                                    rachis_error* error)
+    {
+        return boundary(error, [&]() -> rachis_status {
+            if (device == nullptr || output == nullptr)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "device or calibration output is null");
+            }
+            if (output->struct_size != sizeof(*output))
+            {
+                return fail(error, RACHIS_STATUS_ABI_MISMATCH, "invalid timestamp calibration output layout");
+            }
+            *output = rachis_timestamp_calibration{};
+            output->struct_size = sizeof(*output);
+            if (queueType > RACHIS_QUEUE_COPY)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "invalid queue type");
+            }
+            std::shared_lock const lock(device->mutex);
+            if (const auto lost = rejectLostDevice(*device, error))
+            {
+                return *lost;
+            }
+            const auto calibrated = device->native.calibrateQueueClock(static_cast<rachis::QueueType>(queueType));
+            if (!calibrated)
+            {
+                return result(error, calibrated.error());
+            }
+            const auto clock = cpuClockOf(calibrated->cpuClock);
+            if (clock == RACHIS_CPU_CLOCK_NONE || calibrated->cpuFrequency == 0 || calibrated->gpuFrequency == 0)
+            {
+                return fail(error,
+                            RACHIS_STATUS_UNSUPPORTED,
+                            "the queue clock is not calibrated against the platform's monotonic CPU counter");
+            }
+            output->cpu_clock = clock;
+            output->gpu_timestamp = calibrated->gpuTimestamp;
+            output->gpu_frequency = calibrated->gpuFrequency;
+            output->cpu_timestamp = calibrated->cpuTimestamp;
+            output->cpu_frequency = calibrated->cpuFrequency;
+            output->max_deviation_ns = calibrated->maxDeviationNanoseconds;
             return RACHIS_STATUS_OK;
         });
     }

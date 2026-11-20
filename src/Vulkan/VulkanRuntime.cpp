@@ -1340,11 +1340,14 @@ namespace rachis::vulkan
 #else
                 false;
 #endif
-            record.calibratedTimestamps =
+#ifdef VK_KHR_calibrated_timestamps
+            record.calibratedTimestampsKhr =
+                hasExtension(device.extensions, VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
+#endif
+            record.calibratedTimestamps = record.calibratedTimestampsKhr;
 #ifdef VK_EXT_calibrated_timestamps
-                hasExtension(device.extensions, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
-#else
-                false;
+            record.calibratedTimestamps = record.calibratedTimestamps ||
+                                          hasExtension(device.extensions, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
 #endif
             record.memoryBudget = hasExtension(device.extensions, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
             record.memoryPriority = false;
@@ -2291,8 +2294,13 @@ namespace rachis::vulkan
 #ifdef VK_KHR_external_semaphore_win32
             appendIf(names, record.sharedTimelineHandles, VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME);
 #endif
+#ifdef VK_KHR_calibrated_timestamps
+            appendIf(names, record.calibratedTimestampsKhr, VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
+#endif
 #ifdef VK_EXT_calibrated_timestamps
-            appendIf(names, record.calibratedTimestamps, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
+            appendIf(names,
+                     record.calibratedTimestamps && !record.calibratedTimestampsKhr,
+                     VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
 #endif
             appendIf(names, record.memoryBudget, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
 #ifdef VK_EXT_memory_priority

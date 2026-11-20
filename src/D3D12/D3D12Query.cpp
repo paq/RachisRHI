@@ -42,6 +42,15 @@ namespace rachis::d3d12
             return queueIndex(queueType) < queueCount;
         }
 
+        [[nodiscard]] constexpr std::uint64_t ticksToNanosecondsRoundedUp(std::uint64_t ticks,
+                                                                          std::uint64_t frequency) noexcept
+        {
+            constexpr std::uint64_t nanosecondsPerSecond = 1'000'000'000ULL;
+            const auto seconds = ticks / frequency;
+            const auto remainder = ticks % frequency;
+            return seconds * nanosecondsPerSecond + (remainder * nanosecondsPerSecond + frequency - 1) / frequency;
+        }
+
         [[nodiscard]] constexpr std::optional<D3D12_PREDICATION_OP> nativePredicateOperation(
             PredicateOperation operation) noexcept
         {
@@ -643,7 +652,11 @@ namespace rachis::d3d12
 
         std::uint64_t gpuTimestamp = 0;
         std::uint64_t cpuTimestamp = 0;
+        LARGE_INTEGER before{};
+        LARGE_INTEGER after{};
+        static_cast<void>(QueryPerformanceCounter(&before));
         result = (*queue)->GetClockCalibration(&gpuTimestamp, &cpuTimestamp);
+        static_cast<void>(QueryPerformanceCounter(&after));
         if (FAILED(result))
         {
             const auto code = isD3D12DeviceLossHresult(static_cast<std::int32_t>(result)) ? ErrorCode::deviceLost
@@ -651,11 +664,16 @@ namespace rachis::d3d12
             return std::unexpected(nativeError(code, result, "ID3D12CommandQueue::GetClockCalibration"));
         }
 
+        const auto hostFrequency = static_cast<std::uint64_t>(cpuFrequency.QuadPart);
+        const auto bracketTicks =
+            (after.QuadPart > before.QuadPart ? static_cast<std::uint64_t>(after.QuadPart - before.QuadPart) : 0) + 1;
         return QueueClockCalibration{
             .gpuTimestamp = gpuTimestamp,
             .cpuTimestamp = cpuTimestamp,
             .gpuFrequency = gpuFrequency,
-            .cpuFrequency = static_cast<std::uint64_t>(cpuFrequency.QuadPart),
+            .cpuFrequency = hostFrequency,
+            .maxDeviationNanoseconds = ticksToNanosecondsRoundedUp(bracketTicks, hostFrequency),
+            .cpuClock = CpuClock::queryPerformanceCounter,
         };
     }
 
