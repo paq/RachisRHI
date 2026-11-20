@@ -5257,4 +5257,146 @@ TEST_CASE("Vulkan acceleration-structure scratch buffers start at the scratch-of
     gShaderTableMock = nullptr;
     gIndirectMock = nullptr;
 }
+
+TEST_CASE("Vulkan BLAS size queries hold every geometry to one type and the device's total primitive limit",
+          "[size:small][rhi][vulkan][ray-query]")
+{
+    IndirectAndBindingMockState indirectMock;
+    gIndirectMock = &indirectMock;
+    ShaderTableMockState bufferMock;
+    gShaderTableMock = &bufferMock;
+    ScratchMockState mock;
+    gScratchMock = &mock;
+
+    rachis::vulkan::VulkanInstanceTable instanceTable{};
+    instanceTable.vkGetInstanceProcAddr = &indMockGetInstanceProcAddr;
+    instanceTable.vkGetDeviceProcAddr = &indMockGetDeviceProcAddr;
+    instanceTable.vkGetPhysicalDeviceProperties = &indMockGetPhysicalProps;
+    instanceTable.vkGetPhysicalDeviceProperties2 = &indMockGetPhysicalProps2;
+    instanceTable.vkGetPhysicalDeviceMemoryProperties = &indMockGetPhysicalMemProps;
+    instanceTable.vkGetPhysicalDeviceMemoryProperties2 = &indMockGetPhysicalMemProps2;
+
+    VolkDeviceTable table{};
+    table.vkAllocateMemory = &indMockAllocateMemory;
+    table.vkFreeMemory = &indMockFreeMemory;
+    table.vkMapMemory = &indMockMapMemory;
+    table.vkUnmapMemory = &indMockUnmapMemory;
+    table.vkFlushMappedMemoryRanges = &indMockFlushRanges;
+    table.vkInvalidateMappedMemoryRanges = &indMockInvalidateRanges;
+    table.vkCreateBuffer = &sbtMockCreateBuffer;
+    table.vkDestroyBuffer = &indMockDestroyBuffer;
+    table.vkGetBufferMemoryRequirements = &sbtMockGetBufferMemReqs;
+    table.vkGetBufferMemoryRequirements2 = &sbtMockGetBufferMemReqs2;
+    table.vkGetDeviceBufferMemoryRequirements = &sbtMockGetDeviceBufferMemReqs;
+    table.vkBindBufferMemory = &sbtMockBindBufferMemory;
+    table.vkBindBufferMemory2 = &sbtMockBindBufferMemory2;
+    table.vkGetBufferDeviceAddress = &sbtMockGetBufferDeviceAddress;
+    table.vkCreateImage = &indMockCreateImage;
+    table.vkDestroyImage = &indMockDestroyImage;
+    table.vkGetImageMemoryRequirements = &indMockGetImageMemReqs;
+    table.vkGetImageMemoryRequirements2 = &indMockGetImageMemReqs2;
+    table.vkGetDeviceImageMemoryRequirements = &indMockGetDeviceImageMemReqs;
+    table.vkBindImageMemory = &indMockBindImageMemory;
+    table.vkBindImageMemory2 = &indMockBindImageMemory2;
+    table.vkCmdCopyBuffer = &indMockCmdCopyBuffer;
+    table.vkCreateCommandPool = &indMockCreateCommandPool;
+    table.vkDestroyCommandPool = &indMockDestroyCommandPool;
+    table.vkAllocateCommandBuffers = &indMockAllocCmdBuffers;
+    table.vkFreeCommandBuffers = &indMockFreeCmdBuffers;
+    table.vkBeginCommandBuffer = &indMockBeginCmdBuffer;
+    table.vkEndCommandBuffer = &indMockEndCmdBuffer;
+    table.vkResetCommandBuffer = &indMockResetCmdBuffer;
+    table.vkResetCommandPool = &indMockResetCmdPool;
+    table.vkCreateAccelerationStructureKHR = &scratchMockCreateAccelerationStructure;
+    table.vkDestroyAccelerationStructureKHR = &scratchMockDestroyAccelerationStructure;
+    table.vkGetAccelerationStructureBuildSizesKHR = &scratchMockGetBuildSizes;
+    table.vkGetAccelerationStructureDeviceAddressKHR = &scratchMockGetAccelerationStructureAddress;
+    table.vkCmdBuildAccelerationStructuresKHR = &scratchMockCmdBuild;
+    table.vkCmdPipelineBarrier2 = &scratchMockCmdPipelineBarrier2;
+
+    const auto instance = fakeVk<VkInstance>(0xF8);
+    const auto physical = fakeVk<VkPhysicalDevice>(0xF9);
+    const auto device = fakeVk<VkDevice>(0xFA);
+    const rachis::vulkan::VulkanQueueFamilies families{.graphics = 0, .compute = 0, .transfer = 0};
+    VkPhysicalDeviceMemoryProperties memProps{};
+    indMockGetPhysicalMemProps(physical, &memProps);
+
+    rachis::DeviceCapabilities caps{};
+    caps.rayQuery = true;
+    caps.rayTracingLimits.maxPrimitivesPerBottomLevel = 3;
+
+    rachis::vulkan::VulkanResourceAllocator resources;
+    REQUIRE(resources
+                .initialize(instance,
+                            &instanceTable,
+                            physical,
+                            device,
+                            &table,
+                            memProps,
+                            families,
+                            fakeVk<VkQueue>(0xFB),
+                            64,
+                            false,
+                            false,
+                            false,
+                            false,
+                            true,
+                            false,
+                            true,
+                            true,
+                            false,
+                            0,
+                            scratchMockAlignment)
+                .has_value());
+    rachis::vulkan::VulkanAccelerationManager acceleration;
+    acceleration.initialize(device, &table, &resources, &caps, scratchMockAlignment, &instanceTable);
+
+    const auto bounds = resources.createBuffer({
+        .size = 3U * 6U * sizeof(float),
+        .usage = rachis::BufferUsage::accelerationStructureBuildInput,
+    });
+    const auto vertices = resources.createBuffer({
+        .size = 3U * 3U * sizeof(float),
+        .usage = rachis::BufferUsage::accelerationStructureBuildInput,
+    });
+    REQUIRE(bounds.has_value());
+    REQUIRE(vertices.has_value());
+    const auto boxes = [&](std::uint32_t count) {
+        return rachis::AccelerationStructureGeometry{
+            .data = rachis::AccelerationStructureAabbGeometry{.buffer = *bounds, .count = count},
+        };
+    };
+    const rachis::AccelerationStructureGeometry triangle{
+        .data =
+            rachis::AccelerationStructureTriangleGeometry{
+                .vertexBuffer = *vertices,
+                .vertexCount = 3,
+                .vertexStride = 3U * sizeof(float),
+                .vertexFormat = rachis::AccelerationStructureVertexFormat::float32x3,
+            },
+    };
+    const auto query = [&](std::initializer_list<rachis::AccelerationStructureGeometry> geometries) {
+        const std::vector<rachis::AccelerationStructureGeometry> list(geometries);
+        return acceleration.queryBottomLevelBuildSizes({.geometries = list});
+    };
+    const auto requireRejected = [](const rachis::Result<rachis::AccelerationStructureBuildSizes>& sizes) {
+        REQUIRE_FALSE(sizes.has_value());
+        CHECK(sizes.error().code == rachis::ErrorCode::invalidArgument);
+    };
+
+    CHECK(query({boxes(1), boxes(2)}).has_value());
+    CHECK(query({triangle, triangle, triangle}).has_value());
+    requireRejected(query({boxes(2), boxes(2)}));
+    requireRejected(query({triangle, triangle, triangle, triangle}));
+    requireRejected(query({boxes(1), triangle}));
+    requireRejected(query({triangle, boxes(1)}));
+
+    REQUIRE(resources.destroyBuffer(*bounds).has_value());
+    REQUIRE(resources.destroyBuffer(*vertices).has_value());
+    acceleration.shutdown();
+    resources.shutdown();
+    gScratchMock = nullptr;
+    gShaderTableMock = nullptr;
+    gIndirectMock = nullptr;
+}
 #endif

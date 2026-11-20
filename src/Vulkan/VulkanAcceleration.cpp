@@ -1130,6 +1130,7 @@ namespace rachis::vulkan
         std::vector<std::uint32_t> primitiveCounts;
         geometries.reserve(input.geometries.size());
         primitiveCounts.reserve(input.geometries.size());
+        std::uint64_t totalPrimitives = 0;
         for (const auto& geometry : input.geometries)
         {
             auto native = validatedBottomLevelGeometry(*resources_, geometry);
@@ -1137,8 +1138,27 @@ namespace rachis::vulkan
             {
                 return std::unexpected(std::move(native.error()));
             }
+            if (!geometries.empty() && native->geometry.geometryType != geometries.front().geometryType)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidArgument,
+                    0,
+                    "A BLAS build cannot mix triangle and AABB geometries.",
+                });
+            }
             geometries.push_back(native->geometry);
             primitiveCounts.push_back(native->primitiveCount);
+            totalPrimitives += native->primitiveCount;
+        }
+        if (const auto limit = capabilities_->rayTracingLimits.maxPrimitivesPerBottomLevel;
+            limit != 0 && totalPrimitives > limit)
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidArgument,
+                0,
+                "The geometries of a BLAS build hold more primitives in total than the device's "
+                "maxPrimitivesPerBottomLevel limit.",
+            });
         }
         return queryBuildSizes(VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
                                input.flags,
