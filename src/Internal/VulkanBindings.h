@@ -231,10 +231,10 @@ namespace rachis::vulkan
             std::uint64_t bufferSize = 0;
         };
 
-        struct SwapchainViewSlots final
+        struct SwapchainViewLeases final
         {
-            std::vector<std::size_t> slots;
             std::vector<std::shared_ptr<VulkanSwapchainImageLease>> leases;
+            std::vector<std::size_t> slotCounts;
         };
 
         struct StagedSlot final
@@ -242,6 +242,7 @@ namespace rachis::vulkan
             std::size_t index = 0;
             std::size_t write = 0;
             BindingSlot slot;
+            std::shared_ptr<VulkanSwapchainImageLease> replacedSwapchainLease;
         };
 
     private:
@@ -261,7 +262,7 @@ namespace rachis::vulkan
             std::uint32_t variableDescriptorCount = 0;
             std::shared_ptr<BindingPoolVersionLease> versionLease;
             std::shared_ptr<const std::vector<VulkanAccelerationStructureUse>> accelerationStructureUses;
-            std::shared_ptr<const SwapchainViewSlots> swapchainViews;
+            std::shared_ptr<const SwapchainViewLeases> swapchainViews;
             std::vector<BindingSlot> superseded;
             std::shared_ptr<BindingSetVersion> next;
         };

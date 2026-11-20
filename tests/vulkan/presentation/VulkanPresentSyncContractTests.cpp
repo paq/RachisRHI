@@ -346,7 +346,8 @@ namespace
 
         SampledSwapchainPipeline(rachis::Device& owner,
                                  rachis::BindingFlag textureFlags,
-                                 std::span<const rachis::BindingLayoutHandle> laterSets = {})
+                                 std::span<const rachis::BindingLayoutHandle> laterSets = {},
+                                 std::uint32_t extraTextureSlots = 0)
             : device(owner)
         {
             const auto bytecode = loadSpirv("VulkanSampledTexture.spv");
@@ -365,12 +366,20 @@ namespace
             });
             REQUIRE(createdShader.has_value());
             shader = *createdShader;
-            const std::array entries{
+            std::vector entries{
                 rachis::BindingLayoutEntry{
                     0, rachis::BindingType::sampledTexture, rachis::ShaderStage::compute, 1, textureFlags},
                 rachis::BindingLayoutEntry{1, rachis::BindingType::sampler, rachis::ShaderStage::compute, 1},
                 rachis::BindingLayoutEntry{2, rachis::BindingType::storageBuffer, rachis::ShaderStage::compute, 1},
             };
+            if (extraTextureSlots != 0)
+            {
+                entries.push_back(rachis::BindingLayoutEntry{3,
+                                                             rachis::BindingType::sampledTexture,
+                                                             rachis::ShaderStage::compute,
+                                                             extraTextureSlots,
+                                                             textureFlags});
+            }
             auto createdLayout =
                 device.createBindingLayout({.entries = entries, .label = "Vulkan swapchain sampling layout"});
             REQUIRE(createdLayout.has_value());
@@ -1129,6 +1138,93 @@ TEST_CASE("Vulkan binding batches that fail after retaining a swapchain image le
         REQUIRE(device.destroyTextureView(view).has_value());
     }
     REQUIRE(device.destroyBindingLayout(laterLayout).has_value());
+    REQUIRE(device.waitIdle().has_value());
+    CHECK(fixture.errors.load() == 0);
+}
+
+TEST_CASE("Vulkan in-place writes over swapchain views copy bookkeeping per distinct image rather than per slot",
+          "[size:medium][requires:InteractiveDesktop][requires:HardwareVulkan][rhi][vulkan][present][lifetime]")
+{
+    PresentFixture fixture(true, 2, rachis::TextureUsage::renderTarget | rachis::TextureUsage::sampled);
+    if (!fixture.ready && fixture.error.code == rachis::ErrorCode::unsupported)
+    {
+        SKIP("The surface does not support sampled swapchain images.");
+    }
+    REQUIRE(fixture.ready);
+    auto& device = fixture.device;
+    if (!rachis::test::requireCapabilities(device).updateAfterBindBindingArrays)
+    {
+        SKIP("The Vulkan device does not support update-after-bind binding arrays.");
+    }
+    constexpr std::uint32_t slotCount = 64;
+    SampledSwapchainPipeline inPlace(
+        device, rachis::BindingFlag::partiallyBound | rachis::BindingFlag::updateAfterBind, {}, slotCount);
+    const std::array poolSizes{
+        rachis::BindingPoolSize{rachis::BindingType::sampledTexture, slotCount + 1},
+        rachis::BindingPoolSize{rachis::BindingType::sampler, 1},
+        rachis::BindingPoolSize{rachis::BindingType::storageBuffer, 1},
+    };
+    auto pool = device.createBindingPool({.maxBindingSets = 1, .sizes = poolSizes});
+    REQUIRE(pool.has_value());
+    SampledSwapchainSets resources(device, 1);
+    auto plain = device.createTexture({
+        .width = 2,
+        .height = 2,
+        .format = rachis::Format::r32Float,
+        .usage = rachis::TextureUsage::sampled,
+        .label = "Vulkan in-place swapchain replacement",
+    });
+    REQUIRE(plain.has_value());
+    auto plainView = device.createTextureView({.texture = *plain, .usage = rachis::TextureViewUsage::sampled});
+    REQUIRE(plainView.has_value());
+
+    auto acquired = device.acquireNextImage(fixture.swapchain);
+    REQUIRE(acquired);
+    auto swapchainView =
+        device.createTextureView({.texture = acquired->texture, .usage = rachis::TextureViewUsage::sampled});
+    REQUIRE(swapchainView.has_value());
+    std::vector<rachis::BindingWrite> writes;
+    for (std::uint32_t slot = 0; slot < slotCount; ++slot)
+    {
+        writes.push_back(rachis::BindingWrite{3, slot, *swapchainView});
+    }
+    writes.push_back(rachis::BindingWrite{0, 0, *plainView});
+    writes.push_back(rachis::BindingWrite{1, 0, resources.sampler});
+    writes.push_back(
+        rachis::BindingWrite{2, 0, rachis::BufferBinding{resources.output, 0, 4 * sizeof(float), sizeof(float)}});
+    auto table = device.createBindingSet({.layout = inPlace.layout, .writes = writes, .pool = *pool});
+    REQUIRE(table.has_value());
+
+    {
+        auto recorded = rachis::test::acquireCommandBuffer(device, rachis::QueueType::graphics);
+        REQUIRE(recorded);
+        REQUIRE(inPlace.bind(*recorded, *table).has_value());
+        auto& copies = rachis::vulkan::test::inPlaceSwapchainLeaseCopies();
+        const auto copiesBefore = copies.load();
+        for (std::uint32_t slot = 0; slot < slotCount; ++slot)
+        {
+            const std::array replacement{rachis::BindingWrite{3, slot, *plainView}};
+            REQUIRE(device.updateBindingSet(*table, replacement).has_value());
+        }
+        CHECK(copies.load() - copiesBefore <= slotCount);
+        REQUIRE_FALSE(device.cancelSwapchainImage(fixture.swapchain).has_value());
+    }
+    {
+        auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::graphics);
+        REQUIRE(command);
+        REQUIRE(inPlace.bind(*command, *table).has_value());
+        CHECK(device.cancelSwapchainImage(fixture.swapchain).has_value());
+    }
+    if (device.hasAcquiredSwapchainImage(fixture.swapchain))
+    {
+        REQUIRE(device.cancelSwapchainImage(fixture.swapchain).has_value());
+    }
+
+    REQUIRE(device.destroyBindingSet(*table).has_value());
+    REQUIRE(device.destroyBindingPool(*pool).has_value());
+    REQUIRE(device.destroyTextureView(*swapchainView).has_value());
+    REQUIRE(device.destroyTextureView(*plainView).has_value());
+    REQUIRE(device.destroyTexture(*plain).has_value());
     REQUIRE(device.waitIdle().has_value());
     CHECK(fixture.errors.load() == 0);
 }

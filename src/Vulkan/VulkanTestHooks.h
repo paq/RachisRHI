@@ -100,6 +100,12 @@ namespace rachis::vulkan::test
         return s_value;
     }
 
+    [[nodiscard]] inline std::atomic_uint64_t& inPlaceSwapchainLeaseCopies() noexcept
+    {
+        static std::atomic_uint64_t s_value = 0;
+        return s_value;
+    }
+
     [[nodiscard]] Status injectCreateResult(std::int32_t vkResult);
 
     [[nodiscard]] inline std::atomic_int32_t& nextSemaphoreCounterValueResult() noexcept
