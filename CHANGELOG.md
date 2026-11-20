@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- On Vulkan, `createSwapchain` takes the surface's current extent where the
+  surface fixes it, as `resizeSwapchain` does, instead of failing with
+  `ErrorCode::invalidArgument` when the window changed size after
+  `querySurfaceCapabilities`. On a surface with a zero extent, such as a
+  minimized Win32 window, it creates a suspended swapchain: `acquireNextImage`
+  fails with `ErrorCode::invalidState` until a `resizeSwapchain` finds an
+  extent.
+
 ## 0.2.0
 
 - The C ABI is at `RACHIS_ABI_VERSION` 2, and the shared library is

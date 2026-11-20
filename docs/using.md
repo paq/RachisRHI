@@ -316,6 +316,7 @@ Surface and swapchain lifecycle rules:
   - On Direct3D 12 and Vulkan, only one acquired image may be active at a time (`acquire` -> record/submit -> `present` or `cancelSwapchainImage`); out-of-order calls return `ErrorCode::invalidState`.
   - If Direct3D 12 `present` or `resizeSwapchain` fails, `querySwapchainPresentation` and `querySwapchainFrameTiming` still succeed and let you inspect state before recovering or recreating.
   - On Vulkan, a failed `resizeSwapchain` retires the old swapchain cleanly—call `resizeSwapchain` again to recover or `destroySwapchain` to tear down.
+  - On Vulkan, where the surface fixes the image extent (a Win32 window's client area), `createSwapchain` takes that extent as `resizeSwapchain` does, rather than the requested one; read the images' size from `AcquiredSwapchainImage`. A zero surface extent (a minimized window) gives a suspended swapchain, whose `acquireNextImage` fails with `ErrorCode::invalidState` until a `resizeSwapchain` finds a non-zero extent. The requested extent must still be non-zero.
   - On Direct3D 12, `resizeSwapchain` fails with `ErrorCode::invalidState` if any C++ swapchain image views or binding sets referencing them are still alive.
 
 ---

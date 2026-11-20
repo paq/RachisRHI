@@ -4302,6 +4302,137 @@ TEST_CASE("VulkanSwapchainManager deduplicates WSI capability queries while pres
     }
 }
 
+TEST_CASE("VulkanSwapchainManager creates a swapchain at the surface's current extent and suspends a zero extent",
+          "[size:small][rhi][vulkan]")
+{
+    const rachis::SwapchainDesc stale{
+        .width = 128,
+        .height = 128,
+        .imageCount = 2,
+        .format = rachis::Format::rgba8Unorm,
+        .colorSpace = rachis::SurfaceColorSpace::srgbNonlinear,
+        .usage = rachis::TextureUsage::renderTarget,
+        .presentMode = rachis::PresentMode::fifo,
+    };
+    const auto withSurface = [&stale](rachis::SurfaceHandle surface) {
+        auto desc = stale;
+        desc.surface = surface;
+        return desc;
+    };
+    const auto presentFrame = [](rachis::vulkan::VulkanPerformanceSwapchainTestAccess& fixture,
+                                 rachis::SwapchainHandle swapchain,
+                                 std::uint32_t width,
+                                 std::uint32_t height) {
+        const auto acquired = fixture.swapchains.acquireNextImage(swapchain);
+        REQUIRE(acquired.has_value());
+        CHECK(acquired->width == width);
+        CHECK(acquired->height == height);
+        const auto point = fixture.submitEmptyGraphicsWork();
+        bool injectedLoss = false;
+        const auto presented = fixture.swapchains.present(swapchain, point, injectedLoss);
+        REQUIRE(presented.has_value());
+        CHECK(*presented == rachis::PresentStatus::presented);
+    };
+
+    SECTION("A window resized between the capability query and the create gets a swapchain at its new extent")
+    {
+        ScopedPerfMock mock;
+        mock.state.surfaceCurrentExtent = {128, 128};
+        rachis::vulkan::VulkanPerformanceSwapchainTestAccess fixture(rachis::SurfaceKind::xcb);
+        const auto queried = fixture.swapchains.querySurfaceCapabilities(fixture.surfaceHandle);
+        REQUIRE(queried.has_value());
+        CHECK(queried->preferredWidth == 128U);
+        {
+            const std::scoped_lock lock(mock.state.mutex);
+            mock.state.surfaceCurrentExtent = {200, 150};
+        }
+        const auto swapchain = fixture.swapchains.createSwapchain(withSurface(fixture.surfaceHandle));
+        REQUIRE(swapchain.has_value());
+        {
+            const std::scoped_lock lock(mock.state.mutex);
+            CHECK(mock.state.createdSwapchains.size() == 1U);
+        }
+        presentFrame(fixture, *swapchain, 200, 150);
+        REQUIRE(fixture.swapchains.destroySwapchain(*swapchain).has_value());
+    }
+
+    SECTION("A minimized window gets a suspended swapchain that the first resize with an extent replaces")
+    {
+        ScopedPerfMock mock;
+        mock.state.surfaceCurrentExtent = {0, 0};
+        rachis::vulkan::VulkanPerformanceSwapchainTestAccess fixture(rachis::SurfaceKind::xcb);
+        const auto swapchain = fixture.swapchains.createSwapchain(withSurface(fixture.surfaceHandle));
+        REQUIRE(swapchain.has_value());
+        {
+            const std::scoped_lock lock(mock.state.mutex);
+            CHECK(mock.state.createdSwapchains.empty());
+        }
+        const auto timing = fixture.swapchains.queryFrameTiming(*swapchain);
+        REQUIRE(timing.has_value());
+        CHECK(timing->hidden);
+        const auto refused = fixture.swapchains.acquireNextImage(*swapchain);
+        REQUIRE_FALSE(refused.has_value());
+        CHECK(refused.error().code == rachis::ErrorCode::invalidState);
+        REQUIRE(fixture.swapchains.resizeSwapchain(*swapchain, 128, 128).has_value());
+        {
+            const std::scoped_lock lock(mock.state.mutex);
+            CHECK(mock.state.createdSwapchains.empty());
+            mock.state.surfaceCurrentExtent = {160, 96};
+        }
+        REQUIRE(fixture.swapchains.resizeSwapchain(*swapchain, 128, 128).has_value());
+        {
+            const std::scoped_lock lock(mock.state.mutex);
+            REQUIRE(mock.state.createdSwapchains.size() == 1U);
+            CHECK(mock.state.oldSwapchains.back() == VK_NULL_HANDLE);
+        }
+        presentFrame(fixture, *swapchain, 160, 96);
+        REQUIRE(fixture.swapchains.destroySwapchain(*swapchain).has_value());
+    }
+
+    SECTION("A suspended swapchain is destroyed without a native swapchain")
+    {
+        ScopedPerfMock mock;
+        mock.state.surfaceCurrentExtent = {0, 0};
+        rachis::vulkan::VulkanPerformanceSwapchainTestAccess fixture(rachis::SurfaceKind::xcb);
+        const auto swapchain = fixture.swapchains.createSwapchain(withSurface(fixture.surfaceHandle));
+        REQUIRE(swapchain.has_value());
+        REQUIRE(fixture.swapchains.destroySwapchain(*swapchain).has_value());
+        const auto again = fixture.swapchains.createSwapchain(withSurface(fixture.surfaceHandle));
+        REQUIRE(again.has_value());
+        REQUIRE(fixture.swapchains.destroySwapchain(*again).has_value());
+        const std::scoped_lock lock(mock.state.mutex);
+        CHECK(mock.state.createdSwapchains.empty());
+        CHECK(mock.state.destroyedSwapchains.empty());
+    }
+
+    SECTION("A zero requested extent is still refused")
+    {
+        ScopedPerfMock mock;
+        rachis::vulkan::VulkanPerformanceSwapchainTestAccess fixture(rachis::SurfaceKind::xcb);
+        auto desc = withSurface(fixture.surfaceHandle);
+        desc.width = 0;
+        const auto refused = fixture.swapchains.createSwapchain(desc);
+        REQUIRE_FALSE(refused.has_value());
+        CHECK(refused.error().code == rachis::ErrorCode::invalidArgument);
+    }
+
+    SECTION("A surface without a current extent takes the requested extent within its range")
+    {
+        ScopedPerfMock mock;
+        mock.state.surfaceCurrentExtent = {0xffffffffU, 0xffffffffU};
+        rachis::vulkan::VulkanPerformanceSwapchainTestAccess fixture(rachis::SurfaceKind::wayland);
+        auto desc = withSurface(fixture.surfaceHandle);
+        desc.width = 5000;
+        const auto refused = fixture.swapchains.createSwapchain(desc);
+        REQUIRE_FALSE(refused.has_value());
+        CHECK(refused.error().code == rachis::ErrorCode::invalidArgument);
+        const auto swapchain = fixture.swapchains.createSwapchain(withSurface(fixture.surfaceHandle));
+        REQUIRE(swapchain.has_value());
+        presentFrame(fixture, *swapchain, 128, 128);
+        REQUIRE(fixture.swapchains.destroySwapchain(*swapchain).has_value());
+    }
+}
+
 TEST_CASE("VulkanSwapchainManager destroys the swapchain that a failed resize retired", "[size:small][rhi][vulkan]")
 {
     ScopedPerfMock mock;
