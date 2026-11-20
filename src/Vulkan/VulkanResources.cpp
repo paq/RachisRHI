@@ -1084,7 +1084,9 @@ namespace rachis::vulkan
                 .heapIndex = i,
                 .properties = (heap.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0 ? MemoryHeapProperty::deviceLocal
                                                                                   : MemoryHeapProperty::none,
-                .features = MemoryBudgetFeature::allocationStatistics,
+                .features = memoryBudget_
+                                ? MemoryBudgetFeature::allocationStatistics | MemoryBudgetFeature::driverReported
+                                : MemoryBudgetFeature::allocationStatistics,
                 .blockBytes = budget.statistics.blockBytes + exportedBytes,
                 .allocationBytes = budget.statistics.allocationBytes + exportedBytes,
                 .blockCount = budget.statistics.blockCount + exportedAllocations,

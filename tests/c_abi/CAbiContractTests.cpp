@@ -3678,3 +3678,50 @@ TEST_CASE("C ABI calibrates queue timestamps against the platform's monotonic CP
         CHECK(std::abs(cpuSeconds - gpuSeconds) <= toleranceSeconds);
     }
 }
+
+TEST_CASE("C ABI reports the adapter's memory budget and the process's use of it",
+          RACHIS_CABI_DEVICE_SIZE RACHIS_CABI_DEVICE_REQUIRES "[rachis][cabi][memory]")
+{
+    constexpr std::uint64_t bufferBytes = 64ULL << 20U;
+    auto error = makeError();
+    rachis_memory_budget budget{};
+    budget.struct_size = sizeof(budget);
+    CHECK(rachis_device_memory_budget(nullptr, &budget, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+
+    auto device = createDevice(error);
+    CHECK(rachis_device_memory_budget(device.get(), nullptr, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    budget.struct_size = sizeof(budget) + 1;
+    budget.local_budget = 99;
+    CHECK(rachis_device_memory_budget(device.get(), &budget, &error) == RACHIS_STATUS_ABI_MISMATCH);
+    CHECK(budget.local_budget == 99);
+
+    budget = {};
+    budget.struct_size = sizeof(budget);
+    const auto status = rachis_device_memory_budget(device.get(), &budget, &error);
+    if (status == RACHIS_STATUS_UNSUPPORTED && vulkanFeatureIsOptional())
+    {
+        INFO(error.message);
+        CHECK(budget.local_budget == 0);
+        return;
+    }
+    requireOk(status, error);
+    const auto before = budget;
+    CHECK(before.struct_size == sizeof(before));
+    CHECK(before.reserved0 == 0);
+    CHECK(before.local_budget > 0);
+
+    const auto buffer = createBuffer(device.get(),
+                                     bufferBytes,
+                                     RACHIS_BUFFER_STORAGE | RACHIS_BUFFER_COPY_DESTINATION,
+                                     RACHIS_MEMORY_DEVICE_LOCAL,
+                                     error);
+    budget = {};
+    budget.struct_size = sizeof(budget);
+    requireOk(rachis_device_memory_budget(device.get(), &budget, &error), error);
+    const auto usedBefore = before.local_usage + before.non_local_usage;
+    const auto usedAfter = budget.local_usage + budget.non_local_usage;
+    CAPTURE(before.local_budget, before.local_usage, before.non_local_budget, before.non_local_usage);
+    CAPTURE(budget.local_budget, budget.local_usage, budget.non_local_budget, budget.non_local_usage);
+    CHECK(usedAfter >= usedBefore + bufferBytes / 2U);
+    requireOk(rachis_buffer_destroy(device.get(), buffer, &error), error);
+}

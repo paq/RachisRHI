@@ -4180,6 +4180,50 @@ extern "C"
         });
     }
 
+    rachis_status rachis_device_memory_budget(rachis_device* device, rachis_memory_budget* output, rachis_error* error)
+    {
+        return boundary(error, [&]() -> rachis_status {
+            if (device == nullptr || output == nullptr)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "device or memory budget output is null");
+            }
+            if (output->struct_size != sizeof(*output))
+            {
+                return fail(error, RACHIS_STATUS_ABI_MISMATCH, "invalid memory budget output layout");
+            }
+            *output = rachis_memory_budget{};
+            output->struct_size = sizeof(*output);
+            std::shared_lock const lock(device->mutex);
+            if (const auto lost = rejectLostDevice(*device, error))
+            {
+                return *lost;
+            }
+            const auto budgets = device->native.queryMemoryBudgets();
+            if (!budgets)
+            {
+                return result(error, budgets.error());
+            }
+            const auto reported = [](const rachis::MemoryBudget& budget) {
+                return rachis::hasAny(budget.features, rachis::MemoryBudgetFeature::driverReported);
+            };
+            if (budgets->empty() || !std::ranges::all_of(*budgets, reported))
+            {
+                return fail(error,
+                            RACHIS_STATUS_UNSUPPORTED,
+                            "the device does not report its memory budget (Vulkan needs VK_EXT_memory_budget)");
+            }
+            rachis_memory_budget summed{};
+            summed.struct_size = sizeof(summed);
+            for (const auto& budget : *budgets)
+            {
+                const bool local = rachis::hasAny(budget.properties, rachis::MemoryHeapProperty::deviceLocal);
+                (local ? summed.local_budget : summed.non_local_budget) += budget.budgetBytes;
+                (local ? summed.local_usage : summed.non_local_usage) += budget.usageBytes;
+            }
+            *output = summed;
+            return RACHIS_STATUS_OK;
+        });
+    }
 }
 
 #ifdef RACHIS_TESTING

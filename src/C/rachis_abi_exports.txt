@@ -48,6 +48,7 @@ rachis_device_create
 rachis_device_destroy
 rachis_device_diagnostic_counts
 rachis_device_loss_error
+rachis_device_memory_budget
 rachis_device_operational_state
 rachis_device_query_capabilities
 rachis_graphics_pipeline_create

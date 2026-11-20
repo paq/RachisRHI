@@ -1317,6 +1317,20 @@ extern "C"
                                                                rachis_timestamp_calibration* output,
                                                                rachis_error* error);
 
+    typedef struct rachis_memory_budget
+    {
+        uint32_t struct_size;
+        uint32_t reserved0;
+        uint64_t local_budget;
+        uint64_t local_usage;
+        uint64_t non_local_budget;
+        uint64_t non_local_usage;
+    } rachis_memory_budget;
+
+    RACHIS_API rachis_status rachis_device_memory_budget(rachis_device* device,
+                                                         rachis_memory_budget* output,
+                                                         rachis_error* error);
+
 #ifdef __cplusplus
 }
 #endif

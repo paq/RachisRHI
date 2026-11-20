@@ -23,6 +23,7 @@ The C ABI lives in the `rachis` shared library (`Rachis::C` in CMake) and export
 - [Device loss](#device-loss)
 - [Timeline waits with a timeout](#timeline-waits-with-a-timeout)
 - [Timestamps on the CPU clock](#timestamps-on-the-cpu-clock)
+- [Memory budget](#memory-budget)
 
 ## Version
 
@@ -93,6 +94,7 @@ Supported C ABI surface:
 - Surfaces, swapchains, and presentation status
 - Timeline queries and waits with a timeout
 - Timestamp calibration against the CPU's monotonic counter, and the valid timestamp bits of each queue
+- The adapter's memory budget and the process's use of it
 
 ### C++-only features and stage rules
 
@@ -295,3 +297,18 @@ A timestamp $t$ of that queue is at $\text{cpu\_timestamp} + (t - \text{gpu\_tim
 - **Backends:** Direct3D 12 calibrates with `ID3D12CommandQueue::GetClockCalibration`, Metal with `-[MTLDevice sampleTimestamps:gpuTimestamp:]`, and Vulkan with `vkGetCalibratedTimestampsKHR` from `VK_KHR_calibrated_timestamps`, or `vkGetCalibratedTimestampsEXT` from `VK_EXT_calibrated_timestamps`, over the device time domain and the CPU counter's domain. On Direct3D 12 and Metal, `max_deviation_ns` is the time the call took; on Vulkan it is the driver's maximum deviation.
 - **Unsupported:** A queue without timestamp queries, a Vulkan device with neither extension or without both time domains, and Vulkan on macOS (MoltenVK offers `CLOCK_MONOTONIC_RAW`, not `mach_absolute_time`) return `RACHIS_STATUS_UNSUPPORTED`.
 - **Failures:** A call that fails, after checking `struct_size`, leaves every field but `struct_size` zero, and `cpu_clock` `RACHIS_CPU_CLOCK_NONE`. On a lost device it returns `RACHIS_STATUS_DEVICE_LOST`.
+
+## Memory budget
+
+`rachis_device_memory_budget` reports how much memory the operating system gives the process on the device's adapter, and how much of it the process uses now. Set `struct_size` of the `rachis_memory_budget` first. The call reads values the driver keeps up to date and is cheap enough to make once a frame.
+
+| Field | Meaning |
+| --- | --- |
+| `local_budget`, `local_usage` | Budget and current use of the GPU's local memory; on a unified-memory device, all of its memory |
+| `non_local_budget`, `non_local_usage` | Budget and current use of system memory that a discrete GPU reaches over the bus; `0` on Metal |
+
+- **Use:** Counts every allocation of the process on the adapter, from every device and module, not only this device's. It can exceed the budget.
+- **Direct3D 12:** `IDXGIAdapter3::QueryVideoMemoryInfo` for `DXGI_MEMORY_SEGMENT_GROUP_LOCAL` and `DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL`.
+- **Vulkan:** `VK_EXT_memory_budget`: the sums of `heapBudget` and of `heapUsage` over the device-local heaps, and over the other heaps. A device without the extension returns `RACHIS_STATUS_UNSUPPORTED`.
+- **Metal:** `recommendedMaxWorkingSetSize` and `currentAllocatedSize` of the `MTLDevice` as local memory.
+- **Failures:** A call that fails, after checking `struct_size`, leaves every field but `struct_size` zero. On a lost device it returns `RACHIS_STATUS_DEVICE_LOST`.

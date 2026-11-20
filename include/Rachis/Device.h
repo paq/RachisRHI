@@ -95,6 +95,7 @@ namespace rachis
         none = 0,
         reservation = 1U << 0U,
         allocationStatistics = 1U << 1U,
+        driverReported = 1U << 2U,
     };
 
     [[nodiscard]] constexpr MemoryBudgetFeature operator|(MemoryBudgetFeature left, MemoryBudgetFeature right) noexcept

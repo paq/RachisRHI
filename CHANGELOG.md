@@ -15,6 +15,8 @@
     with both frequencies and the maximum deviation.
   - `rachis_queue_timestamp_valid_bits`, the number of valid bits of a queue's
     timestamps.
+  - `rachis_device_memory_budget`, which fills a `rachis_memory_budget` with
+    the adapter's local and non-local budget and the process's use of each.
 - `QueueClockCalibration` names its CPU counter in `cpuClock` and reports
   `maxDeviationNanoseconds`. On Metal, `cpuTimestamp` is now in
   `mach_absolute_time` ticks at `cpuFrequency`, rather than in nanoseconds.
@@ -23,6 +25,11 @@
   without it. Where neither calibrates the queue, it fails with
   `ErrorCode::unsupported`, as on Direct3D 12 and Metal, instead of returning
   a CPU timestamp with a `gpuTimestamp` of `0`.
+- `MemoryBudgetFeature::driverReported` marks a `MemoryBudget` whose
+  `budgetBytes` and `usageBytes` come from the operating system or the driver:
+  always on Direct3D 12 and Metal, and on Vulkan with `VK_EXT_memory_budget`.
+  On Metal, `queryMemoryBudgets` sums the allocations without copying a
+  snapshot of them, so it is cheap enough to call once a frame.
 - Vulkan: `createSwapchain` uses the surface's current extent on fixed-extent
   surfaces and creates a suspended swapchain on zero extent.
 - Vulkan: `present` suspends minimized or zero-extent swapchains so

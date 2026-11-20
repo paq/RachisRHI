@@ -3445,3 +3445,42 @@ TEST_CASE("C ABI bounded timeline waits report a held-back point as pending unti
     CHECK(status == RACHIS_TIMELINE_STATUS_COMPLETE);
     requireOk(rachis_timeline_wait(device.get(), timeline, &error), error);
 }
+
+TEST_CASE("C ABI timestamp calibration and the memory budget report device loss",
+          RACHIS_CABI_DEVICE_SIZE RACHIS_CABI_DEVICE_REQUIRES "[rachis][cabi][loss][fault]")
+{
+    const auto trigger = GENERATE(Catch::Generators::from_range(lossTriggers()));
+    INFO("loss trigger: " << lossTriggerName(trigger));
+    auto error = makeError();
+    auto device = createDevice(error, lossValidation);
+    const auto copyPool = createPool(device.get(), RACHIS_QUEUE_COPY, error);
+
+    loseDevice(device.get(), copyPool, trigger);
+
+    rachis_timestamp_calibration calibration{};
+    calibration.struct_size = sizeof(calibration);
+    calibration.cpu_clock = 99;
+    error = makeError();
+    CHECK(rachis_queue_calibrate_timestamps(device.get(), RACHIS_QUEUE_GRAPHICS, &calibration, &error) ==
+          RACHIS_STATUS_DEVICE_LOST);
+    CHECK(error.code == RACHIS_STATUS_DEVICE_LOST);
+    CHECK(calibration.struct_size == sizeof(calibration));
+    CHECK(calibration.cpu_clock == RACHIS_CPU_CLOCK_NONE);
+    CHECK(calibration.cpu_timestamp == 0);
+
+    rachis_memory_budget budget{};
+    budget.struct_size = sizeof(budget);
+    budget.local_budget = 99;
+    error = makeError();
+    CHECK(rachis_device_memory_budget(device.get(), &budget, &error) == RACHIS_STATUS_DEVICE_LOST);
+    CHECK(error.code == RACHIS_STATUS_DEVICE_LOST);
+    CHECK(budget.struct_size == sizeof(budget));
+    CHECK(budget.local_budget == 0);
+
+    std::uint32_t validBits = 0;
+    error = makeError();
+    const auto bitsStatus = rachis_queue_timestamp_valid_bits(device.get(), RACHIS_QUEUE_GRAPHICS, &validBits, &error);
+    CHECK((bitsStatus == RACHIS_STATUS_OK || bitsStatus == RACHIS_STATUS_UNSUPPORTED));
+
+    requireOk(rachis_command_pool_destroy(device.get(), copyPool, &error), error);
+}
