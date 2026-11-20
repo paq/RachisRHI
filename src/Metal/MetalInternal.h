@@ -1614,6 +1614,9 @@ namespace rachis::metal
         std::atomic<std::uint64_t> renderTimestampVertexStageCount{0};
         std::atomic<std::uint64_t> renderTimestampFragmentStageCount{0};
         std::atomic<std::uint64_t> indirectClampEncodeCount{0};
+        __strong id<MTLBuffer> lastIndirectClampScratch = nil;
+        std::size_t lastIndirectClampRecordsOffset = 0;
+        std::size_t lastIndirectClampRecordsBytes = 0;
         std::shared_ptr<MetalCommitFeedbackGate> nextCommandPoolResetGate;
         std::shared_ptr<MetalCommitFeedbackGate> nextSubmitFoldGate;
         bool holdNextSubmitOnGpu = false;
@@ -1636,6 +1639,9 @@ namespace rachis::metal
     void recordMetalTeardownQueueDrain() noexcept;
     void recordMetalRenderTimestampStage(MTLRenderStages stage) noexcept;
     void recordMetalIndirectClampEncode() noexcept;
+    void recordMetalIndirectClampScratch(id<MTLBuffer> scratch,
+                                         std::size_t recordsOffset,
+                                         std::size_t recordsBytes) noexcept;
     void holdMetalCommandPoolResetForTesting() noexcept;
     [[nodiscard]] bool consumeInjectedMetalDrawIndexTableGrowthFailure() noexcept;
     [[nodiscard]] bool consumeInjectedMetalPushConstantSliceFailure() noexcept;
@@ -1778,8 +1784,6 @@ namespace rachis::metal
         std::uint32_t maxRecords = 0;
         std::uint32_t strideBytes = 0;
         std::uint32_t recordWords = 0;
-        std::uint32_t zeroFirstWord = 0;
-        std::uint32_t zeroWordCount = 0;
     };
 
     struct MetalClampedRecords final

@@ -25,8 +25,6 @@ struct RachisIndirectClamp
     uint maxRecords;
     uint strideWords;
     uint recordWords;
-    uint zeroFirstWord;
-    uint zeroWordCount;
 };
 
 static void rachisClampRecord(constant RachisIndirectClamp& clamp, uint record)
@@ -35,14 +33,19 @@ static void rachisClampRecord(constant RachisIndirectClamp& clamp, uint record)
     {
         return;
     }
-    const uint active = min(*clamp.count, clamp.maxRecords);
-    device const uint* source = clamp.source + ulong(record) * ulong(clamp.strideWords);
     device uint* destination = clamp.destination + ulong(record) * ulong(clamp.recordWords);
+    if (record >= min(*clamp.count, clamp.maxRecords))
+    {
+        for (uint word = 0; word < clamp.recordWords; ++word)
+        {
+            destination[word] = 0u;
+        }
+        return;
+    }
+    device const uint* source = clamp.source + ulong(record) * ulong(clamp.strideWords);
     for (uint word = 0; word < clamp.recordWords; ++word)
     {
-        const bool zero = record >= active && word >= clamp.zeroFirstWord &&
-                          word < clamp.zeroFirstWord + clamp.zeroWordCount;
-        destination[word] = zero ? 0u : source[word];
+        destination[word] = source[word];
     }
 }
 
@@ -82,12 +85,10 @@ struct RachisClampVertex
             std::uint32_t maxRecords = 0;
             std::uint32_t strideWords = 0;
             std::uint32_t recordWords = 0;
-            std::uint32_t zeroFirstWord = 0;
-            std::uint32_t zeroWordCount = 0;
             std::uint32_t padding = 0;
         };
 
-        static_assert(sizeof(MetalIndirectClampHeader) == 48);
+        static_assert(sizeof(MetalIndirectClampHeader) == 40);
 
         [[nodiscard]] MTL4LibraryFunctionDescriptor* metalClampFunction(id<MTLLibrary> library, NSString* name)
         {
@@ -226,10 +227,11 @@ struct RachisClampVertex
             .maxRecords = request.maxRecords,
             .strideWords = request.strideBytes / static_cast<std::uint32_t>(sizeof(std::uint32_t)),
             .recordWords = request.recordWords,
-            .zeroFirstWord = request.zeroFirstWord,
-            .zeroWordCount = request.zeroWordCount,
         };
         std::memcpy(scratch.contents, &header, sizeof(header));
+#ifdef RACHIS_TESTING
+        recordMetalIndirectClampScratch(scratch, sizeof(MetalIndirectClampHeader), recordBytes * request.maxRecords);
+#endif
         return MetalClampedRecords{
             .headerAddress = scratch.gpuAddress,
             .recordsAddress = recordsAddress,

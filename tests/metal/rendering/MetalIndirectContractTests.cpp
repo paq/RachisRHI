@@ -1,4 +1,5 @@
 #include "Metal/MetalIndirectRecordMath.h"
+#include "Metal/MetalTestHooks.h"
 #include "Rachis/Device.h"
 #include "RhiTestSupport.h"
 
@@ -396,6 +397,19 @@ TEST_CASE("Metal multi-draw indirect draws every record or only the GPU-written 
             },
             writeCounts);
         CHECK(lit == std::array{true, true, false, false});
+        const auto clamped = rachis::metal::lastIndirectClampRecordWords();
+        REQUIRE(clamped.size() == quadrantCount * 4U);
+        for (std::uint32_t record = 0; record < quadrantCount; ++record)
+        {
+            CAPTURE(record);
+            const std::array<std::uint32_t, 4> expected =
+                record < 2 ? std::array<std::uint32_t, 4>{3, 1, record * 3, 0} : std::array<std::uint32_t, 4>{};
+            for (std::uint32_t word = 0; word < expected.size(); ++word)
+            {
+                CAPTURE(word);
+                CHECK(clamped[record * 4U + word] == expected[word]);
+            }
+        }
     }
 
     SECTION("An indexed count of three draws the first three records")
@@ -413,6 +427,19 @@ TEST_CASE("Metal multi-draw indirect draws every record or only the GPU-written 
             },
             writeCounts);
         CHECK(lit == std::array{true, true, true, false});
+        const auto clamped = rachis::metal::lastIndirectClampRecordWords();
+        REQUIRE(clamped.size() == quadrantCount * 5U);
+        for (std::uint32_t record = 0; record < quadrantCount; ++record)
+        {
+            CAPTURE(record);
+            const std::array<std::uint32_t, 5> expected =
+                record < 3 ? std::array<std::uint32_t, 5>{3, 1, record * 3, 0, 0} : std::array<std::uint32_t, 5>{};
+            for (std::uint32_t word = 0; word < expected.size(); ++word)
+            {
+                CAPTURE(word);
+                CHECK(clamped[record * 5U + word] == expected[word]);
+            }
+        }
     }
 
     SECTION("A zero count draws nothing and a count above the maximum draws the maximum")

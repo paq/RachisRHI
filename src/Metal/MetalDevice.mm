@@ -457,6 +457,17 @@ namespace rachis::metal
         metalTestingState().indirectClampEncodeCount.fetch_add(1, std::memory_order_relaxed);
     }
 
+    void recordMetalIndirectClampScratch(id<MTLBuffer> scratch,
+                                         std::size_t recordsOffset,
+                                         std::size_t recordsBytes) noexcept
+    {
+        auto& state = metalTestingState();
+        std::scoped_lock const lock(state.mutex);
+        state.lastIndirectClampScratch = scratch;
+        state.lastIndirectClampRecordsOffset = recordsOffset;
+        state.lastIndirectClampRecordsBytes = recordsBytes;
+    }
+
     void recordMetalArgumentTableCreate() noexcept
     {
         metalTestingState().argumentTableCreateCount.fetch_add(1, std::memory_order_relaxed);
@@ -1946,6 +1957,22 @@ rachis::metal::MetalRecordingTelemetry rachis::metal::recordingTelemetry() noexc
         .renderTimestampFragmentStageCount = state.renderTimestampFragmentStageCount.load(std::memory_order_relaxed),
         .indirectClampEncodeCount = state.indirectClampEncodeCount.load(std::memory_order_relaxed),
     };
+}
+
+std::vector<std::uint32_t> rachis::metal::lastIndirectClampRecordWords()
+{
+    auto& state = metalTestingState();
+    std::scoped_lock const lock(state.mutex);
+    if (state.lastIndirectClampScratch == nil)
+    {
+        return {};
+    }
+    std::vector<std::uint32_t> words(state.lastIndirectClampRecordsBytes / sizeof(std::uint32_t));
+    std::memcpy(words.data(),
+                static_cast<const std::byte*>(state.lastIndirectClampScratch.contents) +
+                    state.lastIndirectClampRecordsOffset,
+                words.size() * sizeof(std::uint32_t));
+    return words;
 }
 
 std::size_t rachis::metal::autoreleasedObjectCount(const std::function<void()>& body)

@@ -1721,9 +1721,7 @@ namespace rachis::metal
         };
 
         [[nodiscard]] MetalIndirectClampRequest metalClampRequest(const MetalIndirectRecordLayout& layout,
-                                                                  const MetalResolvedIndirectRecords& records,
-                                                                  std::uint32_t zeroFirstWord,
-                                                                  std::uint32_t zeroWordCount) noexcept
+                                                                  const MetalResolvedIndirectRecords& records) noexcept
         {
             return {
                 .sourceAddress = records.argument.gpuAddress + layout.argumentOffset + layout.prefixBytes,
@@ -1732,8 +1730,6 @@ namespace rachis::metal
                 .strideBytes = layout.stride,
                 .recordWords =
                     (layout.recordSize - layout.prefixBytes) / static_cast<std::uint32_t>(sizeof(std::uint32_t)),
-                .zeroFirstWord = zeroFirstWord,
-                .zeroWordCount = zeroWordCount,
             };
         }
 
@@ -1749,8 +1745,7 @@ namespace rachis::metal
                 return MetalIndirectRecordSpan{records.argument.gpuAddress + layout.argumentOffset + layout.prefixBytes,
                                                layout.stride};
             }
-            auto clamped = metalPrepareClampedRecords(
-                device, entry, metalClampRequest(layout, records, 0, sizeof(DispatchIndirectArguments) / 4U));
+            auto clamped = metalPrepareClampedRecords(device, entry, metalClampRequest(layout, records));
             if (!clamped)
             {
                 return std::unexpected(std::move(clamped.error()));
@@ -1769,17 +1764,14 @@ namespace rachis::metal
             MetalCommandEntry& entry,
             const MetalIndirectClampPipelines& pipelines,
             const MetalIndirectRecordLayout& layout,
-            const MetalResolvedIndirectRecords& records,
-            std::uint32_t zeroFirstWord,
-            std::uint32_t zeroWordCount)
+            const MetalResolvedIndirectRecords& records)
         {
             if (records.count == nil)
             {
                 return MetalIndirectRecordSpan{records.argument.gpuAddress + layout.argumentOffset + layout.prefixBytes,
                                                layout.stride};
             }
-            auto clamped = metalPrepareClampedRecords(
-                device, entry, metalClampRequest(layout, records, zeroFirstWord, zeroWordCount));
+            auto clamped = metalPrepareClampedRecords(device, entry, metalClampRequest(layout, records));
             if (!clamped)
             {
                 return std::unexpected(std::move(clamped.error()));
@@ -3546,7 +3538,7 @@ namespace rachis::metal
                 return prepared;
             }
         }
-        auto span = metalClampRenderRecords(inputs->device, *entry, inputs->pipelines, layout, inputs->records, 1, 1);
+        auto span = metalClampRenderRecords(inputs->device, *entry, inputs->pipelines, layout, inputs->records);
         if (!span)
         {
             return std::unexpected(std::move(span.error()));
@@ -3634,7 +3626,7 @@ namespace rachis::metal
                 return prepared;
             }
         }
-        auto span = metalClampRenderRecords(inputs->device, *entry, inputs->pipelines, layout, inputs->records, 1, 1);
+        auto span = metalClampRenderRecords(inputs->device, *entry, inputs->pipelines, layout, inputs->records);
         if (!span)
         {
             return std::unexpected(std::move(span.error()));
@@ -3820,13 +3812,7 @@ namespace rachis::metal
                 return prepared;
             }
         }
-        auto span = metalClampRenderRecords(inputs->device,
-                                            *entry,
-                                            inputs->pipelines,
-                                            layout,
-                                            inputs->records,
-                                            0,
-                                            sizeof(DispatchIndirectArguments) / 4U);
+        auto span = metalClampRenderRecords(inputs->device, *entry, inputs->pipelines, layout, inputs->records);
         if (!span)
         {
             return std::unexpected(std::move(span.error()));

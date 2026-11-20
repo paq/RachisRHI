@@ -19,6 +19,7 @@
 #include <span>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace rachis::metal
 {
@@ -292,6 +293,7 @@ namespace rachis::metal
 
     void resetRecordingTelemetry() noexcept;
     [[nodiscard]] MetalRecordingTelemetry recordingTelemetry() noexcept;
+    [[nodiscard]] std::vector<std::uint32_t> lastIndirectClampRecordWords();
     [[nodiscard]] std::size_t autoreleasedObjectCount(const std::function<void()>& body);
     void resetTeardownQueueDrainCount() noexcept;
     [[nodiscard]] std::uint64_t teardownQueueDrainCount() noexcept;
