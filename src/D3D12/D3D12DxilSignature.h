@@ -607,11 +607,215 @@ namespace rachis::d3d12::dxil
         return std::optional{false};
     }
 
+    namespace signature_detail
+    {
+
+        inline constexpr std::uint32_t runtimeDataVersion = 0x10;
+        inline constexpr std::uint32_t runtimeDataStringPart = 1;
+        inline constexpr std::uint32_t runtimeDataIndexPart = 2;
+        inline constexpr std::uint32_t runtimeDataResourcePart = 3;
+        inline constexpr std::uint32_t runtimeDataFunctionPart = 4;
+        inline constexpr std::uint32_t runtimeDataNullReference = 0xFFFFFFFFU;
+        inline constexpr std::uint32_t libraryFunctionKind = 6;
+        inline constexpr std::uint32_t constantBufferResourceClass = 2;
+        inline constexpr std::size_t runtimeDataResourceSize = 24;
+        inline constexpr std::size_t runtimeDataFunctionSize = 20;
+
+        struct RuntimeDataTable final
+        {
+            std::span<const std::byte> records;
+            std::uint32_t count = 0;
+            std::uint32_t stride = 0;
+
+            [[nodiscard]] std::span<const std::byte> record(std::uint32_t index) const noexcept
+            {
+                return records.subspan(std::size_t{index} * stride, stride);
+            }
+        };
+
+        struct RuntimeData final
+        {
+            std::span<const std::byte> strings;
+            std::span<const std::byte> indices;
+            RuntimeDataTable resources;
+            RuntimeDataTable functions;
+        };
+
+        [[nodiscard]] inline Result<RuntimeDataTable> runtimeDataTable(std::span<const std::byte> part,
+                                                                       std::size_t minimumStride)
+        {
+            Cursor cursor(part);
+            const auto count = cursor.u32();
+            const auto stride = cursor.u32();
+            const auto records =
+                count.has_value() && stride.has_value() ? cursor.take(std::uint64_t{*count} * *stride) : std::nullopt;
+            if (!records.has_value() || (*count != 0 && *stride < minimumStride))
+            {
+                return std::unexpected(malformed("has a truncated or unknown RDAT record table"));
+            }
+            return RuntimeDataTable{.records = *records, .count = *count, .stride = *stride};
+        }
+
+        [[nodiscard]] inline Result<std::optional<RuntimeData>> runtimeData(std::span<const std::byte> container)
+        {
+            auto found = findPart(container, fourCC('R', 'D', 'A', 'T'));
+            if (!found)
+            {
+                return std::unexpected(std::move(found.error()));
+            }
+            if (!found->has_value())
+            {
+                return std::optional<RuntimeData>{};
+            }
+            const auto part = **found;
+            Cursor cursor(part);
+            const auto version = cursor.u32();
+            const auto count = cursor.u32();
+            if (!version.has_value() || !count.has_value() || *version != runtimeDataVersion)
+            {
+                return std::unexpected(malformed("has an unknown RDAT version"));
+            }
+            const auto offsets = cursor.take(std::uint64_t{*count} * sizeof(std::uint32_t));
+            if (!offsets.has_value())
+            {
+                return std::unexpected(malformed("has a truncated RDAT part table"));
+            }
+            RuntimeData data;
+            for (std::uint32_t index = 0; index < *count; ++index)
+            {
+                const auto offset = readU32(*offsets, std::size_t{index} * sizeof(std::uint32_t));
+                if (offset > part.size() || part.size() - offset < 8)
+                {
+                    return std::unexpected(malformed("has an RDAT part outside its RDAT data"));
+                }
+                const auto size = readU32(part, offset + 4);
+                if (size > part.size() - offset - 8)
+                {
+                    return std::unexpected(malformed("has an RDAT part that runs past its RDAT data"));
+                }
+                const auto body = part.subspan(offset + 8, size);
+                switch (readU32(part, offset))
+                {
+                case runtimeDataStringPart:
+                    data.strings = body;
+                    break;
+                case runtimeDataIndexPart:
+                    data.indices = body;
+                    break;
+                case runtimeDataResourcePart:
+                case runtimeDataFunctionPart: {
+                    const bool resources = readU32(part, offset) == runtimeDataResourcePart;
+                    auto table = runtimeDataTable(body, resources ? runtimeDataResourceSize : runtimeDataFunctionSize);
+                    if (!table)
+                    {
+                        return std::unexpected(std::move(table.error()));
+                    }
+                    (resources ? data.resources : data.functions) = *table;
+                    break;
+                }
+                default:
+                    break;
+                }
+            }
+            return std::optional{data};
+        }
+
+        [[nodiscard]] inline bool runtimeDataResourceBinds(std::span<const std::byte> record,
+                                                           std::uint32_t shaderRegister,
+                                                           std::uint32_t registerSpace) noexcept
+        {
+            return readU32(record, 0) == constantBufferResourceClass && readU32(record, 12) == registerSpace &&
+                   readU32(record, 16) <= shaderRegister && shaderRegister <= readU32(record, 20);
+        }
+
+        [[nodiscard]] inline Result<bool> runtimeDataResourceListBinds(const RuntimeData& data,
+                                                                       std::uint32_t reference,
+                                                                       std::uint32_t shaderRegister,
+                                                                       std::uint32_t registerSpace)
+        {
+            if (reference == runtimeDataNullReference)
+            {
+                return false;
+            }
+            const auto words = data.indices.size() / sizeof(std::uint32_t);
+            const auto count = reference < words ? readU32(data.indices, std::size_t{reference} * 4) : 0U;
+            if (reference >= words || count > words - reference - 1)
+            {
+                return std::unexpected(malformed("has an RDAT resource list outside its index table"));
+            }
+            for (std::uint32_t element = 0; element < count; ++element)
+            {
+                const auto resource = readU32(data.indices, (std::size_t{reference} + 1 + element) * 4);
+                if (resource >= data.resources.count)
+                {
+                    return std::unexpected(malformed("has an RDAT resource list naming a missing resource"));
+                }
+                if (runtimeDataResourceBinds(data.resources.record(resource), shaderRegister, registerSpace))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+    } // namespace signature_detail
+
+    [[nodiscard]] inline Result<std::optional<bool>> libraryBindsConstantBuffer(std::span<const std::byte> container,
+                                                                                std::string_view entryPoint,
+                                                                                std::uint32_t shaderRegister,
+                                                                                std::uint32_t registerSpace)
+    {
+        using namespace signature_detail;
+        auto data = runtimeData(container);
+        if (!data)
+        {
+            return std::unexpected(std::move(data.error()));
+        }
+        if (!data->has_value())
+        {
+            return std::optional<bool>{};
+        }
+        const auto& runtime = **data;
+        bool entryFound = false;
+        for (std::uint32_t function = 0; function < runtime.functions.count; ++function)
+        {
+            const auto record = runtime.functions.record(function);
+            const bool entry = !entryPoint.empty() && (cStringAt(runtime.strings, readU32(record, 0)) == entryPoint ||
+                                                       cStringAt(runtime.strings, readU32(record, 4)) == entryPoint);
+            if (!entry && readU32(record, 16) != libraryFunctionKind)
+            {
+                continue;
+            }
+            entryFound = entryFound || entry;
+            auto binds = runtimeDataResourceListBinds(runtime, readU32(record, 8), shaderRegister, registerSpace);
+            if (!binds)
+            {
+                return std::unexpected(std::move(binds.error()));
+            }
+            if (*binds)
+            {
+                return std::optional{true};
+            }
+        }
+        if (entryFound)
+        {
+            return std::optional{false};
+        }
+        for (std::uint32_t resource = 0; resource < runtime.resources.count; ++resource)
+        {
+            if (runtimeDataResourceBinds(runtime.resources.record(resource), shaderRegister, registerSpace))
+            {
+                return std::optional{true};
+            }
+        }
+        return std::optional{false};
+    }
+
     [[nodiscard]] inline Status validateDrawIndexDeclaration(std::span<const std::byte> container,
                                                              std::uint32_t shaderRegister,
                                                              std::uint32_t registerSpace,
                                                              bool declared,
-                                                             bool requiresPipelineState = true)
+                                                             std::string_view entryPoint = {})
     {
         if (!declared && !isContainer(container))
         {
@@ -624,7 +828,15 @@ namespace rachis::d3d12::dxil
         }
         if (!binds->has_value())
         {
-            if (!declared && requiresPipelineState)
+            binds = libraryBindsConstantBuffer(container, entryPoint, shaderRegister, registerSpace);
+            if (!binds)
+            {
+                return std::unexpected(std::move(binds.error()));
+            }
+        }
+        if (!binds->has_value())
+        {
+            if (!declared)
             {
                 auto program = signature_detail::findPart(container, signature_detail::fourCC('D', 'X', 'I', 'L'));
                 if (!program)
@@ -636,19 +848,17 @@ namespace rachis::d3d12::dxil
                     return std::unexpected(Error{
                         ErrorCode::invalidArgument,
                         0,
-                        "The DXIL container has no PSV0 part, so its draw-index declaration cannot be checked.",
+                        "The DXIL container has neither a PSV0 nor an RDAT part, so its draw-index read cannot be "
+                        "checked.",
                     });
                 }
-            }
-            if (!declared)
-            {
                 return {};
             }
             return std::unexpected(Error{
                 ErrorCode::invalidArgument,
                 0,
-                "The shader interface declares the draw index, but the bytecode has no PSV0 resource table that "
-                "shows its constant buffer at register b0, space5.",
+                "The shader interface declares the draw index, but the bytecode has no PSV0 or RDAT resource table "
+                "that shows its constant buffer at register b0, space5.",
             });
         }
         if (**binds == declared)

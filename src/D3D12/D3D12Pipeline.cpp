@@ -596,14 +596,11 @@ namespace rachis::d3d12
         }
 
         [[nodiscard]] Status validateDrawIndexBytecode(std::span<const std::byte> bytecode,
-                                                       ShaderStage stage,
+                                                       std::string_view entryPoint,
                                                        bool declared)
         {
-            return dxil::validateDrawIndexDeclaration(bytecode,
-                                                      drawIndexRegister,
-                                                      drawIndexRegisterSpace,
-                                                      declared,
-                                                      !hasAny(stage, ShaderStage::allRayTracing));
+            return dxil::validateDrawIndexDeclaration(
+                bytecode, drawIndexRegister, drawIndexRegisterSpace, declared, entryPoint);
         }
 
         [[nodiscard]] Status validateVertexInterface(const ShaderModuleRecord& shader,
@@ -2462,7 +2459,7 @@ namespace rachis::d3d12
         if (!hasLibrary)
         {
             if (auto drawIndex =
-                    validateDrawIndexBytecode(desc.bytecode, desc.stage, record->shaderInterface.drawIndex);
+                    validateDrawIndexBytecode(desc.bytecode, desc.entryPoint, record->shaderInterface.drawIndex);
                 !drawIndex)
             {
                 return std::unexpected(std::move(drawIndex.error()));
@@ -2497,7 +2494,7 @@ namespace rachis::d3d12
             });
         }
         if (auto drawIndex =
-                validateDrawIndexBytecode(foundEntry->bytecode, desc.stage, record->shaderInterface.drawIndex);
+                validateDrawIndexBytecode(foundEntry->bytecode, desc.entryPoint, record->shaderInterface.drawIndex);
             !drawIndex)
         {
             return std::unexpected(std::move(drawIndex.error()));
