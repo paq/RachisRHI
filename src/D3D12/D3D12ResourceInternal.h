@@ -703,6 +703,25 @@ namespace rachis::d3d12
 
         void commitTextureLayoutUse(const TextureLayoutUse& use) noexcept;
 
+        struct TextureLayoutRequirement final
+        {
+            LegacyTextureStateRecording* recording = nullptr;
+            std::size_t use = 0;
+            std::span<const std::uint32_t> subresources;
+            TextureLayout layout = TextureLayout::undefined;
+            TextureLayout alternative = TextureLayout::undefined;
+        };
+
+        [[nodiscard]] Result<TextureLayoutRequirement> prepareTextureLayoutRequirement(
+            LegacyTextureStateRecording& recording,
+            const TextureRecord& texture,
+            std::span<const std::uint32_t> subresources,
+            TextureLayout layout,
+            TextureLayout alternative,
+            std::string_view operation);
+
+        void commitTextureLayoutRequirement(const TextureLayoutRequirement& requirement) noexcept;
+
         [[nodiscard]] Status requireFormatSupport(ID3D12Device& device,
                                                   DXGI_FORMAT format,
                                                   D3D12_FORMAT_SUPPORT1 requiredSupport1,

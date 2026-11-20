@@ -1533,12 +1533,22 @@ namespace rachis::d3d12
                             std::optional<Error> mismatch;
                             forEachTextureSubresource(*item.resource, item.range, [&](std::uint32_t subresource) {
                                 const auto left = use->layoutLeft(subresource);
+                                const auto required = use->earlierRequirement(
+                                    subresource, item.barrier.layoutBefore, TextureLayout::undefined);
                                 if (!mismatch.has_value() && left.has_value() && *left != item.barrier.layoutBefore)
                                 {
                                     mismatch = textureLayoutMismatch(item.barrier.layoutBefore,
                                                                      *left,
                                                                      subresource,
                                                                      "this command buffer leaves it in");
+                                }
+                                if (!mismatch.has_value() && required.has_value())
+                                {
+                                    mismatch =
+                                        textureLayoutMismatch(item.barrier.layoutBefore,
+                                                              *required,
+                                                              subresource,
+                                                              "an earlier copy in this command buffer needs it in");
                                 }
                             });
                             if (mismatch.has_value())
@@ -1636,6 +1646,15 @@ namespace rachis::d3d12
                     {
                         mismatch =
                             textureLayoutMismatch(before, *left, subresource, "this command buffer leaves it in");
+                    }
+                    const auto required =
+                        earlier == sequence.end() && use != nullptr && before != TextureLayout::undefined
+                            ? use->earlierRequirement(subresource, before, TextureLayout::undefined)
+                            : std::nullopt;
+                    if (!mismatch.has_value() && required.has_value())
+                    {
+                        mismatch = textureLayoutMismatch(
+                            before, *required, subresource, "an earlier copy in this command buffer needs it in");
                     }
                     sequence[key] = ordered.layoutBarrier.layoutAfter;
                 });
@@ -2003,6 +2022,17 @@ namespace rachis::d3d12
                                 " in " + std::string(textureLayoutName(*left)) + ".",
                         });
                     }
+                    if (const auto required = use->earlierRequirement(subresource, layout, TextureLayout::undefined);
+                        required.has_value())
+                    {
+                        return std::unexpected(
+                            textureLayoutRequirementMismatch(operation,
+                                                             layout,
+                                                             TextureLayout::undefined,
+                                                             *required,
+                                                             subresource,
+                                                             "an earlier copy in this command buffer needs"));
+                    }
                 }
             }
             prepared.use = (*recording)->use(texture.legacyStates);
@@ -2032,6 +2062,75 @@ namespace rachis::d3d12
             {
                 tracked.transition(subresource, *use.legacyState, *use.legacyState, false);
             }
+        }
+    }
+
+    Result<TextureLayoutRequirement> resource_detail::prepareTextureLayoutRequirement(
+        LegacyTextureStateRecording& recording,
+        const TextureRecord& texture,
+        std::span<const std::uint32_t> subresources,
+        TextureLayout layout,
+        TextureLayout alternative,
+        std::string_view operation)
+    {
+        if (texture.legacyStates == nullptr || subresources.empty())
+        {
+            return TextureLayoutRequirement{};
+        }
+        try
+        {
+            if (const auto* use = recording.find(texture.legacyStates.get()); use != nullptr)
+            {
+                for (const auto subresource : subresources)
+                {
+                    if (const auto left = use->layoutLeft(subresource);
+                        left.has_value() && *left != layout && *left != alternative)
+                    {
+                        return std::unexpected(textureLayoutRequirementMismatch(
+                            operation, layout, alternative, *left, subresource, "this command buffer leaves"));
+                    }
+                    if (const auto required = use->earlierRequirement(subresource, layout, alternative);
+                        required.has_value())
+                    {
+                        return std::unexpected(
+                            textureLayoutRequirementMismatch(operation,
+                                                             layout,
+                                                             alternative,
+                                                             *required,
+                                                             subresource,
+                                                             "an earlier copy in this command buffer needs"));
+                    }
+                }
+            }
+            TextureLayoutRequirement prepared{
+                .recording = &recording,
+                .subresources = subresources,
+                .layout = layout,
+                .alternative = alternative,
+            };
+            prepared.use = recording.use(texture.legacyStates);
+            return prepared;
+        }
+        catch (const std::bad_alloc&)
+        {
+            return std::unexpected(Error{
+                ErrorCode::outOfMemory,
+                0,
+                "Failed to track the texture layout of a recorded copy.",
+            });
+        }
+    }
+
+    void resource_detail::commitTextureLayoutRequirement(const TextureLayoutRequirement& requirement) noexcept
+    {
+        if (requirement.recording == nullptr)
+        {
+            return;
+        }
+        auto& tracked = (*requirement.recording)[requirement.use];
+        for (const auto subresource : requirement.subresources)
+        {
+            tracked.requireLayout(subresource, requirement.layout, requirement.alternative);
         }
     }
 
