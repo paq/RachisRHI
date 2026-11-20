@@ -1446,6 +1446,13 @@ TEST_CASE("inline ray query traverses retained BLAS and TLAS versions", "[size:m
     REQUIRE(importedTopStorage.has_value());
     REQUIRE(oversizedImportStorage.has_value());
     REQUIRE(wrongTypeImportStorage.has_value());
+    auto bottomArchiveTopStorage = device.createBuffer({
+        .size = archiveInfo[0].deserializedSize,
+        .usage = rachis::BufferUsage::accelerationStructureStorage,
+        .memoryType = rachis::MemoryType::deviceLocal,
+        .label = "BLAS-archive TLAS import storage",
+    });
+    REQUIRE(bottomArchiveTopStorage.has_value());
     auto importedBottomLevel = device.createAccelerationStructure({
         .type = rachis::AccelerationStructureType::bottomLevel,
         .storage = *importedBottomStorage,
@@ -1470,6 +1477,12 @@ TEST_CASE("inline ray query traverses retained BLAS and TLAS versions", "[size:m
     REQUIRE(importedTopLevel.has_value());
     REQUIRE(oversizedImport.has_value());
     REQUIRE(wrongTypeImport.has_value());
+    auto bottomArchiveTopImport = device.createAccelerationStructure({
+        .type = rachis::AccelerationStructureType::topLevel,
+        .storage = *bottomArchiveTopStorage,
+        .label = "BLAS-archive TLAS import",
+    });
+    REQUIRE(bottomArchiveTopImport.has_value());
 
     auto importedOutput = device.createBuffer({
         .size = 2 * sizeof(std::uint32_t),
@@ -1547,6 +1560,13 @@ TEST_CASE("inline ray query traverses retained BLAS and TLAS versions", "[size:m
                                                                         });
     REQUIRE_FALSE(wrongDestinationType.has_value());
     CHECK(wrongDestinationType.error().code == rachis::ErrorCode::invalidArgument);
+    auto bottomArchiveAsTop = device.deserializeAccelerationStructure(*importCommand,
+                                                                      {
+                                                                          .destination = *bottomArchiveTopImport,
+                                                                          .archive = archives[0],
+                                                                      });
+    REQUIRE_FALSE(bottomArchiveAsTop.has_value());
+    CHECK(bottomArchiveAsTop.error().code == rachis::ErrorCode::invalidArgument);
     REQUIRE(device
                 .deserializeAccelerationStructure(*importCommand,
                                                   {
@@ -1605,10 +1625,12 @@ TEST_CASE("inline ray query traverses retained BLAS and TLAS versions", "[size:m
     REQUIRE(device.destroyAccelerationStructure(*importedTopLevel).has_value());
     REQUIRE(device.destroyAccelerationStructure(*oversizedImport).has_value());
     REQUIRE(device.destroyAccelerationStructure(*wrongTypeImport).has_value());
+    REQUIRE(device.destroyAccelerationStructure(*bottomArchiveTopImport).has_value());
     REQUIRE(device.destroyBuffer(*importedBottomStorage).has_value());
     REQUIRE(device.destroyBuffer(*importedTopStorage).has_value());
     REQUIRE(device.destroyBuffer(*oversizedImportStorage).has_value());
     REQUIRE(device.destroyBuffer(*wrongTypeImportStorage).has_value());
+    REQUIRE(device.destroyBuffer(*bottomArchiveTopStorage).has_value());
     REQUIRE(device.destroyBuffer(*importedOutput).has_value());
     REQUIRE(device.destroyBindingSet(*importedBindingSet).has_value());
     auto importSubmitted = device.submit(std::move(*importCommand));

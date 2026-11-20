@@ -2510,6 +2510,16 @@ namespace rachis::d3d12
                     "Deserialization requires the exact archive size, destination type, and relocation-table shape.",
                 });
             }
+            if ((*destination)->type == AccelerationStructureType::topLevel && archive.bottomLevelPointerCount == 0)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidArgument,
+                    0,
+                    "A TLAS destination requires an archive with at least one BLAS pointer; Direct3D 12 archives "
+                    "do not record their type, and only a bottom-level or an instance-free top-level archive has "
+                    "none.",
+                });
+            }
             return *destination;
         }
 
