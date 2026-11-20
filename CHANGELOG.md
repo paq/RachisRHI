@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Vulkan: `createSwapchain` uses the surface's current extent on fixed-extent
+  surfaces and creates a suspended swapchain on zero extent.
+- Vulkan: `present` suspends minimized or zero-extent swapchains so
+  `resizeSwapchain` recreates them on restore.
+
 ## 0.2.0
 
 - The C ABI is at `RACHIS_ABI_VERSION` 2, and the shared library is

@@ -389,12 +389,10 @@ namespace rachis::vulkan
 
         [[nodiscard]] Status validateSwapchainDesc(const SwapchainDesc& desc, const SurfaceCapabilities& capabilities)
         {
-            const bool extentOutOfRange = desc.width == 0 || desc.height == 0 || desc.width < capabilities.minWidth ||
-                                          desc.height < capabilities.minHeight || desc.width > capabilities.maxWidth ||
-                                          desc.height > capabilities.maxHeight;
             const bool imageCountOutOfRange =
                 desc.imageCount < capabilities.minImageCount || desc.imageCount > capabilities.maxImageCount;
-            if (extentOutOfRange || imageCountOutOfRange || !hasAny(desc.usage, TextureUsage::renderTarget))
+            if (desc.width == 0 || desc.height == 0 || imageCountOutOfRange ||
+                !hasAny(desc.usage, TextureUsage::renderTarget))
             {
                 return std::unexpected(Error{
                     ErrorCode::invalidArgument,
@@ -471,6 +469,26 @@ namespace rachis::vulkan
                 });
             }
             return VkExtent2D{.width = width, .height = height};
+        }
+
+        [[nodiscard]] Result<VkExtent2D> resolveCreateExtent(const VkSurfaceCapabilitiesKHR& nativeCaps,
+                                                             std::uint32_t width,
+                                                             std::uint32_t height)
+        {
+            if (nativeCaps.currentExtent.width == 0 || nativeCaps.currentExtent.height == 0)
+            {
+                return VkExtent2D{};
+            }
+            auto extent = resolveResizeExtent(nativeCaps, width, height);
+            if (!extent)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidArgument,
+                    0,
+                    "The swapchain extent is outside the surface capability range.",
+                });
+            }
+            return *extent;
         }
 
         constexpr std::uint64_t acquireTimeoutNs = 50'000'000;
@@ -1549,6 +1567,11 @@ namespace rachis::vulkan
         record->label = std::string(desc.label);
         record->desc.label = record->label;
         record->hasUndefinedSurfaceExtent = hasUndefinedExtent(nativeCaps);
+        if (swapchain == VK_NULL_HANDLE)
+        {
+            record->suspended = true;
+            return record;
+        }
         auto images = createImages(*record);
         if (!images)
         {
@@ -1608,14 +1631,27 @@ namespace rachis::vulkan
         {
             return std::unexpected(std::move(supported.error()));
         }
-
-        const auto info = swapchainCreateInfo(desc, surface->surface, nativeCaps);
-        auto swapchain = createNativeSwapchain(*surface, info);
-        if (!swapchain)
+        auto extent = resolveCreateExtent(nativeCaps, desc.width, desc.height);
+        if (!extent)
         {
-            return std::unexpected(std::move(swapchain.error()));
+            return std::unexpected(std::move(extent.error()));
         }
-        auto assembled = assembleSwapchainRecord(desc, std::move(surface), *swapchain, nativeCaps);
+        auto resolved = desc;
+        resolved.width = extent->width;
+        resolved.height = extent->height;
+
+        VkSwapchainKHR native = VK_NULL_HANDLE;
+        if (resolved.width != 0 && resolved.height != 0)
+        {
+            const auto info = swapchainCreateInfo(resolved, surface->surface, nativeCaps);
+            auto swapchain = createNativeSwapchain(*surface, info);
+            if (!swapchain)
+            {
+                return std::unexpected(std::move(swapchain.error()));
+            }
+            native = *swapchain;
+        }
+        auto assembled = assembleSwapchainRecord(resolved, std::move(surface), native, nativeCaps);
         if (!assembled)
         {
             return std::unexpected(std::move(assembled.error()));
@@ -1857,7 +1893,8 @@ namespace rachis::vulkan
             return std::unexpected(Error{
                 ErrorCode::invalidState,
                 0,
-                "A minimized or zero-extent swapchain cannot acquire an image.",
+                "A swapchain suspended by a minimized or zero-extent surface cannot acquire an image until it is "
+                "resized.",
             });
         }
         if (record.surface != nullptr && surfaceExtentIsZero(record))
@@ -2152,6 +2189,7 @@ namespace rachis::vulkan
         }
         record.acquired = false;
         record.acquireWaitSubmitted = false;
+        record.suspended = record.suspended || hiddenSurfaceHasZeroExtent(record);
         recordPresentCompletion(record);
         return true;
     }
@@ -2254,6 +2292,7 @@ namespace rachis::vulkan
         }
         if (surfaceIsHidden(record))
         {
+            record.suspended = record.suspended || hiddenSurfaceHasZeroExtent(record);
             return PresentStatus::occluded;
         }
         return PresentStatus::presented;
@@ -2350,6 +2389,18 @@ namespace rachis::vulkan
         }
 #endif
         return surfaceExtentIsZero(record);
+    }
+
+    bool VulkanSwapchainManager::hiddenSurfaceHasZeroExtent(const SwapchainRecord& record) const noexcept
+    {
+#ifdef _WIN32
+        if (record.surface != nullptr && record.surface->kind == SurfaceKind::win32)
+        {
+            return surfaceExtentIsZero(record);
+        }
+#endif
+        static_cast<void>(record);
+        return true;
     }
 
     bool VulkanSwapchainManager::surfaceExtentIsZero(const SwapchainRecord& record) const noexcept

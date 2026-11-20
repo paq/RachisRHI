@@ -174,6 +174,7 @@ namespace rachis::vulkan
         [[nodiscard]] Status destroyNativeSwapchain(SwapchainRecord& record) noexcept;
         void waitPresentationIdle() noexcept;
         [[nodiscard]] bool surfaceIsHidden(const SwapchainRecord& record) const noexcept;
+        [[nodiscard]] bool hiddenSurfaceHasZeroExtent(const SwapchainRecord& record) const noexcept;
         [[nodiscard]] bool surfaceExtentIsZero(const SwapchainRecord& record) const noexcept;
         [[nodiscard]] Status releaseAcquiredImage(SwapchainRecord& record);
         void recordPresentCompletion(SwapchainRecord& record) noexcept;
