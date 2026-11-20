@@ -890,31 +890,56 @@ TEST_CASE("Metal task and mesh modules reject workgroups beyond the stage limits
     {
         SKIP("The Metal GPU is older than the Apple9 family.");
     }
-    const auto cooked = loadPnms("MetalMeshShader.fixed.ms.pnms");
-    REQUIRE_FALSE(cooked.empty());
-    const auto limit = capabilities.meshShader.maxMeshWorkgroupInvocations;
-    const auto moduleWith = [&](const rachis::ShaderWorkgroupSize& size) {
-        const auto bytecode = withThreadGroupSize(cooked, size);
-        return device.createShaderModule({
-            .stage = rachis::ShaderStage::mesh,
-            .bytecode = bytecode,
-            .entryPoint = "meshFixed",
-            .shaderInterface = rachis::test::computeShaderInterface(size),
-        });
-    };
-
-    for (const auto& size : {rachis::ShaderWorkgroupSize{4'194'304, 2'097'152, 2'097'152},
-                             rachis::ShaderWorkgroupSize{limit, 2, 1},
-                             rachis::ShaderWorkgroupSize{1, 1, limit + 1}})
+    struct StageModule final
     {
-        CAPTURE(size.x, size.y, size.z);
-        const auto rejected = moduleWith(size);
-        REQUIRE_FALSE(rejected.has_value());
-        CHECK(rejected.error().code == rachis::ErrorCode::unsupported);
+        rachis::ShaderStage stage = rachis::ShaderStage::none;
+        std::string_view pnms;
+        std::string_view entryPoint;
+        std::uint32_t limit = 0;
+    };
+    const std::array modules{
+        StageModule{
+            .stage = rachis::ShaderStage::task,
+            .pnms = "MetalMeshShader.fixed.as.pnms",
+            .entryPoint = "taskFixed",
+            .limit = capabilities.meshShader.maxTaskWorkgroupInvocations,
+        },
+        StageModule{
+            .stage = rachis::ShaderStage::mesh,
+            .pnms = "MetalMeshShader.fixed.ms.pnms",
+            .entryPoint = "meshFixed",
+            .limit = capabilities.meshShader.maxMeshWorkgroupInvocations,
+        },
+    };
+    for (const auto& module : modules)
+    {
+        CAPTURE(module.entryPoint);
+        const auto cooked = loadPnms(module.pnms);
+        REQUIRE_FALSE(cooked.empty());
+        const auto limit = module.limit;
+        const auto moduleWith = [&](const rachis::ShaderWorkgroupSize& size) {
+            const auto bytecode = withThreadGroupSize(cooked, size);
+            return device.createShaderModule({
+                .stage = module.stage,
+                .bytecode = bytecode,
+                .entryPoint = module.entryPoint,
+                .shaderInterface = rachis::test::computeShaderInterface(size),
+            });
+        };
+
+        for (const auto& size : {rachis::ShaderWorkgroupSize{4'194'304, 2'097'152, 2'097'152},
+                                 rachis::ShaderWorkgroupSize{limit, 2, 1},
+                                 rachis::ShaderWorkgroupSize{1, 1, limit + 1}})
+        {
+            CAPTURE(size.x, size.y, size.z);
+            const auto rejected = moduleWith(size);
+            CHECK_FALSE(rejected.has_value());
+            CHECK((!rejected.has_value() && rejected.error().code == rachis::ErrorCode::unsupported));
+        }
+        auto accepted = moduleWith({limit, 1, 1});
+        REQUIRE(accepted.has_value());
+        REQUIRE(device.destroyShaderModule(*accepted).has_value());
     }
-    auto accepted = moduleWith({limit, 1, 1});
-    REQUIRE(accepted.has_value());
-    REQUIRE(device.destroyShaderModule(*accepted).has_value());
 }
 
 TEST_CASE("Metal mesh pipeline cache entries depend on the mesh workgroup size", "[size:large][rhi][metal][mesh]")
