@@ -683,6 +683,10 @@ namespace rachis::d3d12
                                                        Origin3D origin,
                                                        Extent3D extent) noexcept;
 
+        [[nodiscard]] bool sparseBufferRangeIsMapped(const BufferRecord& record,
+                                                     std::uint64_t offset,
+                                                     std::uint64_t size) noexcept;
+
         struct TextureLayoutUse final
         {
             LegacyTextureStateRecording* recording = nullptr;

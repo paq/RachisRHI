@@ -58,6 +58,11 @@ namespace rachis::d3d12
             return false;
         }
 
+    } // namespace
+
+    namespace resource_detail
+    {
+
         [[nodiscard]] bool sparseBufferRangeIsMapped(const BufferRecord& record,
                                                      std::uint64_t offset,
                                                      std::uint64_t size) noexcept
@@ -78,11 +83,6 @@ namespace rachis::d3d12
                                            static_cast<std::uint32_t>(firstTile),
                                            static_cast<std::uint32_t>(tileLimit - firstTile));
         }
-
-    } // namespace
-
-    namespace resource_detail
-    {
 
         [[nodiscard]] bool sparseTextureRegionIsMapped(const TextureRecord& record,
                                                        std::uint32_t subresource,

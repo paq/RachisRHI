@@ -2314,7 +2314,17 @@ namespace rachis::d3d12
         {
             return std::unexpected(std::move(source.error()));
         }
+        std::unique_lock<std::mutex> mappingLock(impl_->sparseMappingsMutex, std::defer_lock);
+        if (impl_->activeSparseResourceCount.load(std::memory_order_acquire) != 0)
+        {
+            mappingLock.lock();
+        }
         auto destination = impl_->buffer(desc.destination);
+        if (!mappingLock.owns_lock() && destination && (*destination)->sparse)
+        {
+            mappingLock.lock();
+            destination = impl_->buffer(desc.destination);
+        }
         if (!destination)
         {
             return std::unexpected(std::move(destination.error()));
@@ -2329,6 +2339,20 @@ namespace rachis::d3d12
                 0,
                 "Serialized acceleration structures require an in-bounds device-local storage and copy-source range.",
             });
+        }
+        if (!sparseBufferRangeIsMapped(**destination, desc.destinationOffset, desc.serializedSize))
+        {
+            return std::unexpected(Error{
+                ErrorCode::invalidState,
+                0,
+                "Acceleration-structure serialization cannot write an unmapped sparse-buffer tile.",
+            });
+        }
+        SparseMappingCommandLeases sparseMappings;
+        SparseMappingDependencies sparseDependencies;
+        if (auto captured = captureSparseBufferMapping(*destination, sparseMappings, sparseDependencies); !captured)
+        {
+            return captured;
         }
 
         auto commandLists = prepareAccelerationStructureCommandLists(queues, commandBuffer, impl_->enhancedBarriers);
@@ -2345,7 +2369,18 @@ namespace rachis::d3d12
         {
             retention->residencies.push_back((*destination)->residency);
         }
-        auto retained = retainBuildDependencies(queues, commandBuffer, retention, std::move(source->lease), {});
+        SmallVector<QueueManager::ResourceRetention, 2> dependencies;
+        dependencies.reserve(1 + sparseMappings.size());
+        dependencies.push_back(QueueManager::ResourceRetention{
+            .owner = retention,
+            .residencySet = retention->residencies,
+        });
+        for (const auto& mapping : sparseMappings)
+        {
+            dependencies.push_back(QueueManager::ResourceRetention{.owner = mapping, .internal = true});
+        }
+        auto retained = queues.retainAccelerationStructureDependencies(
+            commandBuffer, dependencies.span(), std::move(source->lease), {}, sparseDependencies.span());
         if (!retained)
         {
             return retained;

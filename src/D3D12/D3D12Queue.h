@@ -136,7 +136,8 @@ namespace rachis::d3d12
             detail::BackendCommandBuffer& commandBuffer,
             std::span<const ResourceRetention> resources,
             AccelerationStructureExecutionLease lease,
-            AccelerationStructurePublication publication = {}) const;
+            AccelerationStructurePublication publication = {},
+            std::span<const TimelinePoint> sparseMappingDependencies = {}) const;
         struct ResidencySubmission final
         {
             TimelinePoint publication = {};

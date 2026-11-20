@@ -3064,10 +3064,12 @@ namespace rachis::d3d12
         return {};
     }
 
-    Status QueueManager::retainAccelerationStructureDependencies(detail::BackendCommandBuffer& commandBuffer,
-                                                                 std::span<const ResourceRetention> resources,
-                                                                 AccelerationStructureExecutionLease lease,
-                                                                 AccelerationStructurePublication publication) const
+    Status QueueManager::retainAccelerationStructureDependencies(
+        detail::BackendCommandBuffer& commandBuffer,
+        std::span<const ResourceRetention> resources,
+        AccelerationStructureExecutionLease lease,
+        AccelerationStructurePublication publication,
+        std::span<const TimelinePoint> sparseMappingDependencies) const
     {
         auto live =
             requireLiveD3D12Command(&commandBuffer,
@@ -3101,7 +3103,7 @@ namespace rachis::d3d12
             });
         }
 
-        auto retained = retainCommandDependencies(commandBuffer, resources, {});
+        auto retained = retainCommandDependencies(commandBuffer, resources, {}, sparseMappingDependencies);
         if (!retained)
         {
             return retained;
