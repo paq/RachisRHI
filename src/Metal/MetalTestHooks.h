@@ -25,6 +25,7 @@ namespace rachis::metal
 #ifdef RACHIS_TESTING
     void setHostReportOverride(std::optional<MetalHostReport> report) noexcept;
     void setFailCommandApiCreateAttempts(std::uint32_t attempts, std::string_view nativeDescription = {});
+    void setFailSharedEventProbe(bool fail) noexcept;
     void setFailNextLogStateCreate(bool fail) noexcept;
     void setFailNextDepthStencilStateCreate(bool fail) noexcept;
     void setFailNextDrawable(bool fail) noexcept;
@@ -65,8 +66,6 @@ namespace rachis::metal
         std::unique_lock<std::recursive_mutex> lock_;
     };
 
-    // Fails the next `attempts` Metal 4 command-object creation attempts. The default fails every
-    // attempt, so device creation exhausts its bounded retry.
     class ScopedFailCommandApiCreate final
     {
     public:
@@ -86,6 +85,28 @@ namespace rachis::metal
         ScopedFailCommandApiCreate& operator=(const ScopedFailCommandApiCreate&) = delete;
         ScopedFailCommandApiCreate(ScopedFailCommandApiCreate&&) = delete;
         ScopedFailCommandApiCreate& operator=(ScopedFailCommandApiCreate&&) = delete;
+
+    private:
+        std::unique_lock<std::recursive_mutex> lock_;
+    };
+
+    class ScopedFailSharedEventProbe final
+    {
+    public:
+        explicit ScopedFailSharedEventProbe() noexcept : lock_(testHookMutex())
+        {
+            setFailSharedEventProbe(true);
+        }
+
+        ~ScopedFailSharedEventProbe() noexcept
+        {
+            setFailSharedEventProbe(false);
+        }
+
+        ScopedFailSharedEventProbe(const ScopedFailSharedEventProbe&) = delete;
+        ScopedFailSharedEventProbe& operator=(const ScopedFailSharedEventProbe&) = delete;
+        ScopedFailSharedEventProbe(ScopedFailSharedEventProbe&&) = delete;
+        ScopedFailSharedEventProbe& operator=(ScopedFailSharedEventProbe&&) = delete;
 
     private:
         std::unique_lock<std::recursive_mutex> lock_;

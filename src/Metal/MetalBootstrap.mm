@@ -2,7 +2,10 @@
 
 #include "Internal/DeviceIdentity.h"
 
+#import <IOKit/IOKitLib.h>
+
 #include <chrono>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -451,6 +454,79 @@ namespace rachis::metal
             return attempt;
         }
 
+        // Full system IOSurfaceSharedEvent table (65535 entries) makes MTL4CommandQueue creation return nil with no
+        // NSError.
+        constexpr std::uint64_t systemSharedEventLimit = 65535;
+
+        [[nodiscard]] bool sharedEventCreationFails(id<MTLDevice> selected)
+        {
+#ifdef RACHIS_TESTING
+            {
+                std::scoped_lock const lock(metalTestingState().mutex);
+                if (metalTestingState().failSharedEventProbe)
+                {
+                    return true;
+                }
+            }
+#endif
+            @autoreleasepool
+            {
+                return [selected newSharedEvent] == nil;
+            }
+        }
+
+        [[nodiscard]] std::optional<std::uint64_t> systemSharedEventCount()
+        {
+            io_registry_entry_t const root = IORegistryGetRootEntry(kIOMainPortDefault);
+            if (root == MACH_PORT_NULL)
+            {
+                return std::nullopt;
+            }
+            std::optional<std::uint64_t> count;
+            CFTypeRef const diagnostics =
+                IORegistryEntryCreateCFProperty(root, CFSTR("IOKitDiagnostics"), kCFAllocatorDefault, 0);
+            if (diagnostics != nullptr && CFGetTypeID(diagnostics) == CFDictionaryGetTypeID())
+            {
+                const void* const classes =
+                    CFDictionaryGetValue(static_cast<CFDictionaryRef>(diagnostics), CFSTR("Classes"));
+                if (classes != nullptr && CFGetTypeID(classes) == CFDictionaryGetTypeID())
+                {
+                    const void* const value =
+                        CFDictionaryGetValue(static_cast<CFDictionaryRef>(classes), CFSTR("IOSurfaceSharedEvent"));
+                    std::int64_t number = 0;
+                    if (value != nullptr && CFGetTypeID(value) == CFNumberGetTypeID() &&
+                        CFNumberGetValue(static_cast<CFNumberRef>(value), kCFNumberSInt64Type, &number) && number >= 0)
+                    {
+                        count = static_cast<std::uint64_t>(number);
+                    }
+                }
+            }
+            if (diagnostics != nullptr)
+            {
+                CFRelease(diagnostics);
+            }
+            IOObjectRelease(root);
+            return count;
+        }
+
+        [[nodiscard]] Error sharedEventTableFullError(std::string_view failedObject)
+        {
+            std::string message = "System-wide IOSurface shared-event table is full";
+            if (const auto count = systemSharedEventCount(); count.has_value())
+            {
+                message += " (";
+                message += std::to_string(*count);
+                message += " of ";
+                message += std::to_string(systemSharedEventLimit);
+                message += " in use)";
+            }
+            message += "; ";
+            message += failedObject;
+            message += " and MTLSharedEvent returned nil. Exit the process holding shared events before retrying "
+                       "(top -o ports).";
+            return metalSelectionError(ErrorCode::resourceExhausted, message);
+        }
+
         [[nodiscard]] Result<id<MTL4CommandQueue>> createBootstrapCommandQueue(id<MTLDevice> selected)
         {
             BootstrapQueueAttempt attempt{};
@@ -466,6 +542,10 @@ namespace rachis::metal
                 if (attempt.queue != nil)
                 {
                     return attempt.queue;
+                }
+                if (attempt.error == nil && sharedEventCreationFails(selected))
+                {
+                    return std::unexpected(sharedEventTableFullError(attempt.failedObject));
                 }
             }
 

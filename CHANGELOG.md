@@ -4,6 +4,8 @@
 
 - Metal: support `PresentMode::immediate` (`RACHIS_PRESENT_MODE_IMMEDIATE_BIT`) via `CAMetalLayer.displaySyncEnabled = NO`.
 - Metal: place retry guidance before `NSError` detail in Metal 4 bootstrap `notReady` messages so it survives 255-byte C ABI truncation.
+- Metal: drain an internal autorelease pool in surface and swapchain calls so worker threads without a draining pool do not retain `CAMetalDrawable` objects across frames.
+- Metal: return `ErrorCode::resourceExhausted` (`RACHIS_STATUS_RESOURCE_EXHAUSTED`) immediately with the live `IOSurfaceSharedEvent` count when `createDevice` hits a full system shared-event table.
 
 ## 0.3.1
 
