@@ -138,6 +138,7 @@ if(RACHIS_ENABLE_METAL)
     find_library(RACHIS_QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
     find_library(RACHIS_COREGRAPHICS_FRAMEWORK CoreGraphics REQUIRED)
     find_library(RACHIS_APPKIT_FRAMEWORK AppKit REQUIRED)
+    find_library(RACHIS_IOKIT_FRAMEWORK IOKit REQUIRED)
     message(STATUS "Rachis Metal: AppleClang ${CMAKE_CXX_COMPILER_VERSION}, SDK ${RACHIS_APPLE_SDK_VERSION}, "
         "deployment ${CMAKE_OSX_DEPLOYMENT_TARGET}, language Objective-C++ ARC. "
         "slangc 2026.17.1+ is required to cook metallib. "
@@ -1549,6 +1550,7 @@ if(RACHIS_ENABLE_METAL)
             "${RACHIS_FOUNDATION_FRAMEWORK}"
             "${RACHIS_QUARTZCORE_FRAMEWORK}"
             "${RACHIS_COREGRAPHICS_FRAMEWORK}"
+            "${RACHIS_IOKIT_FRAMEWORK}"
     )
     set_target_properties(RachisRHIMetal PROPERTIES LINKER_LANGUAGE CXX)
     rachis_configure_rhi_target(RachisRHIMetal)

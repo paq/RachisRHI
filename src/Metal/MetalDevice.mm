@@ -1270,6 +1270,12 @@ void rachis::metal::setFailCommandApiCreateAttempts(std::uint32_t attempts, std:
         attempts == 0 ? std::string{} : std::string{nativeDescription};
 }
 
+void rachis::metal::setFailSharedEventProbe(bool fail) noexcept
+{
+    std::scoped_lock const lock(metalTestingState().mutex);
+    metalTestingState().failSharedEventProbe = fail;
+}
+
 void rachis::metal::setFailNextLogStateCreate(bool fail) noexcept
 {
     std::scoped_lock const lock(metalTestingState().mutex);

@@ -1478,6 +1478,7 @@ namespace rachis::metal
         MetalDevice* boundDevice = nullptr;
         std::uint32_t failCommandApiCreateAttempts = 0;
         std::string failCommandApiNativeDescription;
+        bool failSharedEventProbe = false;
         bool failNextLogStateCreate = false;
         bool failNextDepthStencilStateCreate = false;
         bool failNextDrawable = false;

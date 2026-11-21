@@ -56,6 +56,7 @@ namespace rachis::metal
 
     Result<SurfaceHandle> MetalDevice::createSurface(const SurfaceDesc& desc)
     {
+        const MetalAutoreleasePool autoreleasePool;
         if (desc.kind != SurfaceKind::caMetalLayer)
         {
             return std::unexpected(
@@ -178,6 +179,7 @@ namespace rachis::metal
 
     Result<SurfaceCapabilities> MetalDevice::querySurfaceCapabilities(SurfaceHandle surface) const
     {
+        const MetalAutoreleasePool autoreleasePool;
         std::scoped_lock const lock(mutex_);
         if (native_ == nullptr || native_->device == nil)
         {
@@ -226,6 +228,7 @@ namespace rachis::metal
 
     Status MetalDevice::destroySurface(SurfaceHandle surface)
     {
+        const MetalAutoreleasePool autoreleasePool;
         std::scoped_lock const lock(mutex_);
         if (native_ == nullptr)
         {
@@ -445,6 +448,7 @@ namespace rachis::metal
 
     Result<SwapchainHandle> MetalDevice::createSwapchain(const SwapchainDesc& desc)
     {
+        const MetalAutoreleasePool autoreleasePool;
         if (auto blocked = requireActive(); !blocked)
         {
             return std::unexpected(std::move(blocked.error()));
@@ -540,6 +544,7 @@ namespace rachis::metal
 
     Status MetalDevice::destroySwapchain(SwapchainHandle swapchain)
     {
+        const MetalAutoreleasePool autoreleasePool;
         const auto operation = lockMetalSwapchainOperations(mutex_, native_, swapchain);
         std::scoped_lock const lock(mutex_);
         if (native_ == nullptr)
@@ -591,6 +596,7 @@ namespace rachis::metal
 
     Status MetalDevice::resizeSwapchain(SwapchainHandle swapchain, std::uint32_t width, std::uint32_t height)
     {
+        const MetalAutoreleasePool autoreleasePool;
         if (auto blocked = requireActive(); !blocked)
         {
             return std::unexpected(std::move(blocked.error()));
@@ -774,6 +780,7 @@ namespace rachis::metal
 
     Result<AcquiredSwapchainImage> MetalDevice::acquireNextImage(SwapchainHandle swapchain)
     {
+        const MetalAutoreleasePool autoreleasePool;
         if (auto blocked = requireActive(); !blocked)
         {
             return std::unexpected(std::move(blocked.error()));
@@ -852,6 +859,7 @@ namespace rachis::metal
 
     Status MetalDevice::cancelSwapchainImage(SwapchainHandle swapchain)
     {
+        const MetalAutoreleasePool autoreleasePool;
         const auto operation = lockMetalSwapchainOperations(mutex_, native_, swapchain);
         std::scoped_lock const lock(mutex_);
         if (native_ == nullptr)
@@ -999,6 +1007,7 @@ namespace rachis::metal
 
     Result<PresentStatus> MetalDevice::present(SwapchainHandle swapchain, TimelinePoint renderComplete)
     {
+        const MetalAutoreleasePool autoreleasePool;
         if (auto blocked = requireActive(); !blocked)
         {
             return std::unexpected(std::move(blocked.error()));

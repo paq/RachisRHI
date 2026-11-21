@@ -3,6 +3,7 @@
 #include "Rachis/Device.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
 
 #include <optional>
 #include <string>
@@ -189,6 +190,23 @@ TEST_CASE("Metal device create rejects injected missing features and releases pa
         CHECK(created.error().message.contains("Native detail: TestInjectedError code 1: nnn"));
         CHECK(created.error().message.size() <= rachis::maxMetalDiagnosticDescriptionBytes);
         CHECK(created.error().message.ends_with("..."));
+    }
+
+    {
+        rachis::metal::ScopedFailCommandApiCreate const failCommandApi;
+        rachis::metal::ScopedFailSharedEventProbe const failSharedEvent;
+        const auto started = std::chrono::steady_clock::now();
+        auto created = rachis::createDevice(rachis::DeviceDesc{
+            .backend = rachis::Backend::metal,
+            .validation = rachis::ValidationLevel::standard,
+            .enableDred = false,
+        });
+        const auto elapsed = std::chrono::steady_clock::now() - started;
+        REQUIRE_FALSE(created.has_value());
+        CHECK(created.error().code == rachis::ErrorCode::resourceExhausted);
+        CHECK(created.error().message.contains("shared-event table is full"));
+        CHECK(created.error().message.contains("of 65535 in use"));
+        CHECK(elapsed < std::chrono::milliseconds(200));
     }
 
     {
