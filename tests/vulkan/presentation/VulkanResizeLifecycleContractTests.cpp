@@ -531,7 +531,6 @@ TEST_CASE("Vulkan swapchain suspends minimize and resumes without resetting devi
     auto suspended = device.acquireNextImage(*swapchain);
     REQUIRE_FALSE(suspended.has_value());
     CHECK(suspended.error().code == rachis::ErrorCode::invalidState);
-    // The window is still visible, so a timed acquire also reports that only a resize resumes the swapchain.
     auto suspendedTimed = device.acquireNextImage(*swapchain, std::chrono::milliseconds(20));
     REQUIRE_FALSE(suspendedTimed.has_value());
     CHECK(suspendedTimed.error().code == rachis::ErrorCode::invalidState);

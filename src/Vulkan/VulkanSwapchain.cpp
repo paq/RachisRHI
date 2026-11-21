@@ -2044,9 +2044,6 @@ namespace rachis::vulkan
         auto acquirable = ensureAcquirable(record);
         if (!acquirable)
         {
-            // A timed acquire reports a suspended swapchain on a minimized or zero-extent window as notReady,
-            // like every other hidden surface. Once the window is back it keeps invalidState: only
-            // resizeSwapchain resumes a suspended swapchain. The untimed acquire keeps invalidState throughout.
             if (deadline.timed() && record.suspended && surfaceIsHidden(record))
             {
                 return std::unexpected(Error{

@@ -2,8 +2,7 @@
 
 ## Unreleased
 
-- C ABI version 4 (`RACHIS_ABI_VERSION` 4, `librachis.so.4` / `librachis.4.dylib`): `rachis_swapchain_acquire_for` and `RACHIS_STATUS_TIMEOUT` (15).
-- `Device::acquireNextImage(SwapchainHandle, std::chrono::nanoseconds)` and `ErrorCode::timeout` bound swapchain acquisition across Direct3D 12, Vulkan, and Metal.
+- Add timed swapchain acquire: `Device::acquireNextImage(swapchain, timeout)` / `rachis_swapchain_acquire_for`, returning `ErrorCode::timeout` / `RACHIS_STATUS_TIMEOUT`. C ABI version 4.
 - Metal: support `PresentMode::immediate` (`RACHIS_PRESENT_MODE_IMMEDIATE_BIT`) via `CAMetalLayer.displaySyncEnabled = NO`.
 - Metal: place retry guidance before `NSError` detail in Metal 4 bootstrap `notReady` messages so it survives 255-byte C ABI truncation.
 - Metal: drain an internal autorelease pool in surface and swapchain calls so worker threads without a draining pool do not retain `CAMetalDrawable` objects across frames.
