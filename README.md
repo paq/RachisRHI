@@ -86,7 +86,7 @@ ctest --preset macos-arm64-metal-small-medium --output-on-failure
 ## CMake integration
 
 ```cmake
-find_package(Rachis 0.2 CONFIG REQUIRED)
+find_package(Rachis 0.3 CONFIG REQUIRED)
 target_link_libraries(your_app PRIVATE Rachis::RHI)  # or Rachis::C for the C11 ABI
 ```
 

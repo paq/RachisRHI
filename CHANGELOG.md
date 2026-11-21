@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 - C ABI version 3 (`RACHIS_ABI_VERSION` 3, `librachis.so.3` / `librachis.3.dylib`):
   - `rachis_timeline_query` and `rachis_timeline_wait_for` (`RACHIS_TIMELINE_STATUS_*`).

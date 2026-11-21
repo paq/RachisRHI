@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 4.0)
 project(RachisShaderLanguage LANGUAGES CXX)
 
-find_package(Rachis 0.2 CONFIG REQUIRED)
+find_package(Rachis 0.3 CONFIG REQUIRED)
 
 add_library(RachisShaderLanguage STATIC "${PROJECT_SOURCE_DIR}/../First.cpp")
 target_compile_features(RachisShaderLanguage PRIVATE cxx_std_23)

@@ -30,7 +30,7 @@ foreach(attempt RANGE 16)
     list(APPEND CMAKE_IGNORE_PATH "${rachis_package_slangc_dir}")
 endforeach()
 
-find_package(Rachis 0.2 CONFIG REQUIRED)
+find_package(Rachis 0.3 CONFIG REQUIRED)
 
 add_library(RachisShaderReflectWithoutSlangc STATIC "${PROJECT_SOURCE_DIR}/../First.cpp")
 target_compile_features(RachisShaderReflectWithoutSlangc PRIVATE cxx_std_23)

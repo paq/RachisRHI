@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 4.0)
 project(RachisShaderBuildPaths LANGUAGES CXX)
 
-find_package(Rachis 0.2 CONFIG REQUIRED)
+find_package(Rachis 0.3 CONFIG REQUIRED)
 enable_testing()
 
 foreach(backend IN ITEMS D3D12 VULKAN METAL)

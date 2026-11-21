@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 4.0)
 project(RachisShaderNames LANGUAGES CXX)
 
-find_package(Rachis 0.2 CONFIG REQUIRED)
+find_package(Rachis 0.3 CONFIG REQUIRED)
 enable_testing()
 
 set(rachis_shader_names_backends)

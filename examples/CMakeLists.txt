@@ -4,7 +4,7 @@ project(RachisExamples LANGUAGES CXX)
 # Inside the RachisRHI source tree the targets already exist. Anywhere else, add the install prefix
 # to CMAKE_PREFIX_PATH, or point Rachis_DIR at <libdir>/cmake/Rachis under it.
 if(NOT TARGET Rachis::RHI)
-    find_package(Rachis 0.2 CONFIG REQUIRED)
+    find_package(Rachis 0.3 CONFIG REQUIRED)
 endif()
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     enable_testing()
