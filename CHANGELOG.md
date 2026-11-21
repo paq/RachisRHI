@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Metal: support `PresentMode::immediate` (`RACHIS_PRESENT_MODE_IMMEDIATE_BIT`) via `CAMetalLayer.displaySyncEnabled = NO`.
+- Metal: place retry guidance before `NSError` detail in Metal 4 bootstrap `notReady` messages so it survives 255-byte C ABI truncation.
 
 ## 0.3.1
 

@@ -364,21 +364,35 @@ namespace rachis::metal
             return host;
         }
 
-        [[nodiscard]] bool consumeCommandApiFailureInjection()
+        struct CommandApiFailureInjection final
         {
-            bool failCommandApi = false;
+            bool fail = false;
+            NSError* error = nil;
+        };
+
+        [[nodiscard]] CommandApiFailureInjection consumeCommandApiFailureInjection()
+        {
+            CommandApiFailureInjection injection{};
 #ifdef RACHIS_TESTING
             {
                 std::scoped_lock const lock(metalTestingState().mutex);
                 auto& remaining = metalTestingState().failCommandApiCreateAttempts;
-                failCommandApi = remaining > 0;
-                if (failCommandApi && remaining != UINT32_MAX)
+                injection.fail = remaining > 0;
+                if (injection.fail && remaining != UINT32_MAX)
                 {
                     --remaining;
                 }
+                const auto& description = metalTestingState().failCommandApiNativeDescription;
+                if (injection.fail && !description.empty())
+                {
+                    injection.error =
+                        [NSError errorWithDomain:@"TestInjectedError"
+                                            code:1
+                                        userInfo:@{NSLocalizedDescriptionKey : metalNsString(description)}];
+                }
             }
 #endif
-            return failCommandApi;
+            return injection;
         }
 
         // Metal returns nil from command-object creation while the GPU is saturated or the process
@@ -397,9 +411,10 @@ namespace rachis::metal
         [[nodiscard]] BootstrapQueueAttempt tryCreateBootstrapCommandQueue(id<MTLDevice> selected)
         {
             BootstrapQueueAttempt attempt{};
-            if (consumeCommandApiFailureInjection())
+            if (const auto injection = consumeCommandApiFailureInjection(); injection.fail)
             {
                 attempt.failedObject = "MTL4CommandQueue";
+                attempt.error = injection.error;
                 return attempt;
             }
 
@@ -454,19 +469,32 @@ namespace rachis::metal
                 }
             }
 
-            std::string operation = "Metal 4 command-object creation (";
-            operation += attempt.failedObject;
-            operation += " returned nil on all ";
-            operation += std::to_string(metalBootstrapQueueAttempts);
-            operation += " attempts)";
-            std::string detail = attempt.error != nil ? std::string{} : std::string{"Metal gave no NSError. "};
-            detail += "The device supports MTLGPUFamilyMetal4, so this is a transient condition (GPU "
-                      "saturated or unreachable from this session), not missing Metal 4 support. Retry "
-                      "device creation later. Partial Metal objects were released.";
-            auto error = metalNsError(ErrorCode::notReady, attempt.error, operation);
-            error.message += ' ';
-            error.message += detail;
-            return std::unexpected(std::move(error));
+            std::string message = "Retry device creation later: the GPU is busy or unreachable (";
+            message += attempt.failedObject;
+            message += " returned nil on all ";
+            message += std::to_string(metalBootstrapQueueAttempts);
+            message += " attempts; the device supports MTLGPUFamilyMetal4). Partial Metal objects were released.";
+            std::int64_t nativeCode = 0;
+            if (attempt.error != nil)
+            {
+                nativeCode = static_cast<std::int64_t>(attempt.error.code);
+                const char* const domain = attempt.error.domain.UTF8String;
+                const char* const description = attempt.error.localizedDescription.UTF8String;
+                message += " Native detail: ";
+                message += domain != nullptr ? domain : "unknown domain";
+                message += " code ";
+                message += std::to_string(nativeCode);
+                if (description != nullptr && description[0] != '\0')
+                {
+                    message += ": ";
+                    message += description;
+                }
+            }
+            else
+            {
+                message += " Metal gave no NSError.";
+            }
+            return std::unexpected(Error{ErrorCode::notReady, nativeCode, truncateMetalDiagnostic(message)});
         }
 
         [[nodiscard]] bool consumeLogStateFailureInjection()

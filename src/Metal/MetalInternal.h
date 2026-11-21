@@ -1477,6 +1477,7 @@ namespace rachis::metal
         std::optional<MetalHostReport> hostReportOverride;
         MetalDevice* boundDevice = nullptr;
         std::uint32_t failCommandApiCreateAttempts = 0;
+        std::string failCommandApiNativeDescription;
         bool failNextLogStateCreate = false;
         bool failNextDepthStencilStateCreate = false;
         bool failNextDrawable = false;

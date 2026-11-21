@@ -24,7 +24,7 @@ namespace rachis::metal
 
 #ifdef RACHIS_TESTING
     void setHostReportOverride(std::optional<MetalHostReport> report) noexcept;
-    void setFailCommandApiCreateAttempts(std::uint32_t attempts) noexcept;
+    void setFailCommandApiCreateAttempts(std::uint32_t attempts, std::string_view nativeDescription = {});
     void setFailNextLogStateCreate(bool fail) noexcept;
     void setFailNextDepthStencilStateCreate(bool fail) noexcept;
     void setFailNextDrawable(bool fail) noexcept;
@@ -70,9 +70,11 @@ namespace rachis::metal
     class ScopedFailCommandApiCreate final
     {
     public:
-        explicit ScopedFailCommandApiCreate(std::uint32_t attempts = UINT32_MAX) noexcept : lock_(testHookMutex())
+        explicit ScopedFailCommandApiCreate(std::uint32_t attempts = UINT32_MAX,
+                                            std::string_view nativeDescription = {})
+            : lock_(testHookMutex())
         {
-            setFailCommandApiCreateAttempts(attempts);
+            setFailCommandApiCreateAttempts(attempts, nativeDescription);
         }
 
         ~ScopedFailCommandApiCreate() noexcept
