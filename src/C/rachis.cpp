@@ -343,6 +343,8 @@ namespace
             return RACHIS_STATUS_PIPELINE_CACHE_MISS;
         case rachis::ErrorCode::notReady:
             return RACHIS_STATUS_NOT_READY;
+        case rachis::ErrorCode::timeout:
+            return RACHIS_STATUS_TIMEOUT;
         }
         return RACHIS_STATUS_NATIVE_FAILURE;
     }
@@ -3770,11 +3772,15 @@ extern "C"
             return RACHIS_STATUS_OK;
         });
     }
+}
 
-    rachis_status rachis_swapchain_acquire(rachis_device* device,
-                                           rachis_handle swapchain,
-                                           rachis_swapchain_image* output,
-                                           rachis_error* error)
+namespace
+{
+    [[nodiscard]] rachis_status acquireSwapchainImage(rachis_device* device,
+                                                      rachis_handle swapchain,
+                                                      std::optional<std::chrono::nanoseconds> timeout,
+                                                      rachis_swapchain_image* output,
+                                                      rachis_error* error)
     {
         return boundary(error, [&]() -> rachis_status {
             if (device == nullptr || output == nullptr)
@@ -3821,7 +3827,8 @@ extern "C"
             std::optional<rachis::Result<rachis::AcquiredSwapchainImage>> acquired;
             try
             {
-                acquired.emplace(device->native.acquireNextImage(swapchainEntry->native));
+                acquired.emplace(timeout.has_value() ? device->native.acquireNextImage(swapchainEntry->native, *timeout)
+                                                     : device->native.acquireNextImage(swapchainEntry->native));
             }
             catch (...)
             {
@@ -3856,6 +3863,33 @@ extern "C"
             output->generation = (*acquired)->generation;
             return RACHIS_STATUS_OK;
         });
+    }
+} // namespace
+
+extern "C"
+{
+    rachis_status rachis_swapchain_acquire(rachis_device* device,
+                                           rachis_handle swapchain,
+                                           rachis_swapchain_image* output,
+                                           rachis_error* error)
+    {
+        return acquireSwapchainImage(device, swapchain, std::nullopt, output, error);
+    }
+
+    rachis_status rachis_swapchain_acquire_for(rachis_device* device,
+                                               rachis_handle swapchain,
+                                               std::uint64_t timeoutNs,
+                                               rachis_swapchain_image* output,
+                                               rachis_error* error)
+    {
+        // Values above INT64_MAX become nanoseconds::max(), which waits without bound.
+        constexpr auto longest = static_cast<std::uint64_t>(std::chrono::nanoseconds::max().count());
+        return acquireSwapchainImage(
+            device,
+            swapchain,
+            std::chrono::nanoseconds{static_cast<std::chrono::nanoseconds::rep>(std::min(timeoutNs, longest))},
+            output,
+            error);
     }
 
     rachis_status rachis_swapchain_query_presentation_progress(rachis_device* device,

@@ -1,14 +1,17 @@
 #pragma once
 
+#include "Common/AcquireDeadline.h"
 #include "Common/HandleTable.h"
 #include "Internal/VulkanQueues.h"
 #include "Internal/VulkanResources.h"
 #include "Internal/VulkanWindowsProfile.h"
 #include "Rachis/Presentation.h"
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <string>
 #include <vector>
@@ -57,7 +60,8 @@ namespace rachis::vulkan
                                               bool deviceLost = false,
                                               bool retirePresentation = true);
         [[nodiscard]] Status resizeSwapchain(SwapchainHandle swapchain, std::uint32_t width, std::uint32_t height);
-        [[nodiscard]] Result<AcquiredSwapchainImage> acquireNextImage(SwapchainHandle swapchain);
+        [[nodiscard]] Result<AcquiredSwapchainImage> acquireNextImage(SwapchainHandle swapchain,
+                                                                      std::optional<std::chrono::nanoseconds> timeout);
         [[nodiscard]] bool hasAcquiredImage(SwapchainHandle swapchain) const noexcept;
         [[nodiscard]] Status cancelSwapchainImage(SwapchainHandle swapchain);
         [[nodiscard]] Result<PresentStatus> present(SwapchainHandle swapchain,
@@ -158,18 +162,22 @@ namespace rachis::vulkan
         void destroySemaphore(VkSemaphore semaphore) noexcept;
         void destroyFence(VkFence fence) noexcept;
         [[nodiscard]] Status retireBinarySemaphore(VkSemaphore semaphore);
-        [[nodiscard]] Status waitPresentFence(SwapchainImage& image);
+        [[nodiscard]] Status waitPresentFence(SwapchainImage& image, std::uint64_t timeoutNs = UINT64_MAX);
         [[nodiscard]] Status waitImagePresentId(const SwapchainRecord& record,
                                                 SwapchainImage& image,
                                                 std::uint64_t timeoutNs);
         [[nodiscard]] Status retirePendingPresent(SwapchainRecord& record,
                                                   SwapchainImage& image,
-                                                  std::uint64_t presentWaitTimeoutNs);
+                                                  std::uint64_t presentWaitTimeoutNs,
+                                                  std::uint64_t presentFenceTimeoutNs = UINT64_MAX);
         [[nodiscard]] Status bridgeAcquire(SwapchainImage& image);
-        [[nodiscard]] Result<VkSemaphore> takeAcquireSemaphore(SwapchainRecord& record);
+        [[nodiscard]] Result<VkSemaphore> takeAcquireSemaphore(SwapchainRecord& record,
+                                                               const rachis::detail::AcquireDeadline& deadline);
         void releaseAcquireSemaphore(SwapchainRecord& record, VkSemaphore semaphore, TimelinePoint bridge) noexcept;
         void parkFailedAcquire(SwapchainRecord& record) noexcept;
-        [[nodiscard]] Status submitDeferredAcquireWait(SwapchainRecord& record, std::uint64_t presentWaitTimeoutNs);
+        [[nodiscard]] Status submitDeferredAcquireWait(SwapchainRecord& record,
+                                                       std::uint64_t presentWaitTimeoutNs,
+                                                       std::uint64_t presentFenceTimeoutNs = UINT64_MAX);
         [[nodiscard]] Status waitPresentationRetirement(SwapchainRecord& record);
         [[nodiscard]] Status destroyNativeSwapchain(SwapchainRecord& record) noexcept;
         void waitPresentationIdle() noexcept;
@@ -197,10 +205,14 @@ namespace rachis::vulkan
                                                     const VkSurfaceCapabilitiesKHR& nativeCaps,
                                                     VkExtent2D extent);
         [[nodiscard]] Status ensureAcquirable(SwapchainRecord& record);
-        [[nodiscard]] Result<AcquiredSwapchainImage> reacquireCancelledImage(SwapchainRecord& record);
+        [[nodiscard]] Result<AcquiredSwapchainImage> reacquireCancelledImage(
+            SwapchainRecord& record, const rachis::detail::AcquireDeadline& deadline);
         [[nodiscard]] AcquiredSwapchainImage publishAcquiredImage(SwapchainRecord& record);
-        [[nodiscard]] Result<std::uint32_t> acquireImageWithPooledSemaphore(SwapchainRecord& record);
-        [[nodiscard]] Status settlePreviousPresent(SwapchainRecord& record, SwapchainImage& image);
+        [[nodiscard]] Result<std::uint32_t> acquireImageWithPooledSemaphore(
+            SwapchainRecord& record, const rachis::detail::AcquireDeadline& deadline);
+        [[nodiscard]] Status settlePreviousPresent(SwapchainRecord& record,
+                                                   SwapchainImage& image,
+                                                   const rachis::detail::AcquireDeadline& deadline);
         [[nodiscard]] Status validatePresentable(const SwapchainRecord& record, TimelinePoint renderComplete) const;
         [[nodiscard]] Result<bool> releaseImageIfSurfaceHidden(SwapchainRecord& record, TimelinePoint renderComplete);
         [[nodiscard]] Result<SubmittedPresent> submitPresent(SwapchainRecord& record, TimelinePoint renderComplete);

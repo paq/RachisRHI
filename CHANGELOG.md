@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- C ABI version 4 (`RACHIS_ABI_VERSION` 4, `librachis.so.4` / `librachis.4.dylib`):
+  - `rachis_swapchain_acquire_for` acquires a swapchain image within `timeout_ns` (`0` polls; above `INT64_MAX` waits without bound).
+  - `RACHIS_STATUS_TIMEOUT` (15) reports that no image was ready in time while the surface was visible. Hidden or detached surfaces keep `RACHIS_STATUS_NOT_READY`.
+- `Device::acquireNextImage(SwapchainHandle, std::chrono::nanoseconds)` and `ErrorCode::timeout` are the C++ equivalent on Direct3D 12, Vulkan, and Metal. The untimed `acquireNextImage` keeps its behaviour.
+- Metal: acquire runs `[CAMetalLayer nextDrawable]` on a worker thread, so a timed acquire never sits out the layer's one-second timeout on the caller's thread. A drawable that arrives late is kept for the next acquire.
+
 ## 0.3.1
 
 - Metal: probe command API availability with `respondsToSelector:` instead of creating throwaway command objects, and retry Metal 4 command-queue creation briefly in `createDevice`. Persistent `nil` on a Metal 4 device now returns `ErrorCode::notReady` (`RACHIS_STATUS_NOT_READY`) with Metal's `NSError` details instead of `ErrorCode::unsupported` (`"Missing: MTL4CommandQueue"`).

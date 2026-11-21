@@ -803,7 +803,8 @@ namespace
             ++backendInvocations;
             return {};
         }
-        [[nodiscard]] Result<AcquiredSwapchainImage> acquireNextImage(SwapchainHandle) override
+        [[nodiscard]] Result<AcquiredSwapchainImage> acquireNextImage(SwapchainHandle,
+                                                                      std::optional<std::chrono::nanoseconds>) override
         {
             ++backendInvocations;
             return AcquiredSwapchainImage{};

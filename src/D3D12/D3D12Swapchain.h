@@ -7,6 +7,7 @@
 
 #include <d3d12.h>
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -45,7 +46,9 @@ namespace rachis::d3d12
                                              SwapchainHandle swapchain,
                                              std::uint32_t width,
                                              std::uint32_t height);
-        [[nodiscard]] Result<AcquiredSwapchainImage> acquireNextImage(QueueManager& queues, SwapchainHandle swapchain);
+        [[nodiscard]] Result<AcquiredSwapchainImage> acquireNextImage(QueueManager& queues,
+                                                                      SwapchainHandle swapchain,
+                                                                      std::optional<std::chrono::nanoseconds> timeout);
         [[nodiscard]] bool hasAcquiredImage(SwapchainHandle swapchain) const noexcept;
         [[nodiscard]] Status cancelSwapchainImage(SwapchainHandle swapchain);
         [[nodiscard]] Result<PresentStatus> present(QueueManager& queues,

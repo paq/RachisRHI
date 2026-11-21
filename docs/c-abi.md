@@ -25,7 +25,7 @@ The C ABI lives in the `rachis` shared library (`Rachis::C` in CMake) and export
 
 ## Version
 
-Call `rachis_abi_version()` before creating a device and abort unless it equals the `RACHIS_ABI_VERSION` your module compiled against (currently `3`). ABI versions are not backwards-compatible.
+Call `rachis_abi_version()` before creating a device and abort unless it equals the `RACHIS_ABI_VERSION` your module compiled against (currently `4`). ABI versions are not backwards-compatible.
 
 ## Creating a device
 
@@ -89,7 +89,7 @@ Supported C ABI surface:
 - Device capabilities for mapping and vertex input
 - Timestamp queries, valid bits, and CPU-clock calibration
 - Adapter identification and runtime memory budget
-- Surfaces, swapchains, presentation status, and bounded timeline waits/queries
+- Surfaces, swapchains, bounded swapchain acquires, presentation status, and bounded timeline waits/queries
 
 ### C++-only features and stage rules
 
@@ -185,6 +185,11 @@ Each `rachis_mapped_range` is an `offset` from the start of the buffer (not of t
 - **One swapchain per window:** Only one live swapchain may exist per native window on a device. Creating a second on that surface—or on another surface for the same window—returns `RACHIS_STATUS_INVALID_STATE` (creating multiple `rachis_surface` handles for one window is allowed). See [Surfaces](using.md#surfaces) for cross-device caveats.
 - **Metal layers:** Creating a surface leaves `CAMetalLayer` untouched (if `layer.device` is set, it must match the device's GPU). Creating a swapchain sets `device`, `pixelFormat`, `drawableSize`, `colorspace`, `opaque`, `allowsNextDrawableTimeout`, `framebufferOnly` (unless copy-source usage is requested), and `name` (if the surface has a label). With an `NSView`, hidden views or non-visible windows cause `rachis_swapchain_acquire` to return `RACHIS_STATUS_NOT_READY` and `rachis_swapchain_present` to report `RACHIS_PRESENT_STATUS_OCCLUDED` (without an `NSView`, only zero drawable size counts as hidden). View visibility is read on the main thread, so off-main-thread callers observe updates after the main run loop runs.
 - **Capabilities bitmasks vs ordinals:** `rachis_surface_query_capabilities` populates the first `format_count` slots of `formats` (zeroing the rest) and returns two bitmasks: `present_modes` (`RACHIS_PRESENT_MODE_FIFO_BIT` / `RACHIS_PRESENT_MODE_IMMEDIATE_BIT`) and `usages` (`RACHIS_TEXTURE_*`). In `rachis_swapchain_desc`, `present_mode` takes an **ordinal** (`RACHIS_PRESENT_FIFO` or `RACHIS_PRESENT_IMMEDIATE`), not a bit flag—test support with `present_modes & RACHIS_PRESENT_MODE_IMMEDIATE_BIT`, never `& RACHIS_PRESENT_IMMEDIATE`.
+- **Bounded acquire:** `rachis_swapchain_acquire_for(device, swapchain, timeout_ns, output, error)` acquires like `rachis_swapchain_acquire` but returns within `timeout_ns`, on every backend, including the time spent waiting for earlier presents to retire. `timeout_ns == 0` polls without blocking, and values above `INT64_MAX` wait without bound. It returns:
+  - `RACHIS_STATUS_TIMEOUT` when no image was ready in time while the surface is visible. Nothing is acquired, `output->texture` and `output->render_target_view` are `0`, and the swapchain stays usable: skip this frame's present (count it as dropped) and acquire again next frame.
+  - `RACHIS_STATUS_NOT_READY`, as before, when the surface is hidden, occluded, minimized, or detached. This is not a dropped frame.
+  - On Metal, `[CAMetalLayer nextDrawable]` runs on a worker thread. A drawable that arrives after the bound is kept for the next acquire, so a poll can return `RACHIS_STATUS_TIMEOUT` once while the drawable is still being fetched.
+  - `rachis_swapchain_acquire` keeps its backend bound (Metal up to about 1 s for a present to retire plus 1 s for the layer, Direct3D 12 up to 1 s for the frame-latency object, Vulkan 50 ms per wait) and reports running out as `RACHIS_STATUS_NOT_READY`.
 - **D3D12 sRGB sampling:** On D3D12 devices lacking fully typed format casting, `rachis_swapchain_create` returns `RACHIS_STATUS_UNSUPPORTED` for `RACHIS_FORMAT_RGBA8_UNORM_SRGB` or `RACHIS_FORMAT_BGRA8_UNORM_SRGB` combined with `RACHIS_TEXTURE_SAMPLED` (see [Surfaces](using.md#surfaces)).
 
 ## Handles and lifetime
@@ -236,7 +241,7 @@ Calls on a single `rachis_device*` are thread-safe, provided nothing else calls 
   - *No call at all:* reading and writing through a pointer from `rachis_buffer_map` takes no lock and never waits for another thread's call (see [Mapped buffers](#mapped-buffers)).
   - *Fairness:* Waiters proceed in arrival order, and adjacent concurrent calls execute together—continuous recording/copying cannot starve exclusive calls, nor vice versa.
 - **Per-command-handle restriction:** Only one thread may record into a given command handle at a time; concurrent recording on the same handle returns `RACHIS_STATUS_INVALID_STATE`.
-- **Non-blocking waits and swapchain serialization:** `rachis_timeline_wait` and `rachis_timeline_wait_for` do not block other calls. Presents serialize per swapchain (and on Vulkan block work targeting the presenting queue during the driver present call). On D3D12 and Vulkan, present may wait for the display; on Metal it does not. `rachis_swapchain_acquire`, `resize`, and `destroy` can block on the GPU or window system while holding device locks.
+- **Non-blocking waits and swapchain serialization:** `rachis_timeline_wait` and `rachis_timeline_wait_for` do not block other calls. Presents serialize per swapchain (and on Vulkan block work targeting the presenting queue during the driver present call). On D3D12 and Vulkan, present may wait for the display; on Metal it does not. `rachis_swapchain_acquire`, `resize`, and `destroy` can block on the GPU or window system while holding device locks; `rachis_swapchain_acquire_for` holds them for at most its timeout.
 - **Vulkan & Metal copy/recording locks:** On Vulkan and Metal, `rachis_buffer_write` and `rachis_buffer_read` hold an internal device-wide lock for the entire copy, blocking other copies (even on different buffers), `rachis_buffer_map`, `rachis_buffer_unmap`, and flushing or invalidating mapped ranges, plus:
   - *Vulkan:* `rachis_command_copy_buffer`, buffer-texture copies, `rachis_command_barriers`, `rachis_command_begin_rendering`, and `rachis_texture_query_transfer_layout` (copies and barriers across distinct command handles also serialize).
   - *Metal:* all command recording calls.

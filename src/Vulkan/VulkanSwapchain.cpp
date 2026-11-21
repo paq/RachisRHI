@@ -1150,7 +1150,7 @@ namespace rachis::vulkan
         return queues_->submitPresentPresentationSync({.waitBinary = semaphore});
     }
 
-    Status VulkanSwapchainManager::waitPresentFence(SwapchainImage& image)
+    Status VulkanSwapchainManager::waitPresentFence(SwapchainImage& image, std::uint64_t timeoutNs)
     {
         if (image.presentFence == VK_NULL_HANDLE || !image.presentFencePending)
         {
@@ -1168,7 +1168,15 @@ namespace rachis::vulkan
             return std::unexpected(makeVulkanError(vulkanResultErrorCode(result), result, "vkWaitForFences"));
         }
 #endif
-        const auto waited = table_->vkWaitForFences(device_, 1, &image.presentFence, VK_TRUE, UINT64_MAX);
+        const auto waited = table_->vkWaitForFences(device_, 1, &image.presentFence, VK_TRUE, timeoutNs);
+        if (waited == VK_TIMEOUT)
+        {
+            return std::unexpected(Error{
+                ErrorCode::notReady,
+                waited,
+                "The previous present of the acquired swapchain image has not released it yet.",
+            });
+        }
         if (waited != VK_SUCCESS)
         {
             return std::unexpected(makeVulkanError(vulkanResultErrorCode(waited), waited, "vkWaitForFences"));
@@ -1210,11 +1218,12 @@ namespace rachis::vulkan
 
     Status VulkanSwapchainManager::retirePendingPresent(SwapchainRecord& record,
                                                         SwapchainImage& image,
-                                                        std::uint64_t presentWaitTimeoutNs)
+                                                        std::uint64_t presentWaitTimeoutNs,
+                                                        std::uint64_t presentFenceTimeoutNs)
     {
         if (image.presentFencePending)
         {
-            auto fenceReady = waitPresentFence(image);
+            auto fenceReady = waitPresentFence(image, presentFenceTimeoutNs);
             if (!fenceReady)
             {
                 return fenceReady;
@@ -1250,7 +1259,8 @@ namespace rachis::vulkan
         return {};
     }
 
-    Result<VkSemaphore> VulkanSwapchainManager::takeAcquireSemaphore(SwapchainRecord& record)
+    Result<VkSemaphore> VulkanSwapchainManager::takeAcquireSemaphore(SwapchainRecord& record,
+                                                                     const rachis::detail::AcquireDeadline& deadline)
     {
         if (!record.unusedAcquire.empty())
         {
@@ -1259,18 +1269,15 @@ namespace rachis::vulkan
             return semaphore;
         }
         const auto oldest = record.retiringAcquire.front();
-        auto retired = queues_->wait(oldest.bridge, std::chrono::nanoseconds{acquireTimeoutNs});
+        auto retired = queues_->wait(oldest.bridge, deadline.remaining());
         if (!retired)
         {
             return std::unexpected(std::move(retired.error()));
         }
         if (*retired != TimelinePointStatus::complete)
         {
-            return std::unexpected(Error{
-                ErrorCode::notReady,
-                0,
-                "No swapchain acquire semaphore has finished its previous wait yet.",
-            });
+            return std::unexpected(
+                deadline.expiry("No swapchain acquire semaphore has finished its previous wait yet."));
         }
         record.retiringAcquire.erase(record.retiringAcquire.begin());
         return oldest.semaphore;
@@ -1296,7 +1303,8 @@ namespace rachis::vulkan
     }
 
     Status VulkanSwapchainManager::submitDeferredAcquireWait(SwapchainRecord& record,
-                                                             std::uint64_t presentWaitTimeoutNs)
+                                                             std::uint64_t presentWaitTimeoutNs,
+                                                             std::uint64_t presentFenceTimeoutNs)
     {
         if (!record.cancelledAcquire || record.acquireWaitSubmitted)
         {
@@ -1320,7 +1328,7 @@ namespace rachis::vulkan
             });
         }
 
-        auto retired = retirePendingPresent(record, image, presentWaitTimeoutNs);
+        auto retired = retirePendingPresent(record, image, presentWaitTimeoutNs, presentFenceTimeoutNs);
         if (!retired)
         {
             return retired;
@@ -1914,12 +1922,15 @@ namespace rachis::vulkan
         return {};
     }
 
-    Result<AcquiredSwapchainImage> VulkanSwapchainManager::reacquireCancelledImage(SwapchainRecord& record)
+    Result<AcquiredSwapchainImage> VulkanSwapchainManager::reacquireCancelledImage(
+        SwapchainRecord& record, const rachis::detail::AcquireDeadline& deadline)
     {
-        auto deferred = submitDeferredAcquireWait(record, acquireTimeoutNs);
+        // The untimed acquire has always waited for a present fence without bound.
+        const auto fenceTimeoutNs = deadline.timed() ? deadline.remainingNs() : UINT64_MAX;
+        auto deferred = submitDeferredAcquireWait(record, deadline.remainingNs(), fenceTimeoutNs);
         if (!deferred)
         {
-            return std::unexpected(std::move(deferred.error()));
+            return std::unexpected(deadline.expiry(std::move(deferred.error())));
         }
         record.cancelledAcquire = false;
         record.acquired = true;
@@ -1935,9 +1946,10 @@ namespace rachis::vulkan
         return describeAcquiredImage(record);
     }
 
-    Result<std::uint32_t> VulkanSwapchainManager::acquireImageWithPooledSemaphore(SwapchainRecord& record)
+    Result<std::uint32_t> VulkanSwapchainManager::acquireImageWithPooledSemaphore(
+        SwapchainRecord& record, const rachis::detail::AcquireDeadline& deadline)
     {
-        auto taken = takeAcquireSemaphore(record);
+        auto taken = takeAcquireSemaphore(record, deadline);
         if (!taken)
         {
             return std::unexpected(std::move(taken.error()));
@@ -1948,17 +1960,17 @@ namespace rachis::vulkan
 #ifdef RACHIS_TESTING
         const auto injected = test::nextAcquireResult().exchange(0, std::memory_order_relaxed);
         const auto result =
-            injected != 0
-                ? static_cast<VkResult>(injected)
-                : vkAcquireNextImageKHR_(device_, record.swapchain, acquireTimeoutNs, pending, VK_NULL_HANDLE, &index);
+            injected != 0 ? static_cast<VkResult>(injected)
+                          : vkAcquireNextImageKHR_(
+                                device_, record.swapchain, deadline.remainingNs(), pending, VK_NULL_HANDLE, &index);
 #else
         const auto result =
-            vkAcquireNextImageKHR_(device_, record.swapchain, acquireTimeoutNs, pending, VK_NULL_HANDLE, &index);
+            vkAcquireNextImageKHR_(device_, record.swapchain, deadline.remainingNs(), pending, VK_NULL_HANDLE, &index);
 #endif
         if (result == VK_TIMEOUT || result == VK_NOT_READY)
         {
             record.unusedAcquire.push_back(pending);
-            return std::unexpected(Error{ErrorCode::notReady, result, "No swapchain image is available yet."});
+            return std::unexpected(deadline.expiry("No swapchain image is available yet.", result));
         }
         if (result == VK_ERROR_OUT_OF_DATE_KHR)
         {
@@ -1994,11 +2006,19 @@ namespace rachis::vulkan
         return index;
     }
 
-    Status VulkanSwapchainManager::settlePreviousPresent(SwapchainRecord& record, SwapchainImage& image)
+    Status VulkanSwapchainManager::settlePreviousPresent(SwapchainRecord& record,
+                                                         SwapchainImage& image,
+                                                         const rachis::detail::AcquireDeadline& deadline)
     {
         if (image.presentFencePending || image.presentId != 0)
         {
-            return retirePendingPresent(record, image, acquireTimeoutNs);
+            const auto fenceTimeoutNs = deadline.timed() ? deadline.remainingNs() : UINT64_MAX;
+            auto retired = retirePendingPresent(record, image, deadline.remainingNs(), fenceTimeoutNs);
+            if (!retired)
+            {
+                return std::unexpected(deadline.expiry(std::move(retired.error())));
+            }
+            return {};
         }
         if (image.contentsDefined && record.inFlightPresents > 0)
         {
@@ -2007,8 +2027,11 @@ namespace rachis::vulkan
         return {};
     }
 
-    Result<AcquiredSwapchainImage> VulkanSwapchainManager::acquireNextImage(SwapchainHandle swapchain)
+    Result<AcquiredSwapchainImage> VulkanSwapchainManager::acquireNextImage(
+        SwapchainHandle swapchain, std::optional<std::chrono::nanoseconds> timeout)
     {
+        // The untimed acquire bounds each wait by acquireTimeoutNs; a timed one spends one deadline on all.
+        const rachis::detail::AcquireDeadline deadline(timeout, std::chrono::nanoseconds{acquireTimeoutNs});
         const auto recordOwner = findSwapchainRecord(swapchain);
         if (recordOwner == nullptr)
         {
@@ -2025,25 +2048,39 @@ namespace rachis::vulkan
         {
             return std::unexpected(std::move(acquirable.error()));
         }
+        // A wait that ran out on a hidden window is the window's doing, not a dropped frame.
+        const auto expired = [&](Error error) {
+            if (error.code == ErrorCode::timeout && surfaceIsHidden(record))
+            {
+                error.code = ErrorCode::notReady;
+                error.message = "The swapchain surface is hidden or minimized; no image was ready in time.";
+            }
+            return std::unexpected(std::move(error));
+        };
         if (record.cancelledAcquire)
         {
-            return reacquireCancelledImage(record);
+            auto reacquired = reacquireCancelledImage(record, deadline);
+            if (!reacquired)
+            {
+                return expired(std::move(reacquired.error()));
+            }
+            return reacquired;
         }
 
-        auto index = acquireImageWithPooledSemaphore(record);
+        auto index = acquireImageWithPooledSemaphore(record, deadline);
         if (!index)
         {
-            return std::unexpected(std::move(index.error()));
+            return expired(std::move(index.error()));
         }
         auto& image = record.images[*index];
         record.acquired = true;
         record.acquiredIndex = *index;
         record.acquireWaitSubmitted = false;
-        auto previousPresentSettled = settlePreviousPresent(record, image);
+        auto previousPresentSettled = settlePreviousPresent(record, image, deadline);
         if (!previousPresentSettled)
         {
             parkFailedAcquire(record);
-            return std::unexpected(std::move(previousPresentSettled.error()));
+            return expired(std::move(previousPresentSettled.error()));
         }
         record.lastAcquireNs = steadyClockNowNs();
 

@@ -2392,13 +2392,14 @@ namespace rachis::vulkan
         return observe(swapchains_.resizeSwapchain(swapchain, width, height));
     }
 
-    Result<AcquiredSwapchainImage> VulkanDevice::acquireNextImage(SwapchainHandle swapchain)
+    Result<AcquiredSwapchainImage> VulkanDevice::acquireNextImage(SwapchainHandle swapchain,
+                                                                  std::optional<std::chrono::nanoseconds> timeout)
     {
         if (auto blocked = requireActive(); !blocked)
         {
             return std::unexpected(std::move(blocked.error()));
         }
-        return observe(swapchains_.acquireNextImage(swapchain));
+        return observe(swapchains_.acquireNextImage(swapchain, timeout));
     }
 
     bool VulkanDevice::hasAcquiredSwapchainImage(SwapchainHandle swapchain) const noexcept

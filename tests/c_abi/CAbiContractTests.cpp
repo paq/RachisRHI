@@ -1590,6 +1590,10 @@ TEST_CASE("C ABI rejects a null device or output with invalid argument", "[size:
     CHECK(rachis_swapchain_acquire(nullptr, 1, nullptr, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
     image.struct_size = 0;
     CHECK(rachis_swapchain_acquire(nullptr, 1, &image, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    image.struct_size = sizeof(image);
+    CHECK(rachis_swapchain_acquire_for(nullptr, 1, 0, &image, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_swapchain_acquire_for(nullptr, 1, UINT64_MAX, nullptr, &error) == RACHIS_STATUS_INVALID_ARGUMENT);
+    static_assert(RACHIS_STATUS_TIMEOUT == 15);
 
     rachis_handle handle = 0;
     std::uint32_t state = 0;
