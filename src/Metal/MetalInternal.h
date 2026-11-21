@@ -1476,7 +1476,7 @@ namespace rachis::metal
         std::mutex mutex;
         std::optional<MetalHostReport> hostReportOverride;
         MetalDevice* boundDevice = nullptr;
-        bool failNextCommandApiCreate = false;
+        std::uint32_t failCommandApiCreateAttempts = 0;
         bool failNextLogStateCreate = false;
         bool failNextDepthStencilStateCreate = false;
         bool failNextDrawable = false;

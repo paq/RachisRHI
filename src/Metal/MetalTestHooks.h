@@ -24,7 +24,7 @@ namespace rachis::metal
 
 #ifdef RACHIS_TESTING
     void setHostReportOverride(std::optional<MetalHostReport> report) noexcept;
-    void setFailNextCommandApiCreate(bool fail) noexcept;
+    void setFailCommandApiCreateAttempts(std::uint32_t attempts) noexcept;
     void setFailNextLogStateCreate(bool fail) noexcept;
     void setFailNextDepthStencilStateCreate(bool fail) noexcept;
     void setFailNextDrawable(bool fail) noexcept;
@@ -65,23 +65,25 @@ namespace rachis::metal
         std::unique_lock<std::recursive_mutex> lock_;
     };
 
-    class ScopedFailNextCommandApiCreate final
+    // Fails the next `attempts` Metal 4 command-object creation attempts. The default fails every
+    // attempt, so device creation exhausts its bounded retry.
+    class ScopedFailCommandApiCreate final
     {
     public:
-        explicit ScopedFailNextCommandApiCreate(bool fail = true) noexcept : lock_(testHookMutex())
+        explicit ScopedFailCommandApiCreate(std::uint32_t attempts = UINT32_MAX) noexcept : lock_(testHookMutex())
         {
-            setFailNextCommandApiCreate(fail);
+            setFailCommandApiCreateAttempts(attempts);
         }
 
-        ~ScopedFailNextCommandApiCreate() noexcept
+        ~ScopedFailCommandApiCreate() noexcept
         {
-            setFailNextCommandApiCreate(false);
+            setFailCommandApiCreateAttempts(0);
         }
 
-        ScopedFailNextCommandApiCreate(const ScopedFailNextCommandApiCreate&) = delete;
-        ScopedFailNextCommandApiCreate& operator=(const ScopedFailNextCommandApiCreate&) = delete;
-        ScopedFailNextCommandApiCreate(ScopedFailNextCommandApiCreate&&) = delete;
-        ScopedFailNextCommandApiCreate& operator=(ScopedFailNextCommandApiCreate&&) = delete;
+        ScopedFailCommandApiCreate(const ScopedFailCommandApiCreate&) = delete;
+        ScopedFailCommandApiCreate& operator=(const ScopedFailCommandApiCreate&) = delete;
+        ScopedFailCommandApiCreate(ScopedFailCommandApiCreate&&) = delete;
+        ScopedFailCommandApiCreate& operator=(ScopedFailCommandApiCreate&&) = delete;
 
     private:
         std::unique_lock<std::recursive_mutex> lock_;

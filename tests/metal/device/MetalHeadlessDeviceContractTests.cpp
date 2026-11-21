@@ -160,21 +160,35 @@ TEST_CASE("Metal device create rejects injected missing features and releases pa
     }
 
     {
-        rachis::metal::ScopedFailNextCommandApiCreate const failCommandApi;
+        // A command queue that stays nil after the bounded retry is transient, not missing support.
+        rachis::metal::ScopedFailCommandApiCreate const failCommandApi;
         auto created = rachis::createDevice(rachis::DeviceDesc{
             .backend = rachis::Backend::metal,
             .validation = rachis::ValidationLevel::standard,
             .enableDred = false,
         });
         REQUIRE_FALSE(created.has_value());
-        CHECK(created.error().code == rachis::ErrorCode::deviceCreationFailed);
+        CHECK(created.error().code == rachis::ErrorCode::notReady);
+        CHECK(created.error().message.contains("MTL4CommandQueue returned nil"));
+        CHECK(created.error().message.contains("Retry device creation later"));
+    }
+
+    {
+        // A queue that is nil for a couple of attempts is absorbed by the retry.
+        rachis::metal::ScopedFailCommandApiCreate const failTwice(2);
+        auto created = rachis::createDevice(rachis::DeviceDesc{
+            .backend = rachis::Backend::metal,
+            .validation = rachis::ValidationLevel::standard,
+            .enableDred = false,
+        });
+        CHECK(created.has_value());
     }
 
     {
         auto missingFamily = completeHost();
         missingFamily.metal4Family = false;
         rachis::metal::ScopedHostReportOverride const unconsumedHost(missingFamily);
-        rachis::metal::ScopedFailNextCommandApiCreate const unconsumedCommandApi;
+        rachis::metal::ScopedFailCommandApiCreate const unconsumedCommandApi;
         rachis::metal::ScopedFailNextLogStateCreate const unconsumedLogState;
     }
 

@@ -2,6 +2,10 @@
 
 #include "Internal/DeviceIdentity.h"
 
+#include <chrono>
+#include <string>
+#include <thread>
+
 namespace rachis::metal
 {
     namespace
@@ -183,11 +187,15 @@ namespace rachis::metal
             host.translationLayer = name.contains("Dozen") || name.contains("MoltenVK");
             host.metal3Family = [device supportsFamily:MTLGPUFamilyMetal3];
             host.metal4Family = [device supportsFamily:MTLGPUFamilyMetal4];
-            host.classicCommandQueue = [device newCommandQueue] != nil;
-            id<MTL4CommandQueue> const queue = [device newMTL4CommandQueue];
-            host.metal4CommandQueue = queue != nil;
-            host.metal4CommandAllocator = [device newCommandAllocator] != nil;
-            host.metal4CommandBuffer = [device newCommandBuffer] != nil;
+            // The profile asks whether the command APIs exist, not whether an instance can be created
+            // right now. Creating a queue here turned a transient nil (a saturated or unreachable GPU)
+            // into a permanent-looking "unsupported" rejection, so createDevice creates and retries
+            // the real queue instead.
+            host.classicCommandQueue = [device respondsToSelector:@selector(newCommandQueue)];
+            host.metal4CommandQueue = [device respondsToSelector:@selector(newMTL4CommandQueueWithDescriptor:error:)];
+            host.metal4CommandAllocator = [device respondsToSelector:@selector(newCommandAllocatorWithDescriptor:
+                                                                                                           error:)];
+            host.metal4CommandBuffer = [device respondsToSelector:@selector(newCommandBuffer)];
             const auto rgba = probeFormat(device, rachis::Format::rgba8Unorm);
             const auto bgra = probeFormat(device, rachis::Format::bgra8Unorm);
             const auto depth = probeFormat(device, rachis::Format::d32Float);
@@ -362,48 +370,103 @@ namespace rachis::metal
 #ifdef RACHIS_TESTING
             {
                 std::scoped_lock const lock(metalTestingState().mutex);
-                failCommandApi = metalTestingState().failNextCommandApiCreate;
-                metalTestingState().failNextCommandApiCreate = false;
+                auto& remaining = metalTestingState().failCommandApiCreateAttempts;
+                failCommandApi = remaining > 0;
+                if (failCommandApi && remaining != UINT32_MAX)
+                {
+                    --remaining;
+                }
             }
 #endif
             return failCommandApi;
         }
 
-        [[nodiscard]] id<MTL4CommandQueue> createBootstrapCommandQueue(id<MTLDevice> selected)
-        {
-            const bool failCommandApi = consumeCommandApiFailureInjection();
+        // Metal returns nil from command-object creation while the GPU is saturated or the process
+        // briefly cannot reach it, even on a device whose MTLGPUFamilyMetal4 check passed. Retry a few
+        // times with a short backoff before reporting the failure as transient.
+        constexpr std::uint32_t metalBootstrapQueueAttempts = 5;
+        constexpr std::chrono::milliseconds metalBootstrapQueueFirstBackoff{20};
 
+        struct BootstrapQueueAttempt final
+        {
             id<MTL4CommandQueue> queue = nil;
-            id<MTL4CommandAllocator> allocator = nil;
-            id<MTL4CommandBuffer> commandBuffer = nil;
-            if (!failCommandApi)
+            std::string_view failedObject;
+            NSError* error = nil;
+        };
+
+        [[nodiscard]] BootstrapQueueAttempt tryCreateBootstrapCommandQueue(id<MTLDevice> selected)
+        {
+            BootstrapQueueAttempt attempt{};
+            if (consumeCommandApiFailureInjection())
             {
-                MTL4CommandQueueDescriptor* const queueDesc = [MTL4CommandQueueDescriptor new];
-                queueDesc.label = metalNsString(kMetalQueueLabel);
-                NSError* queueError = nil;
-                queue = [selected newMTL4CommandQueueWithDescriptor:queueDesc error:&queueError];
-                NSError* allocatorError = nil;
-                MTL4CommandAllocatorDescriptor* const allocatorDesc = [MTL4CommandAllocatorDescriptor new];
-                allocatorDesc.label = @"RHI.Metal.BootstrapAllocator";
-                allocator = [selected newCommandAllocatorWithDescriptor:allocatorDesc error:&allocatorError];
-                static_cast<void>(allocatorError);
-                commandBuffer = [selected newCommandBuffer];
-                if (commandBuffer != nil)
+                attempt.failedObject = "MTL4CommandQueue";
+                return attempt;
+            }
+
+            MTL4CommandQueueDescriptor* const queueDesc = [MTL4CommandQueueDescriptor new];
+            queueDesc.label = metalNsString(kMetalQueueLabel);
+            NSError* queueError = nil;
+            id<MTL4CommandQueue> const queue = [selected newMTL4CommandQueueWithDescriptor:queueDesc error:&queueError];
+            if (queue == nil)
+            {
+                attempt.failedObject = "MTL4CommandQueue";
+                attempt.error = queueError;
+                return attempt;
+            }
+
+            MTL4CommandAllocatorDescriptor* const allocatorDesc = [MTL4CommandAllocatorDescriptor new];
+            allocatorDesc.label = @"RHI.Metal.BootstrapAllocator";
+            NSError* allocatorError = nil;
+            id<MTL4CommandAllocator> const allocator = [selected newCommandAllocatorWithDescriptor:allocatorDesc
+                                                                                             error:&allocatorError];
+            if (allocator == nil)
+            {
+                attempt.failedObject = "MTL4CommandAllocator";
+                attempt.error = allocatorError;
+                return attempt;
+            }
+
+            id<MTL4CommandBuffer> const commandBuffer = [selected newCommandBuffer];
+            if (commandBuffer == nil)
+            {
+                attempt.failedObject = "MTL4CommandBuffer";
+                return attempt;
+            }
+            attempt.queue = queue;
+            return attempt;
+        }
+
+        [[nodiscard]] Result<id<MTL4CommandQueue>> createBootstrapCommandQueue(id<MTLDevice> selected)
+        {
+            BootstrapQueueAttempt attempt{};
+            auto backoff = metalBootstrapQueueFirstBackoff;
+            for (std::uint32_t index = 0; index < metalBootstrapQueueAttempts; ++index)
+            {
+                if (index > 0)
                 {
-                    commandBuffer.label = @"RHI.Metal.BootstrapCommand";
+                    std::this_thread::sleep_for(backoff);
+                    backoff *= 2;
                 }
-                static_cast<void>(queueError);
+                attempt = tryCreateBootstrapCommandQueue(selected);
+                if (attempt.queue != nil)
+                {
+                    return attempt.queue;
+                }
             }
-            if (queue == nil || allocator == nil || commandBuffer == nil)
-            {
-                queue = nil;
-                allocator = nil;
-                commandBuffer = nil;
-                return nil;
-            }
-            allocator = nil;
-            commandBuffer = nil;
-            return queue;
+
+            std::string operation = "Metal 4 command-object creation (";
+            operation += attempt.failedObject;
+            operation += " returned nil on all ";
+            operation += std::to_string(metalBootstrapQueueAttempts);
+            operation += " attempts)";
+            std::string detail = attempt.error != nil ? std::string{} : std::string{"Metal gave no NSError. "};
+            detail += "The device supports MTLGPUFamilyMetal4, so this is a transient condition (GPU "
+                      "saturated or unreachable from this session), not missing Metal 4 support. Retry "
+                      "device creation later. Partial Metal objects were released.";
+            auto error = metalNsError(ErrorCode::notReady, attempt.error, operation);
+            error.message += ' ';
+            error.message += detail;
+            return std::unexpected(std::move(error));
         }
 
         [[nodiscard]] bool consumeLogStateFailureInjection()
@@ -609,13 +672,12 @@ namespace rachis::metal
                     metalSelectionError(ErrorCode::backendUnavailable, "No Metal device is available."));
             }
 
-            id<MTL4CommandQueue> queue = createBootstrapCommandQueue(selected);
-            if (queue == nil)
+            auto bootstrapQueue = createBootstrapCommandQueue(selected);
+            if (!bootstrapQueue)
             {
-                return std::unexpected(metalSelectionError(
-                    ErrorCode::deviceCreationFailed,
-                    "Metal 4 command-queue objects could not be created. Partial Metal objects were released."));
+                return std::unexpected(std::move(bootstrapQueue.error()));
             }
+            id<MTL4CommandQueue> queue = *bootstrapQueue;
 
             const bool failLogState = consumeLogStateFailureInjection();
             const bool validationRequested = desc.validation != ValidationLevel::disabled || desc.requireValidation;

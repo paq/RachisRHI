@@ -1262,10 +1262,10 @@ void rachis::metal::setHostReportOverride(std::optional<rachis::MetalHostReport>
     metalTestingState().hostReportOverride = report;
 }
 
-void rachis::metal::setFailNextCommandApiCreate(bool fail) noexcept
+void rachis::metal::setFailCommandApiCreateAttempts(std::uint32_t attempts) noexcept
 {
     std::scoped_lock const lock(metalTestingState().mutex);
-    metalTestingState().failNextCommandApiCreate = fail;
+    metalTestingState().failCommandApiCreateAttempts = attempts;
 }
 
 void rachis::metal::setFailNextLogStateCreate(bool fail) noexcept
