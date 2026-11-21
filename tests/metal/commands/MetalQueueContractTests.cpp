@@ -308,12 +308,24 @@ TEST_CASE("Metal bounded pools reject in-flight reset and recycle after exact co
     REQUIRE_FALSE(exhausted);
     CHECK(exhausted.error().code == rachis::ErrorCode::resourceExhausted);
 
+    auto feedbackGate = std::make_shared<rachis::metal::MetalCommitFeedbackGate>();
+    struct ScopedGateRelease final
+    {
+        std::shared_ptr<rachis::metal::MetalCommitFeedbackGate> gate;
+        ~ScopedGateRelease() noexcept
+        {
+            gate->release();
+        }
+    } const releaseOnExit{feedbackGate};
+    rachis::metal::holdNextCommitFeedback(feedbackGate);
     auto submitted = device.submit(std::move(*command));
     REQUIRE(submitted);
+    REQUIRE(feedbackGate->waitForEntry(std::chrono::seconds(2)));
     auto inFlightReset = device.resetCommandPool(*pool);
     REQUIRE_FALSE(inFlightReset);
     CHECK(inFlightReset.error().code == rachis::ErrorCode::invalidState);
 
+    feedbackGate->release();
     REQUIRE(device.wait(*submitted).has_value());
     device.collectGarbage();
     REQUIRE(device.resetCommandPool(*pool).has_value());
