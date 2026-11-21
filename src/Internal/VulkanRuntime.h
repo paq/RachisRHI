@@ -165,6 +165,7 @@ namespace rachis::vulkan
         bool pipelineStatisticsQuery = false;
         bool hostQueryReset = false;
         bool calibratedTimestamps = false;
+        bool calibratedTimestampsKhr = false;
         bool fragmentStoresAndAtomics = false;
         bool fragmentShaderPixelInterlock = false;
         bool sharedBufferHandles = false;

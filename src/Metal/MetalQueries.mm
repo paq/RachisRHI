@@ -1,5 +1,7 @@
 #include "Metal/MetalInternal.h"
 
+#include <mach/mach_time.h>
+
 namespace rachis::metal
 {
     namespace
@@ -86,6 +88,15 @@ namespace rachis::metal
         }
 
         constexpr std::uint64_t metalSampledTimestampFrequency = 1'000'000'000ULL;
+
+        [[nodiscard]] constexpr std::uint64_t scaleRoundedUp(std::uint64_t value,
+                                                             std::uint32_t multiplier,
+                                                             std::uint32_t divisor) noexcept
+        {
+            const std::uint64_t quotient = value / divisor;
+            const std::uint64_t remainder = value % divisor;
+            return quotient * multiplier + (remainder * multiplier + divisor - 1U) / divisor;
+        }
 
         [[nodiscard]] constexpr std::uint64_t metalSampledTimestampToTicks(MTLTimestamp sampled,
                                                                            std::uint64_t ticksPerSecond) noexcept
@@ -228,14 +239,28 @@ namespace rachis::metal
             return std::unexpected(
                 metalSelectionError(ErrorCode::invalidState, "Metal calibrateQueueClock requires an active device."));
         }
+        mach_timebase_info_data_t timebase{};
+        if (mach_timebase_info(&timebase) != KERN_SUCCESS || timebase.numer == 0 || timebase.denom == 0)
+        {
+            return std::unexpected(metalSelectionError(ErrorCode::nativeFailure,
+                                                       "mach_timebase_info failed during queue clock calibration."));
+        }
         MTLTimestamp cpuTimestamp = 0;
         MTLTimestamp gpuTimestamp = 0;
+        const auto before = mach_absolute_time();
         [native_->device sampleTimestamps:&cpuTimestamp gpuTimestamp:&gpuTimestamp];
+        const auto after = mach_absolute_time();
+        const auto cpuTicks =
+            std::clamp(scaleRoundedUp(cpuTimestamp, timebase.denom, timebase.numer), before, std::max(before, after));
+        const auto ticksPerSecond = metalSampledTimestampFrequency * timebase.denom / timebase.numer;
         return QueueClockCalibration{
             .gpuTimestamp = metalSampledTimestampToTicks(gpuTimestamp, properties.timestampFrequency),
-            .cpuTimestamp = cpuTimestamp,
+            .cpuTimestamp = cpuTicks,
             .gpuFrequency = properties.timestampFrequency,
-            .cpuFrequency = metalSampledTimestampFrequency,
+            .cpuFrequency = ticksPerSecond,
+            .maxDeviationNanoseconds =
+                scaleRoundedUp(std::max(before, after) - before + 1U, timebase.numer, timebase.denom),
+            .cpuClock = CpuClock::machAbsoluteTime,
         };
     }
 

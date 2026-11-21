@@ -1586,6 +1586,14 @@ namespace rachis::metal
                                             const std::shared_ptr<MetalPlacedLease>& after) noexcept;
     void pruneMetalAllocations(MetalDeviceNative& native) noexcept;
     [[nodiscard]] ResourceMemorySnapshot captureMetalAllocationSnapshot(MetalDeviceNative& native);
+
+    struct MetalAllocationTotals final
+    {
+        std::uint64_t bytes = 0;
+        std::uint64_t count = 0;
+    };
+
+    [[nodiscard]] MetalAllocationTotals metalAllocationTotals(MetalDeviceNative& native) noexcept;
     [[nodiscard]] Status rejectMetalBufferWorkingSetOverflow(id<MTLDevice> device, std::uint64_t bytes);
     [[nodiscard]] Status rejectMetalTextureWorkingSetOverflow(id<MTLDevice> device, std::uint64_t bytes);
     [[nodiscard]] Status reserveMetalAllocationTelemetry(MetalDeviceNative& native);

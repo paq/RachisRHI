@@ -1,4 +1,4 @@
-RACHIS_ABI_VERSION=2
+RACHIS_ABI_VERSION=3
 rachis_abi_version
 rachis_binding_layout_create
 rachis_binding_layout_destroy
@@ -48,6 +48,7 @@ rachis_device_create
 rachis_device_destroy
 rachis_device_diagnostic_counts
 rachis_device_loss_error
+rachis_device_memory_budget
 rachis_device_operational_state
 rachis_device_query_capabilities
 rachis_graphics_pipeline_create
@@ -55,7 +56,9 @@ rachis_pipeline_destroy
 rachis_pipeline_layout_create
 rachis_pipeline_layout_destroy
 rachis_query_pool_destroy
+rachis_queue_calibrate_timestamps
 rachis_queue_timestamp_frequency
+rachis_queue_timestamp_valid_bits
 rachis_sampler_create
 rachis_sampler_destroy
 rachis_shader_module_create
@@ -77,6 +80,8 @@ rachis_texture_lease_release
 rachis_texture_query_transfer_layout
 rachis_texture_view_create
 rachis_texture_view_destroy
+rachis_timeline_query
 rachis_timeline_release
 rachis_timeline_wait
+rachis_timeline_wait_for
 rachis_timestamp_pool_create

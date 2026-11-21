@@ -25,9 +25,6 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
-#else
-#include <cerrno>
-#include <ctime>
 #endif
 
 namespace rachis::vulkan
@@ -68,54 +65,46 @@ namespace rachis::vulkan
                    kind == VulkanQueryManager::QueryPoolKind::binaryOcclusion;
         }
 
-        struct HostClockSample final
-        {
-            std::uint64_t timestamp = 0;
-            std::uint64_t frequency = 0;
-        };
+#ifdef _WIN32
+        constexpr const char* unsupportedCalibrationMessage =
+            "Vulkan queue clock calibration needs VK_KHR_calibrated_timestamps or VK_EXT_calibrated_timestamps with "
+            "the device and QueryPerformanceCounter time domains.";
+#elif defined(__APPLE__)
+        constexpr const char* unsupportedCalibrationMessage =
+            "Vulkan queue clock calibration needs VK_KHR_calibrated_timestamps or VK_EXT_calibrated_timestamps with "
+            "the device and CLOCK_MONOTONIC_RAW time domains.";
+#else
+        constexpr const char* unsupportedCalibrationMessage =
+            "Vulkan queue clock calibration needs VK_KHR_calibrated_timestamps or VK_EXT_calibrated_timestamps with "
+            "the device and CLOCK_MONOTONIC time domains.";
+#endif
 
-        [[nodiscard]] Result<HostClockSample> sampleHostClock()
+        [[nodiscard]] Result<std::uint64_t> hostClockFrequency()
         {
 #ifdef _WIN32
             LARGE_INTEGER frequency{};
-            LARGE_INTEGER counter{};
-            if (QueryPerformanceFrequency(&frequency) == 0 || frequency.QuadPart <= 0 ||
-                QueryPerformanceCounter(&counter) == 0)
+            if (QueryPerformanceFrequency(&frequency) == 0 || frequency.QuadPart <= 0)
             {
                 return std::unexpected(Error{
                     ErrorCode::nativeFailure,
-                    0,
-                    "QueryPerformanceCounter failed while calibrating a Vulkan queue clock.",
+                    static_cast<std::int64_t>(GetLastError()),
+                    "QueryPerformanceFrequency failed while calibrating a Vulkan queue clock.",
                 });
             }
-            return HostClockSample{
-                .timestamp = static_cast<std::uint64_t>(counter.QuadPart),
-                .frequency = static_cast<std::uint64_t>(frequency.QuadPart),
-            };
+            return static_cast<std::uint64_t>(frequency.QuadPart);
 #else
-#ifdef __APPLE__
-            constexpr clockid_t hostClock = CLOCK_MONOTONIC_RAW;
-            constexpr const char* failure =
-                "clock_gettime(CLOCK_MONOTONIC_RAW) failed while calibrating a Vulkan queue clock.";
-#else
-            constexpr clockid_t hostClock = CLOCK_MONOTONIC;
-            constexpr const char* failure =
-                "clock_gettime(CLOCK_MONOTONIC) failed while calibrating a Vulkan queue clock.";
+            return 1'000'000'000ULL;
 #endif
-            timespec ts{};
-            if (clock_gettime(hostClock, &ts) != 0 || ts.tv_sec < 0 || ts.tv_nsec < 0)
-            {
-                return std::unexpected(Error{
-                    ErrorCode::nativeFailure,
-                    errno,
-                    failure,
-                });
-            }
-            return HostClockSample{
-                .timestamp =
-                    static_cast<std::uint64_t>(ts.tv_sec) * 1'000'000'000ULL + static_cast<std::uint64_t>(ts.tv_nsec),
-                .frequency = 1'000'000'000ULL,
-            };
+        }
+
+        [[nodiscard]] constexpr CpuClock hostCpuClock() noexcept
+        {
+#ifdef _WIN32
+            return CpuClock::queryPerformanceCounter;
+#elif defined(__APPLE__)
+            return CpuClock::monotonicRaw;
+#else
+            return CpuClock::monotonic;
 #endif
         }
 
@@ -372,64 +361,94 @@ namespace rachis::vulkan
         VkPhysicalDevice physical, QueueType queueType, const VulkanPhysicalDeviceRecord& record) const
     {
         const auto properties = publishVulkanQueueProperties(record, queueType);
-        auto hostClock = sampleHostClock();
-        if (!hostClock)
+        if (!properties.timestampQueries)
         {
-            return std::unexpected(std::move(hostClock.error()));
+            return std::unexpected(Error{
+                ErrorCode::unsupported,
+                0,
+                "The selected Vulkan queue has no timestamp queries to calibrate.",
+            });
         }
-        QueueClockCalibration calibration{
-            .gpuTimestamp = 0,
-            .cpuTimestamp = hostClock->timestamp,
-            .gpuFrequency = properties.timestampFrequency,
-            .cpuFrequency = hostClock->frequency,
-        };
 #ifdef VK_EXT_calibrated_timestamps
+        PFN_vkGetCalibratedTimestampsEXT getCalibrated = nullptr;
+        PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT getCalibrateableDomains = nullptr;
+        if (calibratedTimestamps_ && table_ != nullptr && instanceTable_ != nullptr)
+        {
+#ifdef VK_KHR_calibrated_timestamps
+            if (record.calibratedTimestampsKhr)
+            {
+                getCalibrated = table_->vkGetCalibratedTimestampsKHR;
+                getCalibrateableDomains = instanceTable_->vkGetPhysicalDeviceCalibrateableTimeDomainsKHR;
+            }
+            else
+#endif
+            {
+                getCalibrated = table_->vkGetCalibratedTimestampsEXT;
+                getCalibrateableDomains = instanceTable_->vkGetPhysicalDeviceCalibrateableTimeDomainsEXT;
+            }
+        }
         constexpr VkTimeDomainEXT hostDomain = hostCalibratedTimeDomain();
-        auto* const getCalibrated = table_ != nullptr ? table_->vkGetCalibratedTimestampsEXT : nullptr;
-        auto* const getCalibrateableDomains =
-            instanceTable_ != nullptr ? instanceTable_->vkGetPhysicalDeviceCalibrateableTimeDomainsEXT : nullptr;
-        if (calibratedTimestamps_ && getCalibrated != nullptr && properties.timestampQueries &&
-            physical != VK_NULL_HANDLE && getCalibrateableDomains != nullptr)
+        if (getCalibrated != nullptr && getCalibrateableDomains != nullptr && physical != VK_NULL_HANDLE)
         {
             std::uint32_t domainCount = 0;
-            if (getCalibrateableDomains(physical, &domainCount, nullptr) == VK_SUCCESS && domainCount > 0)
+            auto counted = getCalibrateableDomains(physical, &domainCount, nullptr);
+            std::vector<VkTimeDomainEXT> domains(counted == VK_SUCCESS ? domainCount : 0U);
+            if (!domains.empty())
             {
-                std::vector<VkTimeDomainEXT> domains(domainCount);
-                if (getCalibrateableDomains(physical, &domainCount, domains.data()) == VK_SUCCESS)
+                counted = getCalibrateableDomains(physical, &domainCount, domains.data());
+                domains.resize(counted == VK_SUCCESS || counted == VK_INCOMPLETE ? domainCount : 0U);
+            }
+            const bool hasDevice = std::ranges::find(domains, VK_TIME_DOMAIN_DEVICE_EXT) != domains.end();
+            const bool hasHost = std::ranges::find(domains, hostDomain) != domains.end();
+            if (hasDevice && hasHost)
+            {
+                auto frequency = hostClockFrequency();
+                if (!frequency)
                 {
-                    domains.resize(domainCount);
-                    const bool hasDevice = std::ranges::find(domains, VK_TIME_DOMAIN_DEVICE_EXT) != domains.end();
-                    const bool hasHost = std::ranges::find(domains, hostDomain) != domains.end();
-                    if (hasDevice && hasHost)
-                    {
-                        const std::array infos{
-                            VkCalibratedTimestampInfoEXT{
-                                .sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT,
-                                .pNext = {},
-                                .timeDomain = VK_TIME_DOMAIN_DEVICE_EXT,
-                            },
-                            VkCalibratedTimestampInfoEXT{
-                                .sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT,
-                                .pNext = {},
-                                .timeDomain = hostDomain,
-                            },
-                        };
-                        std::array<std::uint64_t, 2> timestamps{};
-                        std::uint64_t maxDeviation = 0;
-                        if (getCalibrated(device_, 2, infos.data(), timestamps.data(), &maxDeviation) == VK_SUCCESS)
-                        {
-                            calibration.gpuTimestamp = timestamps[0];
-                            calibration.cpuTimestamp = timestamps[1];
-                        }
-                    }
+                    return std::unexpected(std::move(frequency.error()));
                 }
+                const std::array infos{
+                    VkCalibratedTimestampInfoEXT{
+                        .sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT,
+                        .pNext = {},
+                        .timeDomain = VK_TIME_DOMAIN_DEVICE_EXT,
+                    },
+                    VkCalibratedTimestampInfoEXT{
+                        .sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT,
+                        .pNext = {},
+                        .timeDomain = hostDomain,
+                    },
+                };
+                std::array<std::uint64_t, 2> timestamps{};
+                std::uint64_t maxDeviation = 0;
+                const auto sampled = getCalibrated(device_, 2, infos.data(), timestamps.data(), &maxDeviation);
+                if (sampled != VK_SUCCESS)
+                {
+                    return std::unexpected(makeVulkanError(vulkanResultErrorCode(sampled),
+                                                           sampled,
+                                                           record.calibratedTimestampsKhr
+                                                               ? "vkGetCalibratedTimestampsKHR"
+                                                               : "vkGetCalibratedTimestampsEXT"));
+                }
+                return QueueClockCalibration{
+                    .gpuTimestamp = timestamps[0],
+                    .cpuTimestamp = timestamps[1],
+                    .gpuFrequency = properties.timestampFrequency,
+                    .cpuFrequency = *frequency,
+                    .maxDeviationNanoseconds = maxDeviation,
+                    .cpuClock = hostCpuClock(),
+                };
             }
         }
 #else
         static_cast<void>(physical);
         static_cast<void>(calibratedTimestamps_);
 #endif
-        return calibration;
+        return std::unexpected(Error{
+            ErrorCode::unsupported,
+            0,
+            unsupportedCalibrationMessage,
+        });
     }
 
     Result<QueryPoolHandle> VulkanQueryManager::createTimestampQueryPool(const TimestampQueryPoolDesc& desc)

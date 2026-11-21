@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -4008,6 +4009,223 @@ extern "C"
     }
 }
 
+namespace
+{
+    [[nodiscard]] std::uint32_t timelineStatusOf(rachis::TimelinePointStatus status) noexcept
+    {
+        return status == rachis::TimelinePointStatus::complete ? RACHIS_TIMELINE_STATUS_COMPLETE
+                                                               : RACHIS_TIMELINE_STATUS_PENDING;
+    }
+
+    [[nodiscard]] std::chrono::nanoseconds timelineTimeout(std::uint64_t timeoutNs) noexcept
+    {
+        constexpr auto longest = static_cast<std::uint64_t>(std::chrono::nanoseconds::max().count());
+        return std::chrono::nanoseconds{static_cast<std::chrono::nanoseconds::rep>(std::min(timeoutNs, longest))};
+    }
+
+    [[nodiscard]] std::optional<rachis::TimelinePoint> findTimelinePoint(rachis_device& device, rachis_handle timeline)
+    {
+        std::shared_lock const lock(device.mutex);
+        const auto* const entry = device.timelines.find(timeline);
+        if (entry == nullptr)
+        {
+            return std::nullopt;
+        }
+        return *entry;
+    }
+
+    [[nodiscard]] std::uint32_t cpuClockOf(rachis::CpuClock clock) noexcept
+    {
+        switch (clock)
+        {
+        case rachis::CpuClock::queryPerformanceCounter:
+            return RACHIS_CPU_CLOCK_QUERY_PERFORMANCE_COUNTER;
+        case rachis::CpuClock::monotonic:
+            return RACHIS_CPU_CLOCK_MONOTONIC;
+        case rachis::CpuClock::machAbsoluteTime:
+            return RACHIS_CPU_CLOCK_MACH_ABSOLUTE_TIME;
+        case rachis::CpuClock::none:
+        case rachis::CpuClock::monotonicRaw:
+            return RACHIS_CPU_CLOCK_NONE;
+        }
+        return RACHIS_CPU_CLOCK_NONE;
+    }
+} // namespace
+
+extern "C"
+{
+    rachis_status rachis_timeline_query(rachis_device* device,
+                                        rachis_handle timeline,
+                                        std::uint32_t* status,
+                                        rachis_error* error)
+    {
+        return boundary(error, [&]() -> rachis_status {
+            if (device == nullptr || status == nullptr)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "device or timeline status is null");
+            }
+            *status = RACHIS_TIMELINE_STATUS_PENDING;
+            const auto point = findTimelinePoint(*device, timeline);
+            if (!point)
+            {
+                return invalidHandle(error);
+            }
+            const auto queried = device->native.queryTimelinePoint(*point);
+            if (!queried)
+            {
+                return result(error, queried.error());
+            }
+            *status = timelineStatusOf(*queried);
+            return RACHIS_STATUS_OK;
+        });
+    }
+
+    rachis_status rachis_timeline_wait_for(rachis_device* device,
+                                           rachis_handle timeline,
+                                           std::uint64_t timeoutNs,
+                                           std::uint32_t* status,
+                                           rachis_error* error)
+    {
+        return boundary(error, [&]() -> rachis_status {
+            if (device == nullptr || status == nullptr)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "device or timeline status is null");
+            }
+            *status = RACHIS_TIMELINE_STATUS_PENDING;
+            const auto point = findTimelinePoint(*device, timeline);
+            if (!point)
+            {
+                return invalidHandle(error);
+            }
+            const auto waited = device->native.wait(*point, timelineTimeout(timeoutNs));
+            if (!waited)
+            {
+                return result(error, waited.error());
+            }
+            *status = timelineStatusOf(*waited);
+            return RACHIS_STATUS_OK;
+        });
+    }
+
+    rachis_status rachis_queue_timestamp_valid_bits(rachis_device* device,
+                                                    std::uint32_t queueType,
+                                                    std::uint32_t* output,
+                                                    rachis_error* error)
+    {
+        return boundary(error, [&]() -> rachis_status {
+            if (device == nullptr || output == nullptr)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "device or output valid bits is null");
+            }
+            *output = 0;
+            if (queueType > RACHIS_QUEUE_COPY)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "invalid queue type");
+            }
+            std::shared_lock const lock(device->mutex);
+            const auto properties = device->native.queueProperties(static_cast<rachis::QueueType>(queueType));
+            if (!properties.timestampQueries || properties.timestampValidBits == 0)
+            {
+                return fail(error, RACHIS_STATUS_UNSUPPORTED, "the queue does not support timestamp queries");
+            }
+            *output = properties.timestampValidBits;
+            return RACHIS_STATUS_OK;
+        });
+    }
+
+    rachis_status rachis_queue_calibrate_timestamps(rachis_device* device,
+                                                    std::uint32_t queueType,
+                                                    rachis_timestamp_calibration* output,
+                                                    rachis_error* error)
+    {
+        return boundary(error, [&]() -> rachis_status {
+            if (device == nullptr || output == nullptr)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "device or calibration output is null");
+            }
+            if (output->struct_size != sizeof(*output))
+            {
+                return fail(error, RACHIS_STATUS_ABI_MISMATCH, "invalid timestamp calibration output layout");
+            }
+            *output = rachis_timestamp_calibration{};
+            output->struct_size = sizeof(*output);
+            if (queueType > RACHIS_QUEUE_COPY)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "invalid queue type");
+            }
+            std::shared_lock const lock(device->mutex);
+            if (const auto lost = rejectLostDevice(*device, error))
+            {
+                return *lost;
+            }
+            const auto calibrated = device->native.calibrateQueueClock(static_cast<rachis::QueueType>(queueType));
+            if (!calibrated)
+            {
+                return result(error, calibrated.error());
+            }
+            const auto clock = cpuClockOf(calibrated->cpuClock);
+            if (clock == RACHIS_CPU_CLOCK_NONE || calibrated->cpuFrequency == 0 || calibrated->gpuFrequency == 0)
+            {
+                return fail(error,
+                            RACHIS_STATUS_UNSUPPORTED,
+                            "the queue clock is not calibrated against the platform's monotonic CPU counter");
+            }
+            output->cpu_clock = clock;
+            output->gpu_timestamp = calibrated->gpuTimestamp;
+            output->gpu_frequency = calibrated->gpuFrequency;
+            output->cpu_timestamp = calibrated->cpuTimestamp;
+            output->cpu_frequency = calibrated->cpuFrequency;
+            output->max_deviation_ns = calibrated->maxDeviationNanoseconds;
+            return RACHIS_STATUS_OK;
+        });
+    }
+
+    rachis_status rachis_device_memory_budget(rachis_device* device, rachis_memory_budget* output, rachis_error* error)
+    {
+        return boundary(error, [&]() -> rachis_status {
+            if (device == nullptr || output == nullptr)
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "device or memory budget output is null");
+            }
+            if (output->struct_size != sizeof(*output))
+            {
+                return fail(error, RACHIS_STATUS_ABI_MISMATCH, "invalid memory budget output layout");
+            }
+            *output = rachis_memory_budget{};
+            output->struct_size = sizeof(*output);
+            std::shared_lock const lock(device->mutex);
+            if (const auto lost = rejectLostDevice(*device, error))
+            {
+                return *lost;
+            }
+            const auto budgets = device->native.queryMemoryBudgets();
+            if (!budgets)
+            {
+                return result(error, budgets.error());
+            }
+            const auto reported = [](const rachis::MemoryBudget& budget) {
+                return rachis::hasAny(budget.features, rachis::MemoryBudgetFeature::driverReported);
+            };
+            if (budgets->empty() || !std::ranges::all_of(*budgets, reported))
+            {
+                return fail(error,
+                            RACHIS_STATUS_UNSUPPORTED,
+                            "the device does not report its memory budget (Vulkan needs VK_EXT_memory_budget)");
+            }
+            rachis_memory_budget summed{};
+            summed.struct_size = sizeof(summed);
+            for (const auto& budget : *budgets)
+            {
+                const bool local = rachis::hasAny(budget.properties, rachis::MemoryHeapProperty::deviceLocal);
+                (local ? summed.local_budget : summed.non_local_budget) += budget.budgetBytes;
+                (local ? summed.local_usage : summed.non_local_usage) += budget.usageBytes;
+            }
+            *output = summed;
+            return RACHIS_STATUS_OK;
+        });
+    }
+}
+
 #ifdef RACHIS_TESTING
 namespace rachis::cabi::detail
 {
@@ -4057,6 +4275,26 @@ namespace rachis::cabi::detail
     void emitDiagnosticForTesting(rachis_device* device, const rachis::DiagnosticMessage& message) noexcept
     {
         onDiagnostic(message, device);
+    }
+
+    rachis::Device* nativeDeviceForTesting(rachis_device* device) noexcept
+    {
+        return device == nullptr ? nullptr : &device->native;
+    }
+
+    rachis_handle adoptTimelinePointForTesting(rachis_device* device, rachis::TimelinePoint point)
+    {
+        if (device == nullptr)
+        {
+            return 0;
+        }
+        std::scoped_lock const lock(device->mutex);
+        const auto id = device->timelines.emplace(activeTokenSource());
+        if (id != 0)
+        {
+            *device->timelines.find(id) = point;
+        }
+        return id;
     }
 } // namespace rachis::cabi::detail
 #endif

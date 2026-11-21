@@ -1428,8 +1428,9 @@ namespace rachis::d3d12
                     .heapIndex = heapIndex,
                     .properties = heapIndex == 0 ? MemoryHeapProperty::deviceLocal : MemoryHeapProperty::none,
                     .features = nodeIndex == 0
-                                    ? MemoryBudgetFeature::reservation | MemoryBudgetFeature::allocationStatistics
-                                    : MemoryBudgetFeature::reservation,
+                                    ? MemoryBudgetFeature::reservation | MemoryBudgetFeature::allocationStatistics |
+                                          MemoryBudgetFeature::driverReported
+                                    : MemoryBudgetFeature::reservation | MemoryBudgetFeature::driverReported,
                     .blockBytes = allocationStatistics[heapIndex].blockBytes,
                     .allocationBytes = allocationStatistics[heapIndex].allocationBytes,
                     .blockCount = allocationStatistics[heapIndex].blockCount,

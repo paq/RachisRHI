@@ -804,13 +804,13 @@ namespace rachis::metal
             return std::unexpected(
                 metalSelectionError(ErrorCode::invalidArgument, "Metal memory budgets require a valid device node."));
         }
-        const auto snapshot = captureMetalAllocationSnapshot(*native_);
-        const auto physicalBytes = snapshot.liveAllocationBytes + snapshot.retainedAllocationBytes;
-        const auto physicalCount = snapshot.liveAllocationCount + snapshot.retainedAllocationCount;
+        const auto totals = metalAllocationTotals(*native_);
+        const auto physicalBytes = totals.bytes;
+        const auto physicalCount = totals.count;
         MemoryBudget budget{};
         budget.heapIndex = 0;
         budget.properties = MemoryHeapProperty::deviceLocal;
-        budget.features = MemoryBudgetFeature::allocationStatistics;
+        budget.features = MemoryBudgetFeature::allocationStatistics | MemoryBudgetFeature::driverReported;
         budget.budgetBytes = native_->device.recommendedMaxWorkingSetSize;
         budget.usageBytes = native_->device.currentAllocatedSize;
         budget.blockBytes = physicalBytes;

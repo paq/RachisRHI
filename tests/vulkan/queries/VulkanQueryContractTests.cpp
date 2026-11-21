@@ -1281,6 +1281,12 @@ TEST_CASE("Vulkan queue clock calibration pairs the device clock with the platfo
         const auto hostBefore = rachis::test::readVulkanHostClock();
         auto before = device.calibrateQueueClock(queueType);
         const auto hostAfterBefore = rachis::test::readVulkanHostClock();
+        if (!calibrated)
+        {
+            REQUIRE_FALSE(before);
+            CHECK(before.error().code == rachis::ErrorCode::unsupported);
+            continue;
+        }
         REQUIRE(before);
         REQUIRE(hostBefore.frequency > 0);
         CAPTURE(hostBefore.timestamp, hostAfterBefore.timestamp, before->gpuTimestamp, before->cpuTimestamp);
@@ -1288,11 +1294,7 @@ TEST_CASE("Vulkan queue clock calibration pairs the device clock with the platfo
         CHECK(before->cpuFrequency == hostBefore.frequency);
         CHECK(before->cpuTimestamp >= hostBefore.timestamp);
         CHECK(before->cpuTimestamp <= hostAfterBefore.timestamp);
-        if (!calibrated)
-        {
-            CHECK(before->gpuTimestamp == 0);
-            continue;
-        }
+        CHECK(before->cpuClock != rachis::CpuClock::none);
         REQUIRE(before->gpuTimestamp != 0);
 
         auto pool = device.createTimestampQueryPool({

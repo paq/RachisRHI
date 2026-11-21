@@ -1162,6 +1162,23 @@ namespace rachis::metal
         return snapshot;
     }
 
+    MetalAllocationTotals metalAllocationTotals(MetalDeviceNative& native) noexcept
+    {
+        pruneMetalAllocations(native);
+        MetalAllocationTotals totals{};
+        for (const auto& weak : native.allocations)
+        {
+            const auto allocation = weak.lock();
+            if (allocation == nullptr)
+            {
+                continue;
+            }
+            totals.bytes += allocation->allocationBytes;
+            ++totals.count;
+        }
+        return totals;
+    }
+
     [[nodiscard]] Status rejectMetalBufferWorkingSetOverflow(id<MTLDevice> device, std::uint64_t bytes)
     {
         if (device == nil)

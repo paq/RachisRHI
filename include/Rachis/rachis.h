@@ -21,7 +21,7 @@ extern "C"
 {
 #endif
 
-#define RACHIS_ABI_VERSION 2U
+#define RACHIS_ABI_VERSION 3U
 #define RACHIS_ERROR_MESSAGE_CAPACITY 256u
 #define RACHIS_MAX_SURFACE_FORMATS 16U
 #define RACHIS_MAX_VERTEX_BUFFERS 8U
@@ -1275,6 +1275,61 @@ extern "C"
                                                       rachis_handle render_complete,
                                                       uint32_t* present_status,
                                                       rachis_error* error);
+
+    enum
+    {
+        RACHIS_TIMELINE_STATUS_PENDING = 0,
+        RACHIS_TIMELINE_STATUS_COMPLETE = 1
+    };
+
+    RACHIS_API rachis_status rachis_timeline_query(rachis_device* device,
+                                                   rachis_handle timeline,
+                                                   uint32_t* status,
+                                                   rachis_error* error);
+    RACHIS_API rachis_status rachis_timeline_wait_for(
+        rachis_device* device, rachis_handle timeline, uint64_t timeout_ns, uint32_t* status, rachis_error* error);
+
+    enum
+    {
+        RACHIS_CPU_CLOCK_NONE = 0,
+        RACHIS_CPU_CLOCK_QUERY_PERFORMANCE_COUNTER = 1,
+        RACHIS_CPU_CLOCK_MONOTONIC = 2,
+        RACHIS_CPU_CLOCK_MACH_ABSOLUTE_TIME = 3
+    };
+
+    typedef struct rachis_timestamp_calibration
+    {
+        uint32_t struct_size;
+        uint32_t cpu_clock;
+        uint64_t gpu_timestamp;
+        uint64_t gpu_frequency;
+        uint64_t cpu_timestamp;
+        uint64_t cpu_frequency;
+        uint64_t max_deviation_ns;
+    } rachis_timestamp_calibration;
+
+    RACHIS_API rachis_status rachis_queue_timestamp_valid_bits(rachis_device* device,
+                                                               uint32_t queue_type,
+                                                               uint32_t* output,
+                                                               rachis_error* error);
+    RACHIS_API rachis_status rachis_queue_calibrate_timestamps(rachis_device* device,
+                                                               uint32_t queue_type,
+                                                               rachis_timestamp_calibration* output,
+                                                               rachis_error* error);
+
+    typedef struct rachis_memory_budget
+    {
+        uint32_t struct_size;
+        uint32_t reserved0;
+        uint64_t local_budget;
+        uint64_t local_usage;
+        uint64_t non_local_budget;
+        uint64_t non_local_usage;
+    } rachis_memory_budget;
+
+    RACHIS_API rachis_status rachis_device_memory_budget(rachis_device* device,
+                                                         rachis_memory_budget* output,
+                                                         rachis_error* error);
 
 #ifdef __cplusplus
 }

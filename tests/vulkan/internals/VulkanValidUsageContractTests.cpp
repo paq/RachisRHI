@@ -1872,7 +1872,7 @@ TEST_CASE("Vulkan query pool creation leaks no native pool when a host allocatio
     gMock = nullptr;
 }
 
-TEST_CASE("Vulkan queue clock calibration pairs the device domain with the platform host domain or falls back",
+TEST_CASE("Vulkan queue clock calibration pairs the device domain with the platform host domain or is unsupported",
           "[size:small][rhi][vulkan][queries][calibration]")
 {
     MockVulkanDispatch mock;
@@ -1893,6 +1893,13 @@ TEST_CASE("Vulkan queue clock calibration pairs the device domain with the platf
     rachis::DeviceCapabilities caps{};
 
     const auto hostDomain = rachis::test::vulkanHostTimeDomain();
+#ifdef _WIN32
+    constexpr auto hostClock = rachis::CpuClock::queryPerformanceCounter;
+#elif defined(__APPLE__)
+    constexpr auto hostClock = rachis::CpuClock::monotonicRaw;
+#else
+    constexpr auto hostClock = rachis::CpuClock::monotonic;
+#endif
     const std::array everyDomain{
         VK_TIME_DOMAIN_DEVICE_EXT,
         VK_TIME_DOMAIN_CLOCK_MONOTONIC_EXT,
@@ -1908,21 +1915,26 @@ TEST_CASE("Vulkan queue clock calibration pairs the device domain with the platf
         }
     }
 
-    const auto expectHostClockFallback = [&](const rachis::vulkan::VulkanQueryManager& queries,
-                                             rachis::QueueType queueType) {
+    const auto expectCalibrated = [&](const rachis::vulkan::VulkanQueryManager& queries, rachis::QueueType queueType) {
         mock.calibratedDomains.clear();
-        const auto hostBefore = rachis::test::readVulkanHostClock();
         const auto calibration = queries.calibrateQueueClock(record.physical, queueType, record);
-        const auto hostAfter = rachis::test::readVulkanHostClock();
         REQUIRE(calibration.has_value());
-        REQUIRE(hostBefore.frequency > 0);
-        CAPTURE(hostBefore.timestamp, calibration->cpuTimestamp, hostAfter.timestamp);
-        CHECK(mock.calibratedDomains.empty());
-        CHECK(calibration->gpuTimestamp == 0);
-        CHECK(calibration->cpuTimestamp >= hostBefore.timestamp);
-        CHECK(calibration->cpuTimestamp <= hostAfter.timestamp);
-        CHECK(calibration->cpuFrequency == hostBefore.frequency);
+        REQUIRE(mock.calibratedDomains.size() == 2);
+        CHECK(mock.calibratedDomains[0] == VK_TIME_DOMAIN_DEVICE_EXT);
+        CHECK(mock.calibratedDomains[1] == hostDomain);
+        CHECK(calibration->gpuTimestamp == mockCalibratedDeviceTimestamp);
+        CHECK(calibration->cpuTimestamp == mockCalibratedHostTimestamp);
         CHECK(calibration->gpuFrequency == 1'000'000'000ULL);
+        CHECK(calibration->cpuFrequency == rachis::test::readVulkanHostClock().frequency);
+        CHECK(calibration->maxDeviationNanoseconds == 1);
+        CHECK(calibration->cpuClock == hostClock);
+    };
+    const auto expectUnsupported = [&](const rachis::vulkan::VulkanQueryManager& queries, rachis::QueueType queueType) {
+        mock.calibratedDomains.clear();
+        const auto calibration = queries.calibrateQueueClock(record.physical, queueType, record);
+        REQUIRE_FALSE(calibration.has_value());
+        CHECK(calibration.error().code == rachis::ErrorCode::unsupported);
+        CHECK(mock.calibratedDomains.empty());
     };
 
     {
@@ -1931,24 +1943,15 @@ TEST_CASE("Vulkan queue clock calibration pairs the device domain with the platf
         mock.calibrateableDomains.assign(everyDomain.begin(), everyDomain.end());
         for (const auto queueType : std::array{rachis::QueueType::graphics, rachis::QueueType::compute})
         {
-            mock.calibratedDomains.clear();
-            const auto calibration = queries.calibrateQueueClock(record.physical, queueType, record);
-            REQUIRE(calibration.has_value());
-            REQUIRE(mock.calibratedDomains.size() == 2);
-            CHECK(mock.calibratedDomains[0] == VK_TIME_DOMAIN_DEVICE_EXT);
-            CHECK(mock.calibratedDomains[1] == hostDomain);
-            CHECK(calibration->gpuTimestamp == mockCalibratedDeviceTimestamp);
-            CHECK(calibration->cpuTimestamp == mockCalibratedHostTimestamp);
-            CHECK(calibration->gpuFrequency == 1'000'000'000ULL);
-            CHECK(calibration->cpuFrequency == rachis::test::readVulkanHostClock().frequency);
+            expectCalibrated(queries, queueType);
         }
-        expectHostClockFallback(queries, rachis::QueueType::copy);
+        expectUnsupported(queries, rachis::QueueType::copy);
 
         mock.calibrateableDomains = withoutHostDomain;
-        expectHostClockFallback(queries, rachis::QueueType::graphics);
+        expectUnsupported(queries, rachis::QueueType::graphics);
 
         mock.calibrateableDomains = {hostDomain};
-        expectHostClockFallback(queries, rachis::QueueType::graphics);
+        expectUnsupported(queries, rachis::QueueType::graphics);
         queries.shutdown();
     }
 
@@ -1956,8 +1959,30 @@ TEST_CASE("Vulkan queue clock calibration pairs the device domain with the platf
         rachis::vulkan::VulkanQueryManager queries;
         queries.initialize(device, &table, &caps, nullptr, false, &instanceTable);
         mock.calibrateableDomains.assign(everyDomain.begin(), everyDomain.end());
-        expectHostClockFallback(queries, rachis::QueueType::graphics);
+        expectUnsupported(queries, rachis::QueueType::graphics);
         queries.shutdown();
+    }
+
+    {
+        auto khrTable = makeMockDeviceTable();
+        khrTable.vkGetCalibratedTimestampsKHR = &mockGetCalibratedTimestamps;
+        rachis::vulkan::VulkanInstanceTable khrInstanceTable{};
+        khrInstanceTable.vkGetPhysicalDeviceCalibrateableTimeDomainsKHR =
+            &mockGetPhysicalDeviceCalibrateableTimeDomains;
+        mock.calibrateableDomains.assign(everyDomain.begin(), everyDomain.end());
+
+        rachis::vulkan::VulkanQueryManager queries;
+        queries.initialize(device, &khrTable, &caps, nullptr, true, &khrInstanceTable);
+        expectUnsupported(queries, rachis::QueueType::graphics);
+        record.calibratedTimestampsKhr = true;
+        expectCalibrated(queries, rachis::QueueType::graphics);
+        queries.shutdown();
+
+        rachis::vulkan::VulkanQueryManager extOnly;
+        extOnly.initialize(device, &table, &caps, nullptr, true, &instanceTable);
+        expectUnsupported(extOnly, rachis::QueueType::graphics);
+        extOnly.shutdown();
+        record.calibratedTimestampsKhr = false;
     }
     gMock = nullptr;
 }

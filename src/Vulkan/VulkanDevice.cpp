@@ -590,7 +590,9 @@ namespace rachis::vulkan
 
     std::vector<VkTimeDomainEXT> VulkanDevice::calibrateableTimeDomains() const
     {
-        auto* const getCalibrateableDomains = instance_.table.vkGetPhysicalDeviceCalibrateableTimeDomainsEXT;
+        auto* const getCalibrateableDomains = record_.calibratedTimestampsKhr
+                                                  ? instance_.table.vkGetPhysicalDeviceCalibrateableTimeDomainsKHR
+                                                  : instance_.table.vkGetPhysicalDeviceCalibrateableTimeDomainsEXT;
         if (!record_.calibratedTimestamps || getCalibrateableDomains == nullptr || record_.physical == VK_NULL_HANDLE)
         {
             return {};
@@ -702,7 +704,7 @@ namespace rachis::vulkan
                 "calibrateQueueClock requested a queue that was not created.",
             });
         }
-        return queries_.calibrateQueueClock(record_.physical, queueType, record_);
+        return observe(queries_.calibrateQueueClock(record_.physical, queueType, record_));
     }
 
     DiagnosticCounts VulkanDevice::diagnosticCounts() const noexcept

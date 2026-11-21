@@ -1072,6 +1072,25 @@ namespace rachis::vulkan
         std::vector<VmaBudget> vmaBudgets(memory_.memoryHeapCount);
         vmaGetHeapBudgets(allocator_, vmaBudgets.data());
 
+        VkPhysicalDeviceMemoryBudgetPropertiesEXT driverBudgets{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT,
+            .pNext = {},
+            .heapBudget = {},
+            .heapUsage = {},
+        };
+        const bool driverBudgetsRead = memoryBudget_ && instanceTable_ != nullptr &&
+                                       instanceTable_->vkGetPhysicalDeviceMemoryProperties2 != nullptr &&
+                                       physical_ != VK_NULL_HANDLE;
+        if (driverBudgetsRead)
+        {
+            VkPhysicalDeviceMemoryProperties2 properties{
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2,
+                .pNext = &driverBudgets,
+                .memoryProperties = {},
+            };
+            instanceTable_->vkGetPhysicalDeviceMemoryProperties2(physical_, &properties);
+        }
+
         std::vector<MemoryBudget> budgets;
         budgets.reserve(memory_.memoryHeapCount);
         for (std::uint32_t i = 0; i < memory_.memoryHeapCount; ++i)
@@ -1080,17 +1099,21 @@ namespace rachis::vulkan
             const auto& budget = vmaBudgets[i];
             const auto exportedBytes = exportedMemory_->bytes[i].load(std::memory_order_relaxed);
             const auto exportedAllocations = exportedMemory_->allocations[i].load(std::memory_order_relaxed);
+            const bool reported = driverBudgetsRead && driverBudgets.heapBudget[i] != 0;
+            const auto estimatedBudget = budget.budget != 0 ? budget.budget : heap.size;
+            const auto estimatedUsage = memoryBudget_ ? budget.usage : budget.usage + exportedBytes;
             budgets.push_back(MemoryBudget{
                 .heapIndex = i,
                 .properties = (heap.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0 ? MemoryHeapProperty::deviceLocal
                                                                                   : MemoryHeapProperty::none,
-                .features = MemoryBudgetFeature::allocationStatistics,
+                .features = reported ? MemoryBudgetFeature::allocationStatistics | MemoryBudgetFeature::driverReported
+                                     : MemoryBudgetFeature::allocationStatistics,
                 .blockBytes = budget.statistics.blockBytes + exportedBytes,
                 .allocationBytes = budget.statistics.allocationBytes + exportedBytes,
                 .blockCount = budget.statistics.blockCount + exportedAllocations,
                 .allocationCount = budget.statistics.allocationCount + exportedAllocations,
-                .budgetBytes = budget.budget != 0 ? budget.budget : heap.size,
-                .usageBytes = memoryBudget_ ? budget.usage : budget.usage + exportedBytes,
+                .budgetBytes = reported ? driverBudgets.heapBudget[i] : estimatedBudget,
+                .usageBytes = reported ? driverBudgets.heapUsage[i] : estimatedUsage,
                 .availableForReservationBytes = 0,
                 .reservationBytes = 0,
             });
