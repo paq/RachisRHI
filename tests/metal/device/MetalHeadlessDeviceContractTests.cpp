@@ -169,8 +169,26 @@ TEST_CASE("Metal device create rejects injected missing features and releases pa
         });
         REQUIRE_FALSE(created.has_value());
         CHECK(created.error().code == rachis::ErrorCode::notReady);
+        CHECK(created.error().message.starts_with("Retry device creation later: "));
         CHECK(created.error().message.contains("MTL4CommandQueue returned nil"));
-        CHECK(created.error().message.contains("Retry device creation later"));
+        CHECK(created.error().message.ends_with("Metal gave no NSError."));
+    }
+
+    {
+        const std::string nativeDescription(4096, 'n');
+        rachis::metal::ScopedFailCommandApiCreate const failCommandApi(UINT32_MAX, nativeDescription);
+        auto created = rachis::createDevice(rachis::DeviceDesc{
+            .backend = rachis::Backend::metal,
+            .validation = rachis::ValidationLevel::standard,
+            .enableDred = false,
+        });
+        REQUIRE_FALSE(created.has_value());
+        CHECK(created.error().code == rachis::ErrorCode::notReady);
+        CHECK(created.error().nativeCode == 1);
+        CHECK(created.error().message.starts_with("Retry device creation later: "));
+        CHECK(created.error().message.contains("Native detail: TestInjectedError code 1: nnn"));
+        CHECK(created.error().message.size() <= rachis::maxMetalDiagnosticDescriptionBytes);
+        CHECK(created.error().message.ends_with("..."));
     }
 
     {

@@ -2382,6 +2382,37 @@ TEST_CASE("C ABI keeps Metal allocation telemetry bounded when resources churn w
 }
 #endif
 
+#if RACHIS_CABI_FAULT_BACKEND_METAL
+TEST_CASE("C ABI keeps the Metal 4 command-object retry guidance when a long NSError is cut at 255 bytes",
+          RACHIS_CABI_DEVICE_SIZE RACHIS_CABI_DEVICE_REQUIRES "[rachis][cabi][fault]")
+{
+    constexpr std::size_t capacity = RACHIS_ERROR_MESSAGE_CAPACITY - 1;
+    const std::string nativeDescription(3 * RACHIS_ERROR_MESSAGE_CAPACITY, 'n');
+    rachis::metal::ScopedFailCommandApiCreate const failCommandApi(UINT32_MAX, nativeDescription);
+
+    rachis_device_desc desc{};
+    desc.struct_size = sizeof(desc);
+    desc.abi_version = RACHIS_ABI_VERSION;
+    desc.backend = RACHIS_SMOKE_BACKEND;
+    desc.adapter_preference = RACHIS_SMOKE_ADAPTER;
+    desc.validation_level = RACHIS_VALIDATION_STANDARD;
+    desc.application_name = "Rachis C ABI Metal 4 retry guidance";
+    auto error = makeError();
+    rachis_device* native = nullptr;
+    CHECK(rachis_device_create(&desc, &native, &error) == RACHIS_STATUS_NOT_READY);
+    CHECK(native == nullptr);
+
+    const std::string_view message{error.message};
+    CAPTURE(message);
+    CHECK(message.size() == capacity);
+    CHECK(message.starts_with("Retry device creation later: "));
+    CHECK(message.contains("MTL4CommandQueue returned nil on all 5 attempts"));
+    CHECK(message.contains("Partial Metal objects were released."));
+    CHECK(message.contains("Native detail: TestInjectedError code 1: n"));
+    CHECK(message.ends_with('n'));
+}
+#endif
+
 #if RACHIS_CABI_FAULT_BACKEND_VULKAN
 TEST_CASE("C ABI one-entry command pools reacquire after a transient rachis_command_submit failure",
           RACHIS_CABI_DEVICE_SIZE RACHIS_CABI_DEVICE_REQUIRES "[rachis][cabi][submit][fault]")
