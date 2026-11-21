@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- C ABI version 4 (`RACHIS_ABI_VERSION` 4, `librachis.so.4` / `librachis.4.dylib`): `rachis_swapchain_acquire_for` and `RACHIS_STATUS_TIMEOUT` (15).
+- `Device::acquireNextImage(SwapchainHandle, std::chrono::nanoseconds)` and `ErrorCode::timeout` bound swapchain acquisition across Direct3D 12, Vulkan, and Metal.
+
 ## 0.3.1
 
 - Metal: probe command API availability with `respondsToSelector:` instead of creating throwaway command objects, and retry Metal 4 command-queue creation briefly in `createDevice`. Persistent `nil` on a Metal 4 device now returns `ErrorCode::notReady` (`RACHIS_STATUS_NOT_READY`) with Metal's `NSError` details instead of `ErrorCode::unsupported` (`"Missing: MTL4CommandQueue"`).

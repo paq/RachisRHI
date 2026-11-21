@@ -23,6 +23,7 @@ namespace rachis
         pipelineCacheMiss,
 
         notReady,
+        timeout,
     };
 
     struct Error final

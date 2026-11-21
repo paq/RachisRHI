@@ -1,4 +1,4 @@
-RACHIS_ABI_VERSION=3
+RACHIS_ABI_VERSION=4
 rachis_abi_version
 rachis_binding_layout_create
 rachis_binding_layout_destroy
@@ -67,6 +67,7 @@ rachis_surface_create
 rachis_surface_destroy
 rachis_surface_query_capabilities
 rachis_swapchain_acquire
+rachis_swapchain_acquire_for
 rachis_swapchain_cancel
 rachis_swapchain_create
 rachis_swapchain_destroy
