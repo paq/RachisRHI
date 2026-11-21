@@ -2932,13 +2932,15 @@ namespace rachis::d3d12
                                      "swapchain resize");
         }
 
-        [[nodiscard]] Result<AcquiredSwapchainImage> acquireNextImage(SwapchainHandle swapchain) override
+        [[nodiscard]] Result<AcquiredSwapchainImage> acquireNextImage(
+            SwapchainHandle swapchain, std::optional<std::chrono::nanoseconds> timeout) override
         {
             if (auto loss = deviceLossError())
             {
                 return std::unexpected(std::move(*loss));
             }
-            return observeDeviceLoss(swapchains_.acquireNextImage(queues_, swapchain), "swapchain acquisition");
+            return observeDeviceLoss(swapchains_.acquireNextImage(queues_, swapchain, timeout),
+                                     "swapchain acquisition");
         }
 
         [[nodiscard]] bool hasAcquiredSwapchainImage(SwapchainHandle swapchain) const noexcept override

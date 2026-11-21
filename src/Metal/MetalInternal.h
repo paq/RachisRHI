@@ -6,6 +6,7 @@
 #import <QuartzCore/CAMetalLayer.h>
 #import <dispatch/dispatch.h>
 
+#include "Common/AcquireDeadline.h"
 #include "Common/HandleTable.h"
 #include "Common/MonotonicIdentitySource.h"
 #include "Internal/BackendCommandBuffer.h"
@@ -36,6 +37,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <deque>
@@ -973,6 +975,14 @@ namespace rachis::metal
         __strong id<CAMetalDrawable> drawable = nil;
     };
 
+    struct MetalDrawableFetch final
+    {
+        std::mutex mutex;
+        std::condition_variable arrived;
+        bool done = false;
+        __strong id<CAMetalDrawable> drawable = nil;
+    };
+
     struct MetalSwapchainRecord final
     {
         SurfaceHandle surface{};
@@ -996,6 +1006,7 @@ namespace rachis::metal
         std::uint64_t submittedPresentationSequence = 0;
         std::shared_ptr<MetalPresentationFeedback> presentationFeedback = std::make_shared<MetalPresentationFeedback>();
         std::vector<MetalInFlightPresent> inFlight;
+        std::shared_ptr<MetalDrawableFetch> drawableFetch;
     };
 
     struct MetalDeviceNative

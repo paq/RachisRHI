@@ -666,7 +666,8 @@ namespace
         {
             return std::unexpected(Error{ErrorCode::unsupported, 0, "stub"});
         }
-        Result<AcquiredSwapchainImage> acquireNextImage(SwapchainHandle) override
+        Result<AcquiredSwapchainImage> acquireNextImage(SwapchainHandle,
+                                                        std::optional<std::chrono::nanoseconds>) override
         {
             return std::unexpected(Error{ErrorCode::unsupported, 0, "stub"});
         }

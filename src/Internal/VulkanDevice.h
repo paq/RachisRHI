@@ -340,7 +340,8 @@ namespace rachis::vulkan
         [[nodiscard]] Status resizeSwapchain(SwapchainHandle swapchain,
                                              std::uint32_t width,
                                              std::uint32_t height) override;
-        [[nodiscard]] Result<AcquiredSwapchainImage> acquireNextImage(SwapchainHandle swapchain) override;
+        [[nodiscard]] Result<AcquiredSwapchainImage> acquireNextImage(
+            SwapchainHandle swapchain, std::optional<std::chrono::nanoseconds> timeout) override;
         [[nodiscard]] bool hasAcquiredSwapchainImage(SwapchainHandle swapchain) const noexcept override;
         [[nodiscard]] Status cancelSwapchainImage(SwapchainHandle swapchain) override;
         [[nodiscard]] Result<PresentStatus> present(SwapchainHandle swapchain, TimelinePoint renderComplete) override;

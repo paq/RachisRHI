@@ -313,7 +313,7 @@ Surface and swapchain lifecycle rules:
 - **Surface usage flags:** Query `SurfaceCapabilities::usages` first. On Direct3D 12, requesting `TextureUsage::sampled` with `rgba8UnormSrgb` or `bgra8UnormSrgb` fails with `ErrorCode::unsupported` unless the adapter supports `CastingFullyTypedFormatSupported`.
 - **Acquired image & queue rules:**
   - On Vulkan, the `TimelinePoint` passed to `present` must come from a graphics queue and satisfy post-acquire ordering (`ErrorCode::invalidArgument` otherwise).
-  - `acquireNextImage` returns `ErrorCode::notReady` on transient timeout or while a previous present is still pending completion.
+  - `acquireNextImage(swapchain)` returns `ErrorCode::notReady` on transient timeout or while a previous present is still pending; `acquireNextImage(swapchain, timeout)` returns `ErrorCode::timeout` if no image is ready within `timeout` on a visible surface (`0` or negative polls; `nanoseconds::max()` waits unboundedly) and `ErrorCode::notReady` when hidden, occluded, or detached.
   - On Direct3D 12 and Vulkan, only one acquired image may be active at a time (`acquire` -> record/submit -> `present` or `cancelSwapchainImage`); out-of-order calls return `ErrorCode::invalidState`.
   - If Direct3D 12 `present` or `resizeSwapchain` fails, `querySwapchainPresentation` and `querySwapchainFrameTiming` still succeed and let you inspect state before recovering or recreating.
   - On Vulkan, a failed `resizeSwapchain` retires the old swapchain cleanly—call `resizeSwapchain` again to recover or `destroySwapchain` to tear down.
