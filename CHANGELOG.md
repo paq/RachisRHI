@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.3.1
 
-- Metal: `createDevice` retries Metal 4 command-queue creation briefly. When the queue stays nil on a Metal 4 device, it returns `ErrorCode::notReady` (`RACHIS_STATUS_NOT_READY`) with Metal's `NSError` text. Before, it returned `ErrorCode::unsupported` ("Missing: MTL4CommandQueue"). The host profile now checks that the command APIs exist instead of creating throwaway queues.
+- Metal: probe command API availability with `respondsToSelector:` instead of creating throwaway command objects, and retry Metal 4 command-queue creation briefly in `createDevice`. Persistent `nil` on a Metal 4 device now returns `ErrorCode::notReady` (`RACHIS_STATUS_NOT_READY`) with Metal's `NSError` details instead of `ErrorCode::unsupported` (`"Missing: MTL4CommandQueue"`).
 
 ## 0.3.0
 
