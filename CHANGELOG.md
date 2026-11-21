@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Metal: support `PresentMode::immediate` (`RACHIS_PRESENT_MODE_IMMEDIATE_BIT`) via `CAMetalLayer.displaySyncEnabled = NO`.
+
 ## 0.3.1
 
 - Metal: probe command API availability with `respondsToSelector:` instead of creating throwaway command objects, and retry Metal 4 command-queue creation briefly in `createDevice`. Persistent `nil` on a Metal 4 device now returns `ErrorCode::notReady` (`RACHIS_STATUS_NOT_READY`) with Metal's `NSError` details instead of `ErrorCode::unsupported` (`"Missing: MTL4CommandQueue"`).

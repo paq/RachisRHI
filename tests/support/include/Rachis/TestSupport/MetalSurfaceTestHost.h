@@ -9,6 +9,7 @@ struct RxMetalTestLayerState final
     bool bgra8Unorm = false;
     bool rgba16Float = false;
     bool framebufferOnly = false;
+    bool displaySyncEnabled = false;
     std::string name;
 };
 

@@ -196,6 +196,7 @@ TEST_CASE("Metal CAMetalLayer surfaces publish drawable size and survive host de
     CHECK(caps->preferredHeight == 96);
     CHECK(rachis::hasAny(caps->usages, rachis::TextureUsage::renderTarget));
     CHECK(rachis::supportsPresentMode(caps->presentModes, rachis::PresentMode::fifo));
+    CHECK(rachis::supportsPresentMode(caps->presentModes, rachis::PresentMode::immediate));
     REQUIRE_FALSE(caps->formats.empty());
 
     rxMetalTestSetDrawableSize(layer, 256, 144);
@@ -445,9 +446,67 @@ TEST_CASE("Metal surfaces leave the CAMetalLayer unchanged until a swapchain con
     CHECK(configured.hasDevice);
     CHECK(configured.bgra8Unorm);
     CHECK(configured.framebufferOnly);
+    CHECK(configured.displaySyncEnabled);
     CHECK(configured.name == "configured surface");
 
     REQUIRE(device.destroySwapchain(*swapchain).has_value());
+    REQUIRE(device.destroySurface(*surface).has_value());
+    rxMetalTestRelease(layer);
+    CHECK(device.diagnosticCounts().errors == 0);
+}
+
+TEST_CASE("Metal immediate swapchains turn off display sync and keep it off across resize",
+          "[size:large][rhi][metal][surface][gpu]")
+{
+    auto created = rachis::createDevice(metalDesc());
+    REQUIRE(created);
+    auto device = std::move(*created);
+
+    void* const layer = rxMetalTestCreateUnconfiguredLayer(64, 48);
+    auto surface = device.createSurface({
+        .kind = rachis::SurfaceKind::caMetalLayer,
+        .windowHandle = layer,
+        .label = "immediate surface",
+    });
+    REQUIRE(surface);
+    auto caps = device.querySurfaceCapabilities(*surface);
+    REQUIRE(caps);
+    REQUIRE(rachis::supportsPresentMode(caps->presentModes, rachis::PresentMode::immediate));
+
+    const rachis::SwapchainDesc immediateDesc{
+        .surface = *surface,
+        .width = 64,
+        .height = 48,
+        .imageCount = 1,
+        .format = rachis::Format::bgra8Unorm,
+        .usage = rachis::TextureUsage::renderTarget,
+        .presentMode = rachis::PresentMode::immediate,
+        .label = "immediate drawable",
+    };
+    auto swapchain = device.createSwapchain(immediateDesc);
+    REQUIRE(swapchain);
+    CHECK_FALSE(rxMetalTestQueryLayerState(layer).displaySyncEnabled);
+    auto info = device.querySwapchainPresentation(*swapchain);
+    REQUIRE(info);
+    CHECK(info->presentMode == rachis::PresentMode::immediate);
+
+    auto image = device.acquireNextImage(*swapchain);
+    REQUIRE(image);
+    REQUIRE(device.cancelSwapchainImage(*swapchain).has_value());
+
+    rxMetalTestSetDrawableSize(layer, 32, 24);
+    REQUIRE(device.resizeSwapchain(*swapchain, 32, 24).has_value());
+    CHECK_FALSE(rxMetalTestQueryLayerState(layer).displaySyncEnabled);
+    REQUIRE(device.destroySwapchain(*swapchain).has_value());
+
+    auto fifoDesc = immediateDesc;
+    fifoDesc.width = 32;
+    fifoDesc.height = 24;
+    fifoDesc.presentMode = rachis::PresentMode::fifo;
+    auto fifo = device.createSwapchain(fifoDesc);
+    REQUIRE(fifo);
+    CHECK(rxMetalTestQueryLayerState(layer).displaySyncEnabled);
+    REQUIRE(device.destroySwapchain(*fifo).has_value());
     REQUIRE(device.destroySurface(*surface).has_value());
     rxMetalTestRelease(layer);
     CHECK(device.diagnosticCounts().errors == 0);

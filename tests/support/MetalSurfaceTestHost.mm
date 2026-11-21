@@ -172,6 +172,7 @@ RxMetalTestLayerState rxMetalTestQueryLayerState(void* layer)
           state.bgra8Unorm = metalLayer.pixelFormat == MTLPixelFormatBGRA8Unorm;
           state.rgba16Float = metalLayer.pixelFormat == MTLPixelFormatRGBA16Float;
           state.framebufferOnly = metalLayer.framebufferOnly == YES;
+          state.displaySyncEnabled = metalLayer.displaySyncEnabled == YES;
           if (metalLayer.name != nil)
           {
               state.name = metalLayer.name.UTF8String;
