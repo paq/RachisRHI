@@ -11,10 +11,14 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
+
+#include <mach/mach.h>
 
 namespace
 {
@@ -281,6 +285,21 @@ namespace
         auto desc = swapchainDesc(surface, width, height);
         desc.usage = rachis::TextureUsage::renderTarget | rachis::TextureUsage::copySource;
         return desc;
+    }
+
+    [[nodiscard]] std::size_t currentTaskPortCount() noexcept
+    {
+        mach_port_name_array_t names = nullptr;
+        mach_msg_type_number_t nameCount = 0;
+        mach_port_type_array_t types = nullptr;
+        mach_msg_type_number_t typeCount = 0;
+        if (mach_port_names(mach_task_self(), &names, &nameCount, &types, &typeCount) != KERN_SUCCESS)
+        {
+            return 0;
+        }
+        vm_deallocate(mach_task_self(), reinterpret_cast<vm_address_t>(names), nameCount * sizeof(*names));
+        vm_deallocate(mach_task_self(), reinterpret_cast<vm_address_t>(types), typeCount * sizeof(*types));
+        return nameCount;
     }
 
 } // namespace
@@ -1285,5 +1304,150 @@ TEST_CASE("Metal rejects submitting a command buffer that recorded a drawable wh
     REQUIRE(destroyDrawableUseResources(device, resources));
     REQUIRE(device.destroySwapchain(*swapchain).has_value());
     REQUIRE(device.destroySurface(*surface).has_value());
+    CHECK(device.diagnosticCounts().errors == 0);
+}
+
+TEST_CASE("Metal submit and present loops keep this process's Mach port count flat",
+          "[size:large][rhi][metal][present][gpu][regression]")
+{
+    constexpr int warmupFrames = 64;
+    constexpr int soakFrames = 3000;
+    constexpr std::size_t allowedGrowth = 64;
+
+    auto created = rachis::createDevice(metalDesc());
+    REQUIRE(created);
+    auto device = std::move(*created);
+    LayerHost const host(64, 48);
+    auto surface = device.createSurface({
+        .kind = rachis::SurfaceKind::caMetalLayer,
+        .windowHandle = host.layer,
+        .displayHandle = host.view,
+        .label = "soak surface",
+    });
+    REQUIRE(surface);
+    auto swapchain = device.createSwapchain(swapchainDesc(*surface, 64, 48));
+    REQUIRE(swapchain);
+
+    const auto frame = [&](bool present) {
+        auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::graphics);
+        REQUIRE(command);
+        if (!present)
+        {
+            auto submitted = device.submit(std::move(*command));
+            REQUIRE(submitted);
+            REQUIRE(device.wait(*submitted).has_value());
+            return;
+        }
+        auto image = device.acquireNextImage(*swapchain);
+        REQUIRE(image);
+        REQUIRE(recordDrawableUse(device, *command, *image, DrawableUse::renderTarget, DrawableUseResources{}));
+        auto submitted = device.submit(std::move(*command));
+        REQUIRE(submitted);
+        auto presented = device.present(*swapchain, *submitted);
+        REQUIRE(presented);
+    };
+
+    for (int index = 0; index < warmupFrames; ++index)
+    {
+        frame(index % 2 == 0);
+    }
+    REQUIRE(device.waitIdle().has_value());
+    const auto before = currentTaskPortCount();
+    REQUIRE(before > 0);
+
+    for (int index = 0; index < soakFrames; ++index)
+    {
+        frame(index % 2 == 0);
+    }
+    REQUIRE(device.waitIdle().has_value());
+    const auto after = currentTaskPortCount();
+    INFO("Mach ports before " << before << ", after " << after << " over " << soakFrames << " frames");
+    CHECK(after <= before + allowedGrowth);
+
+    REQUIRE(device.destroySwapchain(*swapchain).has_value());
+    REQUIRE(device.destroySurface(*surface).has_value());
+    CHECK(device.diagnosticCounts().errors == 0);
+}
+
+TEST_CASE("Metal swapchain calls leave nothing in a worker thread's autorelease pool",
+          "[size:large][rhi][metal][present][gpu][regression]")
+{
+    auto created = rachis::createDevice(metalDesc());
+    REQUIRE(created);
+    auto device = std::move(*created);
+    LayerHost const host(64, 48);
+
+    struct Measurement final
+    {
+        std::string operation;
+        std::size_t autoreleasedObjects = 0;
+        bool succeeded = false;
+    };
+    std::vector<Measurement> measurements;
+    std::thread worker([&] {
+        const auto measure = [&](std::string operation, const std::function<bool()>& body) {
+            bool succeeded = false;
+            const auto count = rachis::metal::autoreleasedObjectCount([&] { succeeded = body(); });
+            measurements.push_back(Measurement{
+                .operation = std::move(operation),
+                .autoreleasedObjects = count,
+                .succeeded = succeeded,
+            });
+            return succeeded;
+        };
+        rachis::Result<rachis::SurfaceHandle> surface = std::unexpected(rachis::Error{});
+        rachis::Result<rachis::SwapchainHandle> swapchain = std::unexpected(rachis::Error{});
+        if (!measure("createSurface and createSwapchain", [&] {
+                surface = device.createSurface({
+                    .kind = rachis::SurfaceKind::caMetalLayer,
+                    .windowHandle = host.layer,
+                    .displayHandle = host.view,
+                    .label = "worker surface",
+                });
+                if (!surface)
+                {
+                    return false;
+                }
+                swapchain = device.createSwapchain(swapchainDesc(*surface, 64, 48));
+                return swapchain.has_value();
+            }))
+        {
+            return;
+        }
+        static_cast<void>(
+            measure("querySurfaceCapabilities", [&] { return device.querySurfaceCapabilities(*surface).has_value(); }));
+        static_cast<void>(measure("acquireNextImage and cancelSwapchainImage", [&] {
+            return device.acquireNextImage(*swapchain).has_value() &&
+                   device.cancelSwapchainImage(*swapchain).has_value();
+        }));
+        rachis::Result<rachis::AcquiredSwapchainImage> image = std::unexpected(rachis::Error{});
+        static_cast<void>(measure("acquireNextImage", [&] {
+            image = device.acquireNextImage(*swapchain);
+            return image.has_value();
+        }));
+        auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::graphics);
+        const bool recorded =
+            image && command &&
+            recordDrawableUse(device, *command, *image, DrawableUse::renderTarget, DrawableUseResources{});
+        auto submitted = recorded ? device.submit(std::move(*command))
+                                  : rachis::Result<rachis::TimelinePoint>{std::unexpected(rachis::Error{})};
+        static_cast<void>(measure(
+            "present", [&] { return submitted.has_value() && device.present(*swapchain, *submitted).has_value(); }));
+        static_cast<void>(device.waitIdle());
+        static_cast<void>(
+            measure("resizeSwapchain", [&] { return device.resizeSwapchain(*swapchain, 32, 24).has_value(); }));
+        static_cast<void>(measure("destroySwapchain and destroySurface", [&] {
+            return device.destroySwapchain(*swapchain).has_value() && device.destroySurface(*surface).has_value();
+        }));
+    });
+    worker.join();
+
+    REQUIRE(measurements.size() == 7);
+    for (const auto& measurement : measurements)
+    {
+        CAPTURE(measurement.operation, measurement.autoreleasedObjects);
+        CHECK(measurement.succeeded);
+        CHECK(measurement.autoreleasedObjects == 0);
+    }
     CHECK(device.diagnosticCounts().errors == 0);
 }
