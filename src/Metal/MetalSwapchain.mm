@@ -153,6 +153,12 @@ namespace rachis::metal
             };
         }
 
+        // Immediate presents without waiting for vertical sync, so frames may tear.
+        void applyMetalPresentMode(CAMetalLayer* layer, PresentMode mode) noexcept
+        {
+            layer.displaySyncEnabled = mode == PresentMode::immediate ? NO : YES;
+        }
+
         void applyMetalSwapchainLayer(CAMetalLayer* layer, const SwapchainDesc& desc) noexcept
         {
             layer.pixelFormat = metalPixelFormat(desc.format);
@@ -160,6 +166,7 @@ namespace rachis::metal
             layer.opaque = YES;
             layer.drawableSize = CGSizeMake(static_cast<CGFloat>(desc.width), static_cast<CGFloat>(desc.height));
             layer.allowsNextDrawableTimeout = YES;
+            applyMetalPresentMode(layer, desc.presentMode);
             auto* const srgb = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
             if (srgb != nullptr)
             {
@@ -209,7 +216,7 @@ namespace rachis::metal
             caps.preferredWidth = (hidden || suspended) ? 0 : backing.first;
             caps.preferredHeight = (hidden || suspended) ? 0 : backing.second;
             caps.usages = TextureUsage::renderTarget | TextureUsage::copySource;
-            caps.presentModes = PresentModeMask::fifo;
+            caps.presentModes = PresentModeMask::fifo | PresentModeMask::immediate;
             caps.formats = {
                 SurfaceFormat{.format = Format::bgra8Unorm, .colorSpace = SurfaceColorSpace::srgbNonlinear},
                 SurfaceFormat{.format = Format::bgra8UnormSrgb, .colorSpace = SurfaceColorSpace::srgbNonlinear},
@@ -494,8 +501,7 @@ namespace rachis::metal
         const auto usageBits = static_cast<std::uint32_t>(desc.usage);
         const auto allowedUsage = static_cast<std::uint32_t>(TextureUsage::renderTarget | TextureUsage::copySource);
         const bool usageSupported = hasAny(desc.usage, TextureUsage::renderTarget) && (usageBits & ~allowedUsage) == 0;
-        if (!formatSupported || desc.presentMode != PresentMode::fifo ||
-            desc.colorSpace != SurfaceColorSpace::srgbNonlinear || !usageSupported)
+        if (!formatSupported || desc.colorSpace != SurfaceColorSpace::srgbNonlinear || !usageSupported)
         {
             return std::unexpected(metalSelectionError(
                 ErrorCode::unsupported,
@@ -638,6 +644,7 @@ namespace rachis::metal
             surface != nullptr && *surface != nullptr && (*surface)->layer != nil)
         {
             (*surface)->layer.drawableSize = CGSizeMake(static_cast<CGFloat>(width), static_cast<CGFloat>(height));
+            applyMetalPresentMode((*surface)->layer, record.desc.presentMode);
         }
         return {};
     }

@@ -285,7 +285,7 @@ namespace
 
 } // namespace
 
-TEST_CASE("Metal swapchains require one fifo BGRA image on a live CAMetalLayer",
+TEST_CASE("Metal swapchains require one BGRA image on a live CAMetalLayer",
           "[size:large][rhi][metal][present][validation]")
 {
     auto created = rachis::createDevice(metalDesc());
@@ -321,8 +321,8 @@ TEST_CASE("Metal swapchains require one fifo BGRA image on a live CAMetalLayer",
         .usage = rachis::TextureUsage::renderTarget,
         .presentMode = rachis::PresentMode::immediate,
     });
-    REQUIRE_FALSE(immediate);
-    CHECK(immediate.error().code == rachis::ErrorCode::unsupported);
+    REQUIRE(immediate);
+    REQUIRE(device.destroySwapchain(*immediate).has_value());
 
     auto swapchain = device.createSwapchain(swapchainDesc(*surface, 64, 48));
     REQUIRE(swapchain);
