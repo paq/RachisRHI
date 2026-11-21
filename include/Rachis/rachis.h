@@ -21,7 +21,7 @@ extern "C"
 {
 #endif
 
-#define RACHIS_ABI_VERSION 3U
+#define RACHIS_ABI_VERSION 4U
 #define RACHIS_ERROR_MESSAGE_CAPACITY 256u
 #define RACHIS_MAX_SURFACE_FORMATS 16U
 #define RACHIS_MAX_VERTEX_BUFFERS 8U
@@ -51,7 +51,8 @@ extern "C"
         RACHIS_STATUS_VALIDATION_ERROR = 11,
         RACHIS_STATUS_PIPELINE_CACHE_MISS = 12,
         RACHIS_STATUS_NOT_READY = 13,
-        RACHIS_STATUS_ABI_MISMATCH = 14
+        RACHIS_STATUS_ABI_MISMATCH = 14,
+        RACHIS_STATUS_TIMEOUT = 15
     };
 
     enum
@@ -1251,6 +1252,11 @@ extern "C"
                                                       rachis_handle swapchain,
                                                       rachis_swapchain_image* output,
                                                       rachis_error* error);
+    RACHIS_API rachis_status rachis_swapchain_acquire_for(rachis_device* device,
+                                                          rachis_handle swapchain,
+                                                          uint64_t timeout_ns,
+                                                          rachis_swapchain_image* output,
+                                                          rachis_error* error);
 
     typedef struct rachis_swapchain_presentation_progress
     {

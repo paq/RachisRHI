@@ -3,8 +3,10 @@
 #include "Internal/BackendCommandBuffer.h"
 #include "Rachis/Device.h"
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -685,7 +687,8 @@ namespace rachis::detail
         [[nodiscard]] virtual Status resizeSwapchain(SwapchainHandle swapchain,
                                                      std::uint32_t width,
                                                      std::uint32_t height) = 0;
-        [[nodiscard]] virtual Result<AcquiredSwapchainImage> acquireNextImage(SwapchainHandle swapchain) = 0;
+        [[nodiscard]] virtual Result<AcquiredSwapchainImage> acquireNextImage(
+            SwapchainHandle swapchain, std::optional<std::chrono::nanoseconds> timeout) = 0;
         [[nodiscard]] virtual bool hasAcquiredSwapchainImage(SwapchainHandle swapchain) const noexcept = 0;
         [[nodiscard]] virtual Status cancelSwapchainImage(SwapchainHandle swapchain) = 0;
         [[nodiscard]] virtual Result<PresentStatus> present(SwapchainHandle swapchain,
