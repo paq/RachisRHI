@@ -538,6 +538,89 @@ TEST_CASE("Metal timed acquire returns timeout within its bound while presents h
     REQUIRE(device.destroySurface(*surface).has_value());
 }
 
+TEST_CASE("Metal immediate acquire waits on the oldest present while presents hold both drawables",
+          "[size:large][rhi][metal][present][gpu][regression]")
+{
+    auto feedbackGate = std::make_shared<rachis::metal::MetalCommitFeedbackGate>();
+    auto created = rachis::createDevice(metalDesc());
+    REQUIRE(created);
+    auto device = std::move(*created);
+    struct ScopedGateRelease final
+    {
+        std::shared_ptr<rachis::metal::MetalCommitFeedbackGate> gate;
+        ~ScopedGateRelease() noexcept
+        {
+            gate->release();
+        }
+    } const releaseOnExit{feedbackGate};
+    LayerHost const host(64, 48);
+    auto surface = device.createSurface({
+        .kind = rachis::SurfaceKind::caMetalLayer,
+        .windowHandle = host.layer,
+        .displayHandle = host.view,
+        .label = "immediate held surface",
+    });
+    REQUIRE(surface);
+    auto desc = swapchainDesc(*surface, 64, 48);
+    desc.presentMode = rachis::PresentMode::immediate;
+    auto swapchain = device.createSwapchain(desc);
+    REQUIRE(swapchain);
+    auto info = device.querySwapchainPresentation(*swapchain);
+    REQUIRE(info);
+    CHECK(info->framesInFlightBound == 2);
+
+    for (int frame = 0; frame < 2; ++frame)
+    {
+        auto acquired = device.acquireNextImage(*swapchain, std::chrono::seconds(3));
+        REQUIRE(acquired);
+        auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::graphics);
+        REQUIRE(command);
+        REQUIRE(device.insertDebugMarker(*command, {.label = "Held immediate frame"}).has_value());
+        if (frame == 0)
+        {
+            rachis::metal::holdNextCommitFeedback(feedbackGate);
+        }
+        auto rendered = device.submit(std::move(*command));
+        REQUIRE(rendered);
+        auto presented = device.present(*swapchain, *rendered);
+        REQUIRE(presented);
+        CHECK(*presented == rachis::PresentStatus::presented);
+    }
+    REQUIRE(feedbackGate->waitForEntry(std::chrono::seconds(2)));
+    auto timing = device.querySwapchainFrameTiming(*swapchain);
+    REQUIRE(timing);
+    REQUIRE(timing->inFlightPresents == 2);
+
+    for (const auto timeout :
+         {std::chrono::milliseconds(0), std::chrono::milliseconds(20), std::chrono::milliseconds(50)})
+    {
+        const auto started = std::chrono::steady_clock::now();
+        auto acquired = device.acquireNextImage(*swapchain, timeout);
+        const auto elapsed = std::chrono::steady_clock::now() - started;
+        REQUIRE_FALSE(acquired);
+        CHECK(acquired.error().code == rachis::ErrorCode::timeout);
+        CHECK(acquired.error().message.find("drawable pool is exhausted") != std::string::npos);
+        CHECK(elapsed < timeout + timedAcquireSlack);
+        CHECK_FALSE(device.hasAcquiredSwapchainImage(*swapchain));
+    }
+
+    std::thread releaser([gate = feedbackGate] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        gate->release();
+    });
+    const auto started = std::chrono::steady_clock::now();
+    auto untimed = device.acquireNextImage(*swapchain);
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    releaser.join();
+    REQUIRE(untimed);
+    CHECK(elapsed < std::chrono::milliseconds(900));
+    CHECK(untimed->width == 64);
+    REQUIRE(device.cancelSwapchainImage(*swapchain).has_value());
+    REQUIRE(device.waitIdle().has_value());
+    REQUIRE(device.destroySwapchain(*swapchain).has_value());
+    REQUIRE(device.destroySurface(*surface).has_value());
+}
+
 TEST_CASE("Metal timed acquire keeps a drawable that arrives late and drops it on resize",
           "[size:large][rhi][metal][present][gpu][regression]")
 {

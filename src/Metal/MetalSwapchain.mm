@@ -178,11 +178,15 @@ namespace rachis::metal
             };
         }
 
+        [[nodiscard]] constexpr std::uint32_t metalDrawableCount(PresentMode mode) noexcept
+        {
+            return mode == PresentMode::immediate ? 2 : 3;
+        }
+
         void applyMetalPresentMode(CAMetalLayer* layer, PresentMode mode) noexcept
         {
-            const bool immediate = mode == PresentMode::immediate;
-            layer.displaySyncEnabled = immediate ? NO : YES;
-            layer.maximumDrawableCount = immediate ? 2 : 3;
+            layer.displaySyncEnabled = mode == PresentMode::immediate ? NO : YES;
+            layer.maximumDrawableCount = metalDrawableCount(mode);
         }
 
         void applyMetalSwapchainLayer(CAMetalLayer* layer, const SwapchainDesc& desc) noexcept
@@ -1017,7 +1021,7 @@ namespace rachis::metal
         }
 #endif
         const auto record = ready->first;
-        if (record->inFlightPresents >= 3 && !record->inFlight.empty())
+        if (record->inFlightPresents >= metalDrawableCount(record->desc.presentMode) && !record->inFlight.empty())
         {
             const auto backend = native_;
             const auto oldestValue = record->inFlight.front().timelineValue;
@@ -1043,7 +1047,7 @@ namespace rachis::metal
             {
                 return std::unexpected(std::move(ready.error()));
             }
-            if (record->inFlightPresents >= 3)
+            if (record->inFlightPresents >= metalDrawableCount(record->desc.presentMode))
             {
                 return std::unexpected(metalAcquireExpiry(
                     deadline, "The CAMetalLayer drawable pool is exhausted until a present retires."));
@@ -1378,7 +1382,7 @@ namespace rachis::metal
             .presentMode = record.desc.presentMode,
             .usage = record.desc.usage,
             .imageCount = 1,
-            .framesInFlightBound = 3,
+            .framesInFlightBound = metalDrawableCount(record.desc.presentMode),
             .width = record.desc.width,
             .height = record.desc.height,
             .hdr = false,
