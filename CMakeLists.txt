@@ -2024,6 +2024,11 @@ if(rachis_build_tests)
             -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/support/CheckDeviceCreationGuards.cmake")
     set_tests_properties(RachisDeviceCreationGuards PROPERTIES LABELS "size:small" TIMEOUT 30)
 
+    add_test(NAME RachisDispatchCopyBarriers
+        COMMAND "${CMAKE_COMMAND}" "-DTEST_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/tests"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/support/CheckDispatchCopyBarriers.cmake")
+    set_tests_properties(RachisDispatchCopyBarriers PROPERTIES LABELS "size:small" TIMEOUT 30)
+
     function(rachis_add_c_abi_fault_tests target test_prefix backend adapter size skip_host_only)
         if(backend STREQUAL "RACHIS_BACKEND_D3D12")
             set(fault_backend_def RACHIS_CABI_FAULT_BACKEND_D3D12=1)
