@@ -8,6 +8,7 @@
 #include "D3D12/D3D12RuntimePolicies.h"
 #include "D3D12/D3D12TestHooks.h"
 
+#include <dcomp.h>
 #include <dxgi1_6.h>
 #include <wrl/client.h>
 
@@ -54,6 +55,7 @@ namespace rachis::d3d12
 
         struct SurfaceRecord final
         {
+            SurfaceKind kind = SurfaceKind::win32;
             HWND window = nullptr;
             std::string label;
             bool swapchainClaimed = false;
@@ -72,6 +74,9 @@ namespace rachis::d3d12
             mutable std::mutex recordMutex;
             std::shared_ptr<SurfaceRecord> surface;
             ComPtr<IDXGISwapChain4> swapchain;
+            ComPtr<IDCompositionDevice> compositionDevice;
+            ComPtr<IDCompositionTarget> compositionTarget;
+            ComPtr<IDCompositionVisual> compositionVisual;
             UniqueWaitableHandle frameLatencyWaitableObject;
             SwapchainLatencySlotState latencySlot;
             SwapchainDesc desc;
@@ -211,7 +216,7 @@ namespace rachis::d3d12
             }
 
             auto presentModes = PresentModeMask::fifo;
-            if (tearingSupported)
+            if (tearingSupported && surface.kind == SurfaceKind::win32)
             {
                 presentModes |= PresentModeMask::immediate;
             }
@@ -321,6 +326,21 @@ namespace rachis::d3d12
 
         void releaseNativeSwapchain(SwapchainRecord& record) noexcept
         {
+            if (record.compositionVisual != nullptr)
+            {
+                static_cast<void>(record.compositionVisual->SetContent(nullptr));
+            }
+            if (record.compositionTarget != nullptr)
+            {
+                static_cast<void>(record.compositionTarget->SetRoot(nullptr));
+            }
+            if (record.compositionDevice != nullptr)
+            {
+                static_cast<void>(record.compositionDevice->Commit());
+            }
+            record.compositionVisual.Reset();
+            record.compositionTarget.Reset();
+            record.compositionDevice.Reset();
             record.frameLatencyWaitableObject.reset();
             record.latencySlot.reset();
             const auto remainingReferences = record.swapchain.Reset();
@@ -569,17 +589,59 @@ namespace rachis::d3d12
             return {};
         }
 
-        [[nodiscard]] constexpr bool allowsTearing(PresentMode mode) noexcept
+        [[nodiscard]] constexpr bool isWin32SurfaceKind(SurfaceKind kind) noexcept
         {
-            return mode == PresentMode::immediate;
+            return kind == SurfaceKind::win32 || kind == SurfaceKind::win32Composition;
         }
 
-        [[nodiscard]] Result<ComPtr<IDXGISwapChain4>> createFlipModelSwapchain(IDXGIFactory7& factory,
-                                                                               ID3D12CommandQueue* graphicsQueue,
-                                                                               HWND window,
-                                                                               const SwapchainDesc& desc)
+        [[nodiscard]] constexpr bool allowsTearing(SurfaceKind kind, PresentMode mode) noexcept
         {
-            const DXGI_SWAP_CHAIN_DESC1 nativeDesc{
+            return kind == SurfaceKind::win32 && mode == PresentMode::immediate;
+        }
+
+        struct NativeSwapchainResources final
+        {
+            ComPtr<IDXGISwapChain4> swapchain;
+            ComPtr<IDCompositionDevice> compositionDevice;
+            ComPtr<IDCompositionTarget> compositionTarget;
+            ComPtr<IDCompositionVisual> compositionVisual;
+        };
+
+        using DCompositionCreateDeviceFn = HRESULT(WINAPI*)(IDXGIDevice*, REFIID, void**);
+
+        [[nodiscard]] Result<DCompositionCreateDeviceFn> loadDCompositionCreateDevice()
+        {
+            static const auto state = []() -> std::pair<DCompositionCreateDeviceFn, DWORD> {
+                HMODULE module = LoadLibraryExW(L"dcomp.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+                if (module == nullptr)
+                {
+                    return {nullptr, GetLastError()};
+                }
+                auto* const fn =
+                    reinterpret_cast<DCompositionCreateDeviceFn>(GetProcAddress(module, "DCompositionCreateDevice"));
+                if (fn == nullptr)
+                {
+                    const DWORD error = GetLastError();
+                    static_cast<void>(FreeLibrary(module));
+                    return {nullptr, error};
+                }
+                return {fn, ERROR_SUCCESS};
+            }();
+            if (state.first == nullptr)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::backendUnavailable,
+                    static_cast<std::int64_t>(state.second),
+                    "DirectComposition (dcomp.dll) is unavailable on this system.",
+                });
+            }
+            return state.first;
+        }
+
+        [[nodiscard]] DXGI_SWAP_CHAIN_DESC1 makeNativeSwapchainDesc(SurfaceKind kind,
+                                                                    const SwapchainDesc& desc) noexcept
+        {
+            return DXGI_SWAP_CHAIN_DESC1{
                 .Width = desc.width,
                 .Height = desc.height,
                 .Format = nativeFormat(desc.format),
@@ -590,30 +652,8 @@ namespace rachis::d3d12
                 .Scaling = DXGI_SCALING_STRETCH,
                 .SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD,
                 .AlphaMode = DXGI_ALPHA_MODE_IGNORE,
-                .Flags = d3d12SwapchainFlags(allowsTearing(desc.presentMode)),
+                .Flags = d3d12SwapchainFlags(allowsTearing(kind, desc.presentMode)),
             };
-            ComPtr<IDXGISwapChain1> initialSwapchain;
-            const HRESULT createResult =
-                factory.CreateSwapChainForHwnd(graphicsQueue, window, &nativeDesc, nullptr, nullptr, &initialSwapchain);
-            if (FAILED(createResult))
-            {
-                return std::unexpected(
-                    nativeError(ErrorCode::nativeFailure, createResult, "IDXGIFactory7::CreateSwapChainForHwnd"));
-            }
-            const HRESULT associationResult = factory.MakeWindowAssociation(window, DXGI_MWA_NO_ALT_ENTER);
-            if (FAILED(associationResult))
-            {
-                return std::unexpected(
-                    nativeError(ErrorCode::nativeFailure, associationResult, "IDXGIFactory7::MakeWindowAssociation"));
-            }
-
-            ComPtr<IDXGISwapChain4> swapchain;
-            const HRESULT queryResult = initialSwapchain.As(&swapchain);
-            if (FAILED(queryResult))
-            {
-                return std::unexpected(nativeError(ErrorCode::nativeFailure, queryResult, "IDXGISwapChain4 query"));
-            }
-            return swapchain;
         }
 
         [[nodiscard]] Status applyColorSpaceAndFrameLatency(IDXGISwapChain4& swapchain, const SwapchainDesc& desc)
@@ -643,18 +683,158 @@ namespace rachis::d3d12
             return {};
         }
 
-        [[nodiscard]] std::shared_ptr<SwapchainRecord> makeSwapchainRecord(ComPtr<IDXGISwapChain4> swapchain,
+        [[nodiscard]] Result<NativeSwapchainResources> createFlipModelSwapchain(IDXGIFactory7& factory,
+                                                                                ID3D12CommandQueue* graphicsQueue,
+                                                                                HWND window,
+                                                                                const SwapchainDesc& desc)
+        {
+            const auto nativeDesc = makeNativeSwapchainDesc(SurfaceKind::win32, desc);
+            ComPtr<IDXGISwapChain1> initialSwapchain;
+            const HRESULT createResult =
+                factory.CreateSwapChainForHwnd(graphicsQueue, window, &nativeDesc, nullptr, nullptr, &initialSwapchain);
+            if (FAILED(createResult))
+            {
+                return std::unexpected(
+                    nativeError(ErrorCode::nativeFailure, createResult, "IDXGIFactory7::CreateSwapChainForHwnd"));
+            }
+            const HRESULT associationResult = factory.MakeWindowAssociation(window, DXGI_MWA_NO_ALT_ENTER);
+            if (FAILED(associationResult))
+            {
+                return std::unexpected(
+                    nativeError(ErrorCode::nativeFailure, associationResult, "IDXGIFactory7::MakeWindowAssociation"));
+            }
+
+            ComPtr<IDXGISwapChain4> swapchain;
+            const HRESULT queryResult = initialSwapchain.As(&swapchain);
+            if (FAILED(queryResult))
+            {
+                return std::unexpected(nativeError(ErrorCode::nativeFailure, queryResult, "IDXGISwapChain4 query"));
+            }
+            auto configured = applyColorSpaceAndFrameLatency(*swapchain.Get(), desc);
+            if (!configured)
+            {
+                return std::unexpected(std::move(configured.error()));
+            }
+            return NativeSwapchainResources{.swapchain = std::move(swapchain)};
+        }
+
+        [[nodiscard]] Result<NativeSwapchainResources> createCompositionSwapchain(IDXGIFactory7& factory,
+                                                                                  ID3D12CommandQueue* graphicsQueue,
+                                                                                  HWND window,
+                                                                                  const SwapchainDesc& desc)
+        {
+            auto createDCompDevice = loadDCompositionCreateDevice();
+            if (!createDCompDevice)
+            {
+                return std::unexpected(std::move(createDCompDevice.error()));
+            }
+
+            const auto nativeDesc = makeNativeSwapchainDesc(SurfaceKind::win32Composition, desc);
+            ComPtr<IDXGISwapChain1> initialSwapchain;
+            const HRESULT createResult =
+                factory.CreateSwapChainForComposition(graphicsQueue, &nativeDesc, nullptr, &initialSwapchain);
+            if (FAILED(createResult))
+            {
+                return std::unexpected(nativeError(
+                    ErrorCode::nativeFailure, createResult, "IDXGIFactory7::CreateSwapChainForComposition"));
+            }
+
+            ComPtr<IDXGISwapChain4> swapchain;
+            const HRESULT queryResult = initialSwapchain.As(&swapchain);
+            if (FAILED(queryResult))
+            {
+                return std::unexpected(nativeError(ErrorCode::nativeFailure, queryResult, "IDXGISwapChain4 query"));
+            }
+            auto configured = applyColorSpaceAndFrameLatency(*swapchain.Get(), desc);
+            if (!configured)
+            {
+                return std::unexpected(std::move(configured.error()));
+            }
+
+            ComPtr<IDCompositionDevice> compositionDevice;
+            const HRESULT dcompDeviceResult = (*createDCompDevice)(nullptr, IID_PPV_ARGS(&compositionDevice));
+            if (FAILED(dcompDeviceResult))
+            {
+                return std::unexpected(
+                    nativeError(ErrorCode::nativeFailure, dcompDeviceResult, "DCompositionCreateDevice"));
+            }
+
+            ComPtr<IDCompositionTarget> compositionTarget;
+            const HRESULT targetResult = compositionDevice->CreateTargetForHwnd(window, TRUE, &compositionTarget);
+            if (FAILED(targetResult))
+            {
+                return std::unexpected(
+                    nativeError(ErrorCode::nativeFailure, targetResult, "IDCompositionDevice::CreateTargetForHwnd"));
+            }
+
+            ComPtr<IDCompositionVisual> compositionVisual;
+            const HRESULT visualResult = compositionDevice->CreateVisual(&compositionVisual);
+            if (FAILED(visualResult))
+            {
+                return std::unexpected(
+                    nativeError(ErrorCode::nativeFailure, visualResult, "IDCompositionDevice::CreateVisual"));
+            }
+
+            const HRESULT contentResult = compositionVisual->SetContent(swapchain.Get());
+            if (FAILED(contentResult))
+            {
+                return std::unexpected(
+                    nativeError(ErrorCode::nativeFailure, contentResult, "IDCompositionVisual::SetContent"));
+            }
+
+            const HRESULT rootResult = compositionTarget->SetRoot(compositionVisual.Get());
+            if (FAILED(rootResult))
+            {
+                static_cast<void>(compositionVisual->SetContent(nullptr));
+                return std::unexpected(
+                    nativeError(ErrorCode::nativeFailure, rootResult, "IDCompositionTarget::SetRoot"));
+            }
+
+            const HRESULT commitResult = compositionDevice->Commit();
+            if (FAILED(commitResult))
+            {
+                static_cast<void>(compositionVisual->SetContent(nullptr));
+                static_cast<void>(compositionTarget->SetRoot(nullptr));
+                return std::unexpected(
+                    nativeError(ErrorCode::nativeFailure, commitResult, "IDCompositionDevice::Commit"));
+            }
+
+            return NativeSwapchainResources{
+                .swapchain = std::move(swapchain),
+                .compositionDevice = std::move(compositionDevice),
+                .compositionTarget = std::move(compositionTarget),
+                .compositionVisual = std::move(compositionVisual),
+            };
+        }
+
+        [[nodiscard]] Result<NativeSwapchainResources> createNativeSwapchain(IDXGIFactory7& factory,
+                                                                             ID3D12CommandQueue* graphicsQueue,
+                                                                             const SurfaceRecord& surface,
+                                                                             const SwapchainDesc& desc)
+        {
+            if (surface.kind == SurfaceKind::win32Composition)
+            {
+                return createCompositionSwapchain(factory, graphicsQueue, surface.window, desc);
+            }
+            return createFlipModelSwapchain(factory, graphicsQueue, surface.window, desc);
+        }
+
+        [[nodiscard]] std::shared_ptr<SwapchainRecord> makeSwapchainRecord(NativeSwapchainResources native,
                                                                            std::shared_ptr<SurfaceRecord> surface,
                                                                            const SwapchainDesc& desc)
         {
+            const auto surfaceKind = surface->kind;
             auto record = std::make_shared<SwapchainRecord>();
-            record->swapchain = std::move(swapchain);
+            record->swapchain = std::move(native.swapchain);
+            record->compositionDevice = std::move(native.compositionDevice);
+            record->compositionTarget = std::move(native.compositionTarget);
+            record->compositionVisual = std::move(native.compositionVisual);
             record->frameLatencyWaitableObject.reset(record->swapchain->GetFrameLatencyWaitableObject());
             record->surface = std::move(surface);
             record->desc = desc;
             record->label = desc.label;
             record->desc.label = record->label;
-            record->allowTearing = allowsTearing(desc.presentMode);
+            record->allowTearing = allowsTearing(surfaceKind, desc.presentMode);
             if (std::uint32_t presentCount = 0; readPresentCount(*record->swapchain.Get(), presentCount))
             {
                 record->presentation.start(record->generation, presentCount);
@@ -1018,7 +1198,7 @@ namespace rachis::d3d12
     Result<SurfaceHandle> SwapchainManager::createSurface(const SurfaceDesc& desc)
     {
         auto* const window = static_cast<HWND>(desc.windowHandle);
-        if (desc.kind != SurfaceKind::win32 || window == nullptr || IsWindow(window) == FALSE)
+        if (!isWin32SurfaceKind(desc.kind) || window == nullptr || IsWindow(window) == FALSE)
         {
             return std::unexpected(Error{
                 ErrorCode::invalidArgument,
@@ -1027,6 +1207,7 @@ namespace rachis::d3d12
             });
         }
         auto record = std::make_shared<SurfaceRecord>();
+        record->kind = desc.kind;
         record->window = window;
         record->label = desc.label;
 
@@ -1119,20 +1300,16 @@ namespace rachis::d3d12
         }
         PendingSurfaceClaim pendingClaim(surface, impl_->mutex);
 
-        auto nativeSwapchain = createFlipModelSwapchain(*impl_->factory.Get(), *graphicsQueue, surface->window, desc);
+        auto nativeSwapchain = createNativeSwapchain(*impl_->factory.Get(), *graphicsQueue, *surface, desc);
         if (!nativeSwapchain)
         {
             return std::unexpected(std::move(nativeSwapchain.error()));
-        }
-        auto configured = applyColorSpaceAndFrameLatency(*nativeSwapchain->Get(), desc);
-        if (!configured)
-        {
-            return std::unexpected(std::move(configured.error()));
         }
         auto record = makeSwapchainRecord(std::move(*nativeSwapchain), std::move(surface), desc);
         auto buffers = createBackBuffers(resources, views, *record);
         if (!buffers)
         {
+            releaseNativeSwapchain(*record);
             return std::unexpected(std::move(buffers.error()));
         }
 
@@ -1147,6 +1324,7 @@ namespace rachis::d3d12
             }
         }
         releaseBackBuffers(resources, views, *record);
+        releaseNativeSwapchain(*record);
         return std::unexpected(std::move(handle.error()));
     }
 

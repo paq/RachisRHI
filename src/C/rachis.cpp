@@ -234,6 +234,11 @@ namespace
     static_assert(bitsOf(RACHIS_ASPECT_STENCIL) == bitsOf(rachis::TextureAspect::stencil));
     static_assert(bitsOf(RACHIS_LOAD_OP_DISCARD) == bitsOf(rachis::LoadOperation::discard));
     static_assert(bitsOf(RACHIS_STORE_OP_DISCARD) == bitsOf(rachis::StoreOperation::discard));
+    static_assert(bitsOf(RACHIS_SURFACE_WIN32) == bitsOf(rachis::SurfaceKind::win32));
+    static_assert(bitsOf(RACHIS_SURFACE_WAYLAND) == bitsOf(rachis::SurfaceKind::wayland));
+    static_assert(bitsOf(RACHIS_SURFACE_XCB) == bitsOf(rachis::SurfaceKind::xcb));
+    static_assert(bitsOf(RACHIS_SURFACE_CA_METAL_LAYER) == bitsOf(rachis::SurfaceKind::caMetalLayer));
+    static_assert(bitsOf(RACHIS_SURFACE_WIN32_COMPOSITION) == bitsOf(rachis::SurfaceKind::win32Composition));
     static_assert(bitsOf(RACHIS_COLOR_SPACE_HDR10_ST2084) == bitsOf(rachis::SurfaceColorSpace::hdr10St2084));
     static_assert(bitsOf(RACHIS_PRESENT_FIFO) == bitsOf(rachis::PresentMode::fifo));
     static_assert(bitsOf(RACHIS_PRESENT_IMMEDIATE) == bitsOf(rachis::PresentMode::immediate));
@@ -3539,7 +3544,7 @@ extern "C"
             {
                 return fail(error, RACHIS_STATUS_ABI_MISMATCH, "unsupported surface descriptor layout");
             }
-            if (desc->kind > RACHIS_SURFACE_CA_METAL_LAYER)
+            if (desc->kind > RACHIS_SURFACE_WIN32_COMPOSITION)
             {
                 return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "invalid surface kind");
             }

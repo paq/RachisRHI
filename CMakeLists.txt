@@ -1349,7 +1349,7 @@ file(GLOB_RECURSE rachis_rhi_public_headers
 
 foreach(header IN LISTS rachis_rhi_public_headers)
     file(READ "${header}" contents)
-    if(contents MATCHES "#[ \t]*include[^\n]*(windows\\.h|d3d12\\.h|dxgi|wrl|vulkan\\.h|volk\\.h|vk_mem_alloc|Metal/Metal\\.h)"
+    if(contents MATCHES "#[ \t]*include[^\n]*(windows\\.h|d3d12\\.h|dxgi|dcomp\\.h|wrl|vulkan\\.h|volk\\.h|vk_mem_alloc|Metal/Metal\\.h)"
         OR contents MATCHES "rachis::d3d12"
         OR contents MATCHES "Vk(Instance|Device|Queue|SwapchainKHR)"
         OR contents MATCHES "CAMetalLayer"

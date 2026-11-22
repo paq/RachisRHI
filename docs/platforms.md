@@ -22,7 +22,7 @@ This page describes the host platforms RachisRHI targets, optional feature avail
 
 | Host | Backend | Runtime requirement |
 | --- | --- | --- |
-| Windows 11 x64 | Direct3D 12 | Direct3D 12 adapter at feature level 12.0+ (or WARP software adapter) and DXGI 1.6 |
+| Windows 11 x64 | Direct3D 12 | Direct3D 12 adapter at feature level 12.0+ (or WARP software adapter) and DXGI 1.6 (`dcomp.dll` loaded dynamically when using `SurfaceKind::win32Composition`) |
 | Windows 11 x64 | Vulkan 1.3 | Vulkan 1.3 loader (`vulkan-1.dll`) and a driver meeting the [Vulkan profile](#vulkan-profile) |
 | Linux x64 | Vulkan 1.3 | Vulkan 1.3 loader (`libvulkan.so.1`) and a driver meeting the [Vulkan profile](#vulkan-profile); presentation requires Wayland or XCB (offscreen work does not) |
 | macOS 26.0+ (Apple silicon) | Metal 4 | GPU in `MTLGPUFamilyMetal4` (Intel Macs are rejected) |

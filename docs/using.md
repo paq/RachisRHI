@@ -300,14 +300,15 @@ Create a surface by populating `SurfaceDesc` (`Rachis/Presentation.h`):
 
 | `SurfaceKind` | `windowHandle` | `displayHandle` | Notes |
 | --- | --- | --- | --- |
-| `win32` | `HWND` | Ignored | Windows only |
+| `win32` | `HWND` | Ignored | Windows only (`CreateSwapChainForHwnd` on D3D12, `VK_KHR_win32_surface` on Vulkan) |
+| `win32Composition` | `HWND` | Ignored | Windows Direct3D 12 only (`CreateSwapChainForComposition` + DirectComposition; `PresentMode::fifo` only; pairs with `WS_EX_NOREDIRECTIONBITMAP`); rejected by Vulkan |
 | `wayland` | `wl_surface*` | `wl_display*` | Both non-null |
 | `xcb` | `xcb_window_t` cast via `uintptr_t` (`void*`) | `xcb_connection_t*` | Window ID passed as pointer integer value, **not** `&window` |
 | `caMetalLayer` | `CAMetalLayer*` or `NSView*` | Ignored | Native Metal only; rejected by MoltenVK |
 
 Surface and swapchain lifecycle rules:
 - **Ownership & destruction:** RachisRHI does not take ownership of the window, display, or layer; keep native objects alive until `destroySurface` completes. Destroy all swapchains attached to a surface before calling `destroySurface` (`ErrorCode::invalidState` otherwise).
-- **One swapchain per native window:** RachisRHI allows at most one active swapchain per `HWND`, `(wl_display*, wl_surface*)`, `(xcb_connection_t*, xcb_window_t)`, or `CAMetalLayer*` within a `Device`. Cross-device swapchains on the same Wayland surface violate the Wayland protocol inside Mesa.
+- **One swapchain per native window:** RachisRHI allows at most one active swapchain per `HWND` (across both `win32` and `win32Composition` surfaces), `(wl_display*, wl_surface*)`, `(xcb_connection_t*, xcb_window_t)`, or `CAMetalLayer*` within a `Device`. Cross-device swapchains on the same Wayland surface violate the Wayland protocol inside Mesa.
 - **Metal layer & `NSView` handling:** If passed an `NSView*`, RachisRHI expects a layer-backed view carrying a `CAMetalLayer` (reads occur on the main thread when needed). Occluded or unavailable drawables return `ErrorCode::notReady` on acquire or `PresentStatus::occluded` on present.
 - **Metal threads & shared-event limit:** Surface and swapchain calls drain an internal autorelease pool and may run on threads without an active `NSAutoreleasePool`. If the system-wide IOSurface shared-event table is exhausted, `createDevice` returns `ErrorCode::resourceExhausted` until the holding process exits.
 - **Surface usage flags:** Query `SurfaceCapabilities::usages` first. On Direct3D 12, requesting `TextureUsage::sampled` with `rgba8UnormSrgb` or `bgra8UnormSrgb` fails with `ErrorCode::unsupported` unless the adapter supports `CastingFullyTypedFormatSupported`.

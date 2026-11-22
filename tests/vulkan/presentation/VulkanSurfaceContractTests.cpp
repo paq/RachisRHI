@@ -91,6 +91,14 @@ TEST_CASE("Vulkan Win32 surfaces reject malformed windows and expose capability-
 
     TestWindow const window(false);
     REQUIRE(window.get() != nullptr);
+    auto composition = device.createSurface({
+        .kind = rachis::SurfaceKind::win32Composition,
+        .windowHandle = window.get(),
+        .label = "Vulkan unsupported composition surface",
+    });
+    REQUIRE_FALSE(composition.has_value());
+    CHECK(composition.error().code == rachis::ErrorCode::unsupported);
+
     auto surface = device.createSurface({
         .kind = rachis::SurfaceKind::win32,
         .windowHandle = window.get(),
