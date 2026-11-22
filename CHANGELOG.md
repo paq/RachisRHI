@@ -1,10 +1,5 @@
 # Changelog
 
-## Unreleased
-
-- Metal: `PresentMode::immediate` keeps two drawables (`CAMetalLayer.maximumDrawableCount = 2`), so the frame rate follows the CPU and GPU work instead of the compositor's rate; `fifo` keeps three. A windowed layer with three drawables and display sync off still returned drawables at about the display rate, often a vsync late.
-- Metal: `present` asks the layer for the next drawable right away, so the hop to `nextDrawable` overlaps the caller's next frame instead of adding 1-10 ms of thread wake-up to the next acquire.
-
 ## 0.4.0
 
 - `Device::acquireNextImage(swapchain, timeout)` and `rachis_swapchain_acquire_for` (`ErrorCode::timeout` / `RACHIS_STATUS_TIMEOUT`, `RACHIS_ABI_VERSION` 4: `librachis.so.4` / `librachis.4.dylib`).

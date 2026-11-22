@@ -648,7 +648,6 @@ TEST_CASE("Metal present asks for the next drawable before the next acquire",
         REQUIRE(presented);
         CHECK(*presented == rachis::PresentStatus::presented);
 
-        // No acquire has run, yet present has already asked the layer for the next drawable.
         REQUIRE(release.gate->waitForEntry(std::chrono::seconds(10)));
         auto pending = device.acquireNextImage(*swapchain, std::chrono::milliseconds(0));
         REQUIRE_FALSE(pending);

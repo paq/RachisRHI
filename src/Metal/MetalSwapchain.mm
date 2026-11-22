@@ -156,9 +156,6 @@ namespace rachis::metal
 
         void applyMetalPresentMode(CAMetalLayer* layer, PresentMode mode) noexcept
         {
-            // A windowed layer is composited at the display's rate. With three drawables and display sync off,
-            // nextDrawable still hands drawables back at that rate, so immediate keeps only two: the one the
-            // compositor holds and the one being drawn. fifo keeps three so a frame can queue behind vsync.
             const bool immediate = mode == PresentMode::immediate;
             layer.displaySyncEnabled = immediate ? NO : YES;
             layer.maximumDrawableCount = immediate ? 2 : 3;
@@ -1273,8 +1270,6 @@ namespace rachis::metal
 #endif
             {
                 const auto status = submitMetalDrawablePresent(*native_, record, timeline, renderComplete);
-                // Ask for the next drawable now, so the thread hop to nextDrawable overlaps the caller's next
-                // frame instead of adding its wake-up latency to the next acquire.
                 if (auto* surface = native_->surfaces.find(record.surface); record.drawableFetch == nullptr &&
                                                                             surface != nullptr && *surface != nullptr &&
                                                                             (*surface)->layer != nil)
