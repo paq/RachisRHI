@@ -1275,9 +1275,9 @@ namespace rachis::metal
                 const auto status = submitMetalDrawablePresent(*native_, record, timeline, renderComplete);
                 // Ask for the next drawable now, so the thread hop to nextDrawable overlaps the caller's next
                 // frame instead of adding its wake-up latency to the next acquire.
-                if (auto* surface = native_->surfaces.find(record.surface);
-                    record.drawableFetch == nullptr && surface != nullptr && *surface != nullptr &&
-                    (*surface)->layer != nil)
+                if (auto* surface = native_->surfaces.find(record.surface); record.drawableFetch == nullptr &&
+                                                                            surface != nullptr && *surface != nullptr &&
+                                                                            (*surface)->layer != nil)
                 {
                     record.drawableFetch = startMetalDrawableFetch((*surface)->layer);
                 }
