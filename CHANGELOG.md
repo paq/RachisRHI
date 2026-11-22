@@ -1,9 +1,5 @@
 # Changelog
 
-## Unreleased
-
-- Metal: `createDevice` reports `ErrorCode::resourceExhausted` for a `nil` Metal 4 command queue only when the live `IOSurfaceSharedEvent` count is at or near the 65,535 cap; below it, the failure is `ErrorCode::notReady` with retry guidance.
-
 ## 0.4.0
 
 - `Device::acquireNextImage(swapchain, timeout)` and `rachis_swapchain_acquire_for` (`ErrorCode::timeout` / `RACHIS_STATUS_TIMEOUT`, `RACHIS_ABI_VERSION` 4: `librachis.so.4` / `librachis.4.dylib`).

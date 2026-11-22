@@ -455,8 +455,7 @@ namespace rachis::metal
         }
 
         // Full system IOSurfaceSharedEvent table (65535 entries) makes MTL4CommandQueue creation return nil with no
-        // NSError. A nil queue without an NSError has other causes too, so the table counts as full only when its
-        // live count is within sharedEventTableHeadroom of the cap and a fresh MTLSharedEvent also fails.
+        // NSError.
         constexpr std::uint64_t systemSharedEventLimit = 65535;
         constexpr std::uint64_t sharedEventTableHeadroom = 64;
 

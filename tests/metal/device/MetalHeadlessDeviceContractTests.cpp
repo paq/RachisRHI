@@ -193,7 +193,6 @@ TEST_CASE("Metal device create rejects injected missing features and releases pa
     }
 
     {
-        // Nil queue, no NSError and a failing MTLSharedEvent with the table at its cap: exhausted, reported at once.
         rachis::metal::ScopedFailCommandApiCreate const failCommandApi;
         rachis::metal::ScopedFailSharedEventProbe const failSharedEvent;
         rachis::metal::ScopedSharedEventCount const fullTable(65535);
@@ -212,7 +211,6 @@ TEST_CASE("Metal device create rejects injected missing features and releases pa
     }
 
     {
-        // The same failures with the table far from its cap are transient: retry guidance, not exhaustion.
         rachis::metal::ScopedFailCommandApiCreate const failCommandApi;
         rachis::metal::ScopedFailSharedEventProbe const failSharedEvent;
         rachis::metal::ScopedSharedEventCount const roomyTable(1024);
@@ -228,7 +226,6 @@ TEST_CASE("Metal device create rejects injected missing features and releases pa
     }
 
     {
-        // A table near its cap is not exhausted while a fresh MTLSharedEvent still succeeds.
         rachis::metal::ScopedFailCommandApiCreate const failCommandApi;
         rachis::metal::ScopedSharedEventCount const nearlyFullTable(65500);
         auto created = rachis::createDevice(rachis::DeviceDesc{
@@ -242,7 +239,6 @@ TEST_CASE("Metal device create rejects injected missing features and releases pa
     }
 
     {
-        // Without a readable count the table cannot be shown to be full, so the failure stays retryable.
         rachis::metal::ScopedFailCommandApiCreate const failCommandApi;
         rachis::metal::ScopedFailSharedEventProbe const failSharedEvent;
         rachis::metal::ScopedSharedEventCount const unreadableTable(std::nullopt);
