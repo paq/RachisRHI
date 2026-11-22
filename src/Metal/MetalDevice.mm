@@ -1276,6 +1276,13 @@ void rachis::metal::setFailSharedEventProbe(bool fail) noexcept
     metalTestingState().failSharedEventProbe = fail;
 }
 
+void rachis::metal::setSharedEventCountOverride(bool active, std::optional<std::uint64_t> count) noexcept
+{
+    std::scoped_lock const lock(metalTestingState().mutex);
+    metalTestingState().overrideSharedEventCount = active;
+    metalTestingState().sharedEventCountOverride = active ? count : std::nullopt;
+}
+
 void rachis::metal::setFailNextLogStateCreate(bool fail) noexcept
 {
     std::scoped_lock const lock(metalTestingState().mutex);

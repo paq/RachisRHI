@@ -457,6 +457,7 @@ namespace rachis::metal
         // Full system IOSurfaceSharedEvent table (65535 entries) makes MTL4CommandQueue creation return nil with no
         // NSError.
         constexpr std::uint64_t systemSharedEventLimit = 65535;
+        constexpr std::uint64_t sharedEventTableHeadroom = 64;
 
         [[nodiscard]] bool sharedEventCreationFails(id<MTLDevice> selected)
         {
@@ -477,6 +478,15 @@ namespace rachis::metal
 
         [[nodiscard]] std::optional<std::uint64_t> systemSharedEventCount()
         {
+#ifdef RACHIS_TESTING
+            {
+                std::scoped_lock const lock(metalTestingState().mutex);
+                if (metalTestingState().overrideSharedEventCount)
+                {
+                    return metalTestingState().sharedEventCountOverride;
+                }
+            }
+#endif
             io_registry_entry_t const root = IORegistryGetRootEntry(kIOMainPortDefault);
             if (root == MACH_PORT_NULL)
             {
@@ -509,18 +519,18 @@ namespace rachis::metal
             return count;
         }
 
-        [[nodiscard]] Error sharedEventTableFullError(std::string_view failedObject)
+        [[nodiscard]] bool sharedEventTableNearlyFull(std::optional<std::uint64_t> count) noexcept
         {
-            std::string message = "System-wide IOSurface shared-event table is full";
-            if (const auto count = systemSharedEventCount(); count.has_value())
-            {
-                message += " (";
-                message += std::to_string(*count);
-                message += " of ";
-                message += std::to_string(systemSharedEventLimit);
-                message += " in use)";
-            }
-            message += "; ";
+            return count.has_value() && *count + sharedEventTableHeadroom >= systemSharedEventLimit;
+        }
+
+        [[nodiscard]] Error sharedEventTableFullError(std::string_view failedObject, std::uint64_t count)
+        {
+            std::string message = "System-wide IOSurface shared-event table is full (";
+            message += std::to_string(count);
+            message += " of ";
+            message += std::to_string(systemSharedEventLimit);
+            message += " in use); ";
             message += failedObject;
             message += " and MTLSharedEvent returned nil. Exit the process holding shared events before retrying "
                        "(top -o ports).";
@@ -543,9 +553,13 @@ namespace rachis::metal
                 {
                     return attempt.queue;
                 }
-                if (attempt.error == nil && sharedEventCreationFails(selected))
+                if (attempt.error == nil)
                 {
-                    return std::unexpected(sharedEventTableFullError(attempt.failedObject));
+                    if (const auto count = systemSharedEventCount();
+                        sharedEventTableNearlyFull(count) && sharedEventCreationFails(selected))
+                    {
+                        return std::unexpected(sharedEventTableFullError(attempt.failedObject, *count));
+                    }
                 }
             }
 

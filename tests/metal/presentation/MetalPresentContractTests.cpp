@@ -458,6 +458,9 @@ TEST_CASE("Metal timed acquire returns timeout within its bound while presents h
           "[size:large][rhi][metal][present][gpu][regression]")
 {
     auto feedbackGate = std::make_shared<rachis::metal::MetalCommitFeedbackGate>();
+    auto created = rachis::createDevice(metalDesc());
+    REQUIRE(created);
+    auto device = std::move(*created);
     struct ScopedGateRelease final
     {
         std::shared_ptr<rachis::metal::MetalCommitFeedbackGate> gate;
@@ -466,10 +469,6 @@ TEST_CASE("Metal timed acquire returns timeout within its bound while presents h
             gate->release();
         }
     } const releaseOnExit{feedbackGate};
-
-    auto created = rachis::createDevice(metalDesc());
-    REQUIRE(created);
-    auto device = std::move(*created);
     LayerHost const host(64, 48);
     auto surface = device.createSurface({
         .kind = rachis::SurfaceKind::caMetalLayer,
@@ -862,6 +861,9 @@ TEST_CASE("Metal presents retire only after the commit feedback of earlier graph
           "[size:large][rhi][metal][present][gpu][regression]")
 {
     auto feedbackGate = std::make_shared<rachis::metal::MetalCommitFeedbackGate>();
+    auto created = rachis::createDevice(metalDesc());
+    REQUIRE(created);
+    auto device = std::move(*created);
     struct ScopedGateRelease final
     {
         std::shared_ptr<rachis::metal::MetalCommitFeedbackGate> gate;
@@ -870,10 +872,6 @@ TEST_CASE("Metal presents retire only after the commit feedback of earlier graph
             gate->release();
         }
     } const releaseOnExit{feedbackGate};
-
-    auto created = rachis::createDevice(metalDesc());
-    REQUIRE(created);
-    auto device = std::move(*created);
     LayerHost const host(80, 60);
     auto surface = device.createSurface({
         .kind = rachis::SurfaceKind::caMetalLayer,

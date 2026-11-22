@@ -1490,6 +1490,8 @@ namespace rachis::metal
         std::uint32_t failCommandApiCreateAttempts = 0;
         std::string failCommandApiNativeDescription;
         bool failSharedEventProbe = false;
+        bool overrideSharedEventCount = false;
+        std::optional<std::uint64_t> sharedEventCountOverride;
         bool failNextLogStateCreate = false;
         bool failNextDepthStencilStateCreate = false;
         bool failNextDrawable = false;
