@@ -88,6 +88,35 @@ TEST_CASE("Metal presentation feedback excludes dropped drawables and stays mono
     CHECK(feedback.displayedSequence() == 3);
 }
 
+TEST_CASE("Metal presentation feedback settles hidden and replaced drawables apart from displayed ones",
+          "[size:small][rhi][metal][feedback][regression]")
+{
+    rachis::metal::MetalPresentationFeedback feedback;
+    REQUIRE(feedback.ticksPerSecond() > 0);
+    for (std::uint64_t sequence = 1; sequence <= 4; ++sequence)
+    {
+        feedback.submitted(sequence);
+    }
+    feedback.presented(1, 2.0);
+    feedback.presented(2, 0.0, true);
+    feedback.presented(3, 0.0, false);
+    feedback.presented(4, 0.0, true);
+
+    std::array<rachis::PresentTiming, 4> records{};
+    const auto snapshot = feedback.readTimings(1, records);
+    REQUIRE(snapshot.recordCount == 4);
+    CHECK(records[0].flags == rachis::PresentTimingFlags::displayed);
+    CHECK(records[0].presentTime == 2 * feedback.ticksPerSecond());
+    // Replaced by a newer present while visible.
+    CHECK(records[1].flags == rachis::PresentTimingFlags::dropped);
+    // Not visible: nothing could be shown, so it is not counted as dropped.
+    CHECK(records[2].flags == rachis::PresentTimingFlags::hidden);
+    // The newest present, visible but not shown: the outcome is unknown.
+    CHECK(records[3].flags == rachis::PresentTimingFlags::none);
+    CHECK(records[3].presentTime == 0);
+    CHECK(feedback.displayedSequence() == 1);
+}
+
 #if RACHIS_ENABLE_METAL
 
 TEST_CASE("Metal failed submissions keep command buffers and do not publish points",

@@ -944,6 +944,34 @@ namespace rachis::d3d12
             return attempt.result != DXGI_STATUS_OCCLUDED;
         }
 
+        [[nodiscard]] std::uint64_t queryPerformanceFrequency() noexcept
+        {
+            LARGE_INTEGER frequency{};
+            return QueryPerformanceFrequency(&frequency) != FALSE && frequency.QuadPart > 0
+                       ? static_cast<std::uint64_t>(frequency.QuadPart)
+                       : 0;
+        }
+
+        // Reads the swapchain's frame statistics into its presentation progress and present timings.
+        void observeFrameStatistics(SwapchainRecord& record) noexcept
+        {
+            auto& presentation = record.presentation;
+            if (!presentation.supported() || record.swapchain == nullptr)
+            {
+                return;
+            }
+            DXGI_FRAME_STATISTICS statistics{};
+            if (FAILED(record.swapchain->GetFrameStatistics(&statistics)))
+            {
+                return;
+            }
+            presentation.observedFrame(
+                statistics.PresentCount,
+                statistics.PresentRefreshCount,
+                statistics.SyncRefreshCount,
+                statistics.SyncQPCTime.QuadPart > 0 ? static_cast<std::uint64_t>(statistics.SyncQPCTime.QuadPart) : 0);
+        }
+
         void updatePresentationProgressAndLatencySlot(SwapchainRecord& record, const NativePresentAttempt& attempt)
         {
             std::uint32_t presentCountAfter = 0;
@@ -951,6 +979,7 @@ namespace rachis::d3d12
             if (hadPresentCountAfter)
             {
                 record.presentation.presented(presentCountAfter);
+                observeFrameStatistics(record);
             }
             else
             {
@@ -1510,20 +1539,53 @@ namespace rachis::d3d12
             return std::unexpected(invalidSwapchainError());
         }
         auto& presentation = record.presentation;
-
-        if (presentation.supported() && record.swapchain != nullptr)
-        {
-            DXGI_FRAME_STATISTICS statistics{};
-            if (SUCCEEDED(record.swapchain->GetFrameStatistics(&statistics)))
-            {
-                presentation.observed(statistics.PresentCount);
-            }
-        }
+        observeFrameStatistics(record);
         return SwapchainFrameTiming{
             .presentationSupported = presentation.supported(),
             .presentationGeneration = presentation.generation(),
             .submittedPresentationSequence = presentation.submittedSequence(),
             .displayedPresentationSequence = presentation.displayedSequence(),
+        };
+    }
+
+    Result<SwapchainPresentTimings> SwapchainManager::queryPresentTimings(SwapchainHandle swapchain,
+                                                                          std::uint64_t firstSequence,
+                                                                          std::span<PresentTiming> records) const
+    {
+        const auto recordOwner = findSwapchainRecord(impl_->mutex, impl_->swapchains, swapchain);
+        if (recordOwner == nullptr)
+        {
+            return std::unexpected(invalidSwapchainError());
+        }
+        auto& record = *recordOwner;
+        const std::scoped_lock recordLock(record.recordMutex);
+        if (record.destroyed)
+        {
+            return std::unexpected(invalidSwapchainError());
+        }
+        const auto frequency = queryPerformanceFrequency();
+        if (!record.presentation.supported() || record.swapchain == nullptr || frequency == 0)
+        {
+            return std::unexpected(Error{
+                ErrorCode::unsupported,
+                0,
+                "This swapchain reports no DXGI frame statistics, so it has no per-present timing.",
+            });
+        }
+        observeFrameStatistics(record);
+        const auto snapshot = record.presentation.readTimings(firstSequence, records);
+        const auto refreshTicks = record.presentation.refreshTicks();
+        const auto intervalNs = refreshTicks == 0 ? 0 : (refreshTicks * 1'000'000'000ULL + frequency / 2) / frequency;
+        return SwapchainPresentTimings{
+            .cpuClock = CpuClock::queryPerformanceCounter,
+            .cpuFrequency = frequency,
+            .generation = record.presentation.generation(),
+            .submittedSequence = snapshot.submittedSequence,
+            .settledSequence = snapshot.settledSequence,
+            .firstAvailableSequence = snapshot.firstAvailableSequence,
+            .refreshIntervalNs = intervalNs,
+            .maxRefreshIntervalNs = intervalNs,
+            .recordCount = snapshot.recordCount,
         };
     }
 

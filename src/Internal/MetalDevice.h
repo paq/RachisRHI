@@ -304,6 +304,8 @@ namespace rachis::metal
         [[nodiscard]] Result<SwapchainPresentationInfo> querySwapchainPresentation(
             SwapchainHandle swapchain) const override;
         [[nodiscard]] Result<SwapchainFrameTiming> querySwapchainFrameTiming(SwapchainHandle swapchain) const override;
+        [[nodiscard]] Result<SwapchainPresentTimings> querySwapchainPresentTimings(
+            SwapchainHandle swapchain, std::uint64_t firstSequence, std::span<PresentTiming> records) const override;
 
     private:
         [[nodiscard]] Status requireActive() const;

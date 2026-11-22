@@ -697,6 +697,14 @@ namespace rachis::detail
             SwapchainHandle swapchain) const = 0;
         [[nodiscard]] virtual Result<SwapchainFrameTiming> querySwapchainFrameTiming(
             SwapchainHandle swapchain) const = 0;
+        [[nodiscard]] virtual Result<SwapchainPresentTimings> querySwapchainPresentTimings(
+            SwapchainHandle swapchain, std::uint64_t firstSequence, std::span<PresentTiming> records) const
+        {
+            static_cast<void>(swapchain);
+            static_cast<void>(firstSequence);
+            static_cast<void>(records);
+            return std::unexpected(unsupportedOperation("querySwapchainPresentTimings"));
+        }
 
     protected:
         BackendDevice() = default;

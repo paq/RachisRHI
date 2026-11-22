@@ -282,6 +282,11 @@ namespace
     static_assert(bitsOf(RACHIS_VERTEX_FORMAT_FLOAT16X4) + 1U == rachis::vertexFormatCount);
     static_assert(RACHIS_MAX_VERTEX_BUFFERS == rachis::maxVertexBuffers);
     static_assert(RACHIS_MAX_VERTEX_ATTRIBUTES == rachis::maxVertexAttributes);
+    static_assert(RACHIS_PRESENT_TIMING_MIN_HISTORY == rachis::presentTimingMinHistory);
+    static_assert(RACHIS_PRESENT_TIMING_DISPLAYED == static_cast<std::uint32_t>(rachis::PresentTimingFlags::displayed));
+    static_assert(RACHIS_PRESENT_TIMING_DROPPED == static_cast<std::uint32_t>(rachis::PresentTimingFlags::dropped));
+    static_assert(RACHIS_PRESENT_TIMING_ESTIMATED == static_cast<std::uint32_t>(rachis::PresentTimingFlags::estimated));
+    static_assert(RACHIS_PRESENT_TIMING_HIDDEN == static_cast<std::uint32_t>(rachis::PresentTimingFlags::hidden));
 
     constexpr std::uint32_t knownStages =
         RACHIS_STAGE_ALL | RACHIS_STAGE_DRAW | RACHIS_STAGE_VERTEX_INPUT | RACHIS_STAGE_VERTEX_SHADER |
@@ -4209,6 +4214,78 @@ extern "C"
             output->cpu_timestamp = calibrated->cpuTimestamp;
             output->cpu_frequency = calibrated->cpuFrequency;
             output->max_deviation_ns = calibrated->maxDeviationNanoseconds;
+            return RACHIS_STATUS_OK;
+        });
+    }
+
+    rachis_status rachis_swapchain_query_present_timings(rachis_device* device,
+                                                         rachis_handle swapchain,
+                                                         std::uint64_t firstSequence,
+                                                         rachis_present_timing* records,
+                                                         std::uint32_t capacity,
+                                                         rachis_swapchain_present_timings* output,
+                                                         rachis_error* error)
+    {
+        return boundary(error, [&]() -> rachis_status {
+            if (device == nullptr || output == nullptr || (records == nullptr && capacity != 0))
+            {
+                return fail(error, RACHIS_STATUS_INVALID_ARGUMENT, "device, present timings, or records is null");
+            }
+            if (output->struct_size != sizeof(*output))
+            {
+                return fail(error, RACHIS_STATUS_ABI_MISMATCH, "present timings size mismatch");
+            }
+            *output = rachis_swapchain_present_timings{};
+            output->struct_size = sizeof(*output);
+            const auto gate = lockSwapchainGate(*device, swapchain);
+            rachis::SwapchainHandle native;
+            {
+                std::shared_lock const lock(device->mutex);
+                if (const auto lost = rejectLostDevice(*device, error))
+                {
+                    return *lost;
+                }
+                const auto* const entry = findSwapchain(*device, swapchain);
+                if (entry == nullptr)
+                {
+                    return invalidHandle(error);
+                }
+                native = entry->native;
+            }
+            // A backend never keeps more than a few hundred records, so a larger capacity only needs this many.
+            constexpr std::uint32_t maxRecordsPerCall = 4096;
+            std::vector<rachis::PresentTiming> nativeRecords(std::min(capacity, maxRecordsPerCall));
+            const auto timings = device->native.querySwapchainPresentTimings(native, firstSequence, nativeRecords);
+            if (!timings)
+            {
+                return result(error, timings.error());
+            }
+            const auto clock = cpuClockOf(timings->cpuClock);
+            if (clock == RACHIS_CPU_CLOCK_NONE || timings->cpuFrequency == 0)
+            {
+                return fail(error,
+                            RACHIS_STATUS_UNSUPPORTED,
+                            "present timings are not on the platform's monotonic CPU counter");
+            }
+            const auto count = std::min<std::size_t>(timings->recordCount, nativeRecords.size());
+            for (std::size_t index = 0; index < count; ++index)
+            {
+                records[index] = rachis_present_timing{
+                    .present_sequence = nativeRecords[index].presentSequence,
+                    .present_time = nativeRecords[index].presentTime,
+                    .flags = static_cast<std::uint32_t>(nativeRecords[index].flags),
+                    .reserved0 = 0,
+                };
+            }
+            output->cpu_clock = clock;
+            output->cpu_frequency = timings->cpuFrequency;
+            output->generation = timings->generation;
+            output->submitted_sequence = timings->submittedSequence;
+            output->settled_sequence = timings->settledSequence;
+            output->first_available_sequence = timings->firstAvailableSequence;
+            output->refresh_interval_ns = timings->refreshIntervalNs;
+            output->max_refresh_interval_ns = timings->maxRefreshIntervalNs;
+            output->record_count = static_cast<std::uint32_t>(count);
             return RACHIS_STATUS_OK;
         });
     }

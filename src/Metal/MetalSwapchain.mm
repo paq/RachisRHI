@@ -26,6 +26,30 @@ namespace rachis::metal
             return visible != nil && ![visible boolValue];
         }
 
+        [[nodiscard]] std::uint64_t metalIntervalNs(NSTimeInterval seconds) noexcept
+        {
+            return seconds > 0.0 && seconds < 10.0 ? static_cast<std::uint64_t>(std::llround(seconds * 1.0e9)) : 0;
+        }
+
+        // Main thread only: whether the layer can be on screen, and the refresh intervals of its screen. AppKit is
+        // reached through key-value coding, as in metalReadViewHidden, so the library does not link it.
+        void readMetalViewScreen(id view, bool hidden, MetalViewVisibility& visibility) noexcept
+        {
+            constexpr NSUInteger occlusionStateVisible = 1U << 1U; // NSWindowOcclusionStateVisible
+            id const window = view != nil ? [view valueForKey:@"window"] : nil;
+            const bool onScreen =
+                !hidden && window != nil && [[window valueForKey:@"visible"] boolValue] &&
+                ![[window valueForKey:@"miniaturized"] boolValue] &&
+                ([[window valueForKey:@"occlusionState"] unsignedIntegerValue] & occlusionStateVisible) != 0;
+            visibility.onScreen.store(onScreen, std::memory_order_release);
+            id const screen = window != nil ? [window valueForKey:@"screen"] : nil;
+            const auto interval = [&](NSString* key) -> std::uint64_t {
+                return screen != nil ? metalIntervalNs([[screen valueForKey:key] doubleValue]) : 0;
+            };
+            visibility.minRefreshIntervalNs.store(interval(@"minimumRefreshInterval"), std::memory_order_release);
+            visibility.maxRefreshIntervalNs.store(interval(@"maximumRefreshInterval"), std::memory_order_release);
+        }
+
         void refreshMetalViewVisibility(const std::shared_ptr<MetalViewVisibility>& visibility) noexcept
         {
             if (visibility == nullptr)
@@ -37,7 +61,9 @@ namespace rachis::metal
                 @autoreleasepool
                 {
                     id const view = visibility->view;
-                    visibility->hidden.store(metalReadViewHidden(view), std::memory_order_release);
+                    const bool hidden = metalReadViewHidden(view);
+                    visibility->hidden.store(hidden, std::memory_order_release);
+                    readMetalViewScreen(view, hidden, *visibility);
                 }
                 return;
             }
@@ -1178,10 +1204,19 @@ namespace rachis::metal
                 }
                 const auto presentationSequence = record.submittedPresentationSequence + 1;
                 const auto feedback = record.presentationFeedback;
+                std::shared_ptr<MetalViewVisibility> visibility;
+                if (const auto* surface = native.surfaces.find(record.surface);
+                    surface != nullptr && *surface != nullptr)
+                {
+                    visibility = (*surface)->viewVisibility;
+                }
+                feedback->submitted(presentationSequence);
                 [drawable addPresentedHandler:^(id<MTLDrawable> presentedDrawable) {
                   @autoreleasepool
                   {
-                      feedback->presented(presentationSequence, presentedDrawable.presentedTime);
+                      const bool visible =
+                          visibility == nullptr || visibility->onScreen.load(std::memory_order_acquire);
+                      feedback->presented(presentationSequence, presentedDrawable.presentedTime, visible);
                   }
                 }];
                 [native.commandQueue signalDrawable:drawable];
@@ -1332,6 +1367,49 @@ namespace rachis::metal
             .submittedPresentationSequence = record.submittedPresentationSequence,
             .displayedPresentationSequence = record.presentationFeedback->displayedSequence(),
         };
+    }
+
+    Result<SwapchainPresentTimings> MetalDevice::querySwapchainPresentTimings(SwapchainHandle swapchain,
+                                                                              std::uint64_t firstSequence,
+                                                                              std::span<PresentTiming> records) const
+    {
+        std::scoped_lock const lock(mutex_);
+        if (native_ == nullptr)
+        {
+            return std::unexpected(metalSelectionError(
+                ErrorCode::invalidState, "Metal querySwapchainPresentTimings requires an active device."));
+        }
+        auto* found = native_->swapchains.find(swapchain);
+        if (found == nullptr || *found == nullptr)
+        {
+            return std::unexpected(
+                metalSelectionError(ErrorCode::invalidArgument, "The swapchain handle is invalid or stale."));
+        }
+        const auto& record = **found;
+        SwapchainPresentTimings timings{
+            .cpuClock = CpuClock::machAbsoluteTime,
+            .cpuFrequency = record.presentationFeedback->ticksPerSecond(),
+            .generation = record.generation,
+        };
+        if (const auto* surface = native_->surfaces.find(record.surface);
+            surface != nullptr && *surface != nullptr && (*surface)->viewVisibility != nullptr)
+        {
+            const auto& visibility = *(*surface)->viewVisibility;
+            refreshMetalViewVisibility((*surface)->viewVisibility);
+            timings.refreshIntervalNs = visibility.minRefreshIntervalNs.load(std::memory_order_acquire);
+            timings.maxRefreshIntervalNs = visibility.maxRefreshIntervalNs.load(std::memory_order_acquire);
+            if (timings.refreshIntervalNs == 0 || timings.maxRefreshIntervalNs < timings.refreshIntervalNs)
+            {
+                timings.refreshIntervalNs = 0;
+                timings.maxRefreshIntervalNs = 0;
+            }
+        }
+        const auto snapshot = record.presentationFeedback->readTimings(firstSequence, records);
+        timings.submittedSequence = snapshot.submittedSequence;
+        timings.settledSequence = snapshot.settledSequence;
+        timings.firstAvailableSequence = snapshot.firstAvailableSequence;
+        timings.recordCount = snapshot.recordCount;
+        return timings;
     }
 
 } // namespace rachis::metal

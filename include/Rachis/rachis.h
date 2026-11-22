@@ -21,7 +21,7 @@ extern "C"
 {
 #endif
 
-#define RACHIS_ABI_VERSION 4U
+#define RACHIS_ABI_VERSION 5U
 #define RACHIS_ERROR_MESSAGE_CAPACITY 256u
 #define RACHIS_MAX_SURFACE_FORMATS 16U
 #define RACHIS_MAX_VERTEX_BUFFERS 8U
@@ -1271,6 +1271,72 @@ extern "C"
                                                  rachis_handle swapchain,
                                                  rachis_swapchain_presentation_progress* output,
                                                  rachis_error* error);
+
+    /* Every swapchain keeps at least this many settled present timings; it may keep more. */
+#define RACHIS_PRESENT_TIMING_MIN_HISTORY 64U
+
+    enum
+    {
+        /* present_time is valid. */
+        RACHIS_PRESENT_TIMING_DISPLAYED = 1U << 0U,
+        /* A newer present replaced it while the surface was visible, so it was never shown. */
+        RACHIS_PRESENT_TIMING_DROPPED = 1U << 1U,
+        /* With DISPLAYED: derived from a later vblank rather than reported for this present (D3D12). */
+        RACHIS_PRESENT_TIMING_ESTIMATED = 1U << 2U,
+        /* Settled while the surface was hidden, occluded or minimized; nothing was shown. */
+        RACHIS_PRESENT_TIMING_HIDDEN = 1U << 3U
+    };
+    /* flags == 0: settled, but the backend could not tell what happened to the present. */
+
+    typedef struct rachis_present_timing
+    {
+        /* The n-th rachis_swapchain_present of this generation that returned RACHIS_PRESENT_STATUS_PRESENTED;
+           the same numbering as rachis_swapchain_presentation_progress.submitted_sequence. */
+        uint64_t present_sequence;
+        /* Start of the refresh (vblank) in which the image was first on screen, in ticks of cpu_clock (the same
+           counter and units as rachis_timestamp_calibration.cpu_timestamp). 0 unless DISPLAYED.
+           Metal: CAMetalDrawable.presentedTime. D3D12: DXGI_FRAME_STATISTICS.SyncQPCTime, the compositor's vblank
+           when windowed. Vulkan: VkPastPresentationTimingGOOGLE.actualPresentTime. */
+        uint64_t present_time;
+        uint32_t flags;
+        uint32_t reserved0;
+    } rachis_present_timing;
+
+    typedef struct rachis_swapchain_present_timings
+    {
+        uint32_t struct_size;
+        /* RACHIS_CPU_CLOCK_*: mach_absolute_time on macOS, QueryPerformanceCounter on Windows, CLOCK_MONOTONIC on
+           Linux; the same counter rachis_queue_calibrate_timestamps reports. */
+        uint32_t cpu_clock;
+        /* Ticks per second of present_time. */
+        uint64_t cpu_frequency;
+        /* The same as rachis_swapchain_presentation_progress.generation; a resize starts a new one. */
+        uint64_t generation;
+        /* The newest present of this generation. */
+        uint64_t submitted_sequence;
+        /* Every present up to this sequence is settled (0 = none). */
+        uint64_t settled_sequence;
+        /* The oldest present still kept (0 = none); older ones are lost. */
+        uint64_t first_available_sequence;
+        /* Shortest and longest refresh interval of the display showing the surface, in nanoseconds. Equal at a
+           fixed refresh rate; the longest is larger with variable refresh. 0 = unknown. */
+        uint64_t refresh_interval_ns;
+        uint64_t max_refresh_interval_ns;
+        /* Records written. */
+        uint32_t record_count;
+        uint32_t reserved0;
+    } rachis_swapchain_present_timings;
+
+    /* Writes the settled records with first_sequence <= present_sequence <= settled_sequence, oldest first, up to
+       capacity, with no gaps. records may be NULL when capacity is 0. RACHIS_STATUS_UNSUPPORTED when the backend or
+       surface reports no per-present timing. */
+    RACHIS_API rachis_status rachis_swapchain_query_present_timings(rachis_device* device,
+                                                                    rachis_handle swapchain,
+                                                                    uint64_t first_sequence,
+                                                                    rachis_present_timing* records,
+                                                                    uint32_t capacity,
+                                                                    rachis_swapchain_present_timings* output,
+                                                                    rachis_error* error);
 
     RACHIS_API rachis_status rachis_swapchain_cancel(rachis_device* device,
                                                      rachis_handle swapchain,

@@ -3703,6 +3703,23 @@ namespace rachis
         });
     }
 
+    Result<SwapchainPresentTimings> Device::querySwapchainPresentTimings(SwapchainHandle swapchain,
+                                                                         std::uint64_t firstSequence,
+                                                                         std::span<PresentTiming> records) const
+    {
+        return guardBadAlloc([&]() -> Result<SwapchainPresentTimings> {
+            if (backend_ == nullptr)
+            {
+                return std::unexpected(Error{
+                    ErrorCode::invalidState,
+                    0,
+                    "Cannot query swapchain present timings on an invalid device.",
+                });
+            }
+            return backend_->querySwapchainPresentTimings(swapchain, firstSequence, records);
+        });
+    }
+
     Result<std::vector<AdapterInfo>> enumerateAdapters()
     {
         return guardBadAlloc(
