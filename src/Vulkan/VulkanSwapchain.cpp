@@ -2234,11 +2234,23 @@ namespace rachis::vulkan
         return {};
     }
 
-    Result<bool> VulkanSwapchainManager::retainImageIfWindowHidden(SwapchainRecord& record,
-                                                                   TimelinePoint renderComplete)
+    Result<bool> VulkanSwapchainManager::completePresentIfSurfaceHidden(SwapchainRecord& record,
+                                                                        TimelinePoint renderComplete)
     {
+        const bool canReleaseImages =
+            presentCompletion_ == VulkanPresentCompletionStrategy::swapchainMaintenancePresentFence &&
+            vkReleaseSwapchainImages_ != nullptr;
 #ifdef _WIN32
-        if (record.surface != nullptr && record.surface->kind == SurfaceKind::win32 && surfaceIsHidden(record))
+        const bool retainImage = record.surface != nullptr && record.surface->kind == SurfaceKind::win32;
+#else
+        constexpr bool retainImage = false;
+#endif
+        if ((!retainImage && !canReleaseImages) || !surfaceIsHidden(record))
+        {
+            return false;
+        }
+#ifdef _WIN32
+        if (retainImage)
         {
             // Keep the native acquisition: releasing and reacquiring a hidden Win32 image can leave its next
             // acquire wait stalled. Preserve the rendering memory dependency on the GPU before reusing it.
@@ -2257,23 +2269,7 @@ namespace rachis::vulkan
             recordPresentCompletion(record);
             return true;
         }
-#else
-        static_cast<void>(record);
-        static_cast<void>(renderComplete);
 #endif
-        return false;
-    }
-
-    Result<bool> VulkanSwapchainManager::releaseImageIfSurfaceHidden(SwapchainRecord& record,
-                                                                     TimelinePoint renderComplete)
-    {
-        const bool canReleaseImages =
-            presentCompletion_ == VulkanPresentCompletionStrategy::swapchainMaintenancePresentFence &&
-            vkReleaseSwapchainImages_ != nullptr;
-        if (!canReleaseImages || !surfaceIsHidden(record))
-        {
-            return false;
-        }
         auto waited = queues_->wait(renderComplete);
         if (!waited)
         {
@@ -2436,21 +2432,12 @@ namespace rachis::vulkan
                                                                        TimelinePoint renderComplete,
                                                                        bool& injectedDeviceLoss)
     {
-        auto retainedWhileHidden = retainImageIfWindowHidden(record, renderComplete);
-        if (!retainedWhileHidden)
+        auto completedWhileHidden = completePresentIfSurfaceHidden(record, renderComplete);
+        if (!completedWhileHidden)
         {
-            return std::unexpected(std::move(retainedWhileHidden.error()));
+            return std::unexpected(std::move(completedWhileHidden.error()));
         }
-        if (*retainedWhileHidden)
-        {
-            return PresentStatus::occluded;
-        }
-        auto releasedWhileHidden = releaseImageIfSurfaceHidden(record, renderComplete);
-        if (!releasedWhileHidden)
-        {
-            return std::unexpected(std::move(releasedWhileHidden.error()));
-        }
-        if (*releasedWhileHidden)
+        if (*completedWhileHidden)
         {
             return PresentStatus::occluded;
         }
