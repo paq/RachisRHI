@@ -45,14 +45,12 @@ jobs:
             echo "error: tag '$tag' must match v<major>.<minor>.<patch>[-prerelease]" >&2
             exit 1
           fi
-          version="${tag#v}"
           prerelease="false"
           if [ -n "${BASH_REMATCH[2]:-}" ]; then
             prerelease="true"
           fi
           {
             echo "tag=$tag"
-            echo "version=$version"
             echo "prerelease=$prerelease"
           } >> "$GITHUB_OUTPUT"
 
@@ -90,20 +88,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.target.outputs.tag }}
-          VERSION: ${{ steps.target.outputs.version }}
           IS_PRERELEASE: ${{ steps.target.outputs.prerelease }}
           NOTES_FILE: ${{ runner.temp }}/release-notes.md
         run: |
           set -euo pipefail
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" \
-              --title "RachisRHI $VERSION" \
+              --title "$TAG" \
               --notes-file "$NOTES_FILE" \
               --prerelease="$IS_PRERELEASE"
           else
             flags=(
               --verify-tag
-              --title "RachisRHI $VERSION"
+              --title "$TAG"
               --notes-file "$NOTES_FILE"
             )
             if [ "$IS_PRERELEASE" = "true" ]; then
