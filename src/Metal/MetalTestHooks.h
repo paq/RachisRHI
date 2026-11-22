@@ -26,6 +26,8 @@ namespace rachis::metal
     void setHostReportOverride(std::optional<MetalHostReport> report) noexcept;
     void setFailCommandApiCreateAttempts(std::uint32_t attempts, std::string_view nativeDescription = {});
     void setFailSharedEventProbe(bool fail) noexcept;
+    // Replaces the IOSurfaceSharedEvent count read at device creation; a nullopt count reads as unavailable.
+    void setSharedEventCountOverride(bool active, std::optional<std::uint64_t> count) noexcept;
     void setFailNextLogStateCreate(bool fail) noexcept;
     void setFailNextDepthStencilStateCreate(bool fail) noexcept;
     void setFailNextDrawable(bool fail) noexcept;
@@ -107,6 +109,28 @@ namespace rachis::metal
         ScopedFailSharedEventProbe& operator=(const ScopedFailSharedEventProbe&) = delete;
         ScopedFailSharedEventProbe(ScopedFailSharedEventProbe&&) = delete;
         ScopedFailSharedEventProbe& operator=(ScopedFailSharedEventProbe&&) = delete;
+
+    private:
+        std::unique_lock<std::recursive_mutex> lock_;
+    };
+
+    class ScopedSharedEventCount final
+    {
+    public:
+        explicit ScopedSharedEventCount(std::optional<std::uint64_t> count) noexcept : lock_(testHookMutex())
+        {
+            setSharedEventCountOverride(true, count);
+        }
+
+        ~ScopedSharedEventCount() noexcept
+        {
+            setSharedEventCountOverride(false, std::nullopt);
+        }
+
+        ScopedSharedEventCount(const ScopedSharedEventCount&) = delete;
+        ScopedSharedEventCount& operator=(const ScopedSharedEventCount&) = delete;
+        ScopedSharedEventCount(ScopedSharedEventCount&&) = delete;
+        ScopedSharedEventCount& operator=(ScopedSharedEventCount&&) = delete;
 
     private:
         std::unique_lock<std::recursive_mutex> lock_;
