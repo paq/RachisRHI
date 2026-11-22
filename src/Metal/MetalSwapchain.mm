@@ -156,7 +156,9 @@ namespace rachis::metal
 
         void applyMetalPresentMode(CAMetalLayer* layer, PresentMode mode) noexcept
         {
-            layer.displaySyncEnabled = mode == PresentMode::immediate ? NO : YES;
+            const bool immediate = mode == PresentMode::immediate;
+            layer.displaySyncEnabled = immediate ? NO : YES;
+            layer.maximumDrawableCount = immediate ? 2 : 3;
         }
 
         void applyMetalSwapchainLayer(CAMetalLayer* layer, const SwapchainDesc& desc) noexcept
@@ -957,7 +959,7 @@ namespace rachis::metal
         }
 #endif
         const auto record = ready->first;
-        if (record->drawableFetch == nullptr && record->inFlightPresents >= 3 && !record->inFlight.empty())
+        if (record->inFlightPresents >= 3 && !record->inFlight.empty())
         {
             const auto backend = native_;
             const auto oldestValue = record->inFlight.front().timelineValue;
@@ -1267,7 +1269,14 @@ namespace rachis::metal
             else
 #endif
             {
-                return submitMetalDrawablePresent(*native_, record, timeline, renderComplete);
+                const auto status = submitMetalDrawablePresent(*native_, record, timeline, renderComplete);
+                if (auto* surface = native_->surfaces.find(record.surface); record.drawableFetch == nullptr &&
+                                                                            surface != nullptr && *surface != nullptr &&
+                                                                            (*surface)->layer != nil)
+                {
+                    record.drawableFetch = startMetalDrawableFetch((*surface)->layer);
+                }
+                return status;
             }
         }
 #ifdef RACHIS_TESTING
