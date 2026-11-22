@@ -348,10 +348,14 @@ namespace rachis::metal
         @autoreleasepool
         {
             native_->swapchains.forEach([&](SwapchainHandle, std::shared_ptr<MetalSwapchainRecord>& record) {
-                if (record != nullptr && record->surface == surface && record->acquired)
+                if (record != nullptr && record->surface == surface)
                 {
-                    dropAcquiredSwapchainLease(*native_, *record);
-                    record->leaseDroppedByHostClose = true;
+                    record->drawableFetch = nullptr;
+                    if (record->acquired)
+                    {
+                        dropAcquiredSwapchainLease(*native_, *record);
+                        record->leaseDroppedByHostClose = true;
+                    }
                 }
             });
             if (!native_->surfaces.erase(surface))
@@ -683,11 +687,13 @@ namespace rachis::metal
             auto* surface = native->surfaces.find(record.surface);
             if (surface == nullptr || *surface == nullptr || (*surface)->layer == nil)
             {
+                record.drawableFetch = nullptr;
                 return std::unexpected(metalSelectionError(
                     ErrorCode::notReady, "The Metal surface is detached or destroyed and is no longer presentable."));
             }
             if (record.desc.width == 0 || record.desc.height == 0)
             {
+                record.drawableFetch = nullptr;
                 return std::unexpected(metalSelectionError(
                     ErrorCode::invalidState, "A minimized or zero-extent Metal swapchain cannot acquire a drawable."));
             }
@@ -700,6 +706,7 @@ namespace rachis::metal
             const auto live = metalLayerBackingPixels((*surface)->layer);
             if (live.first != record.desc.width || live.second != record.desc.height)
             {
+                record.drawableFetch = nullptr;
                 return std::unexpected(
                     metalSelectionError(ErrorCode::invalidState, "The swapchain surface is out of date."));
             }
@@ -813,6 +820,17 @@ namespace rachis::metal
         [[nodiscard]] bool waitForMetalDrawableFetch(const std::shared_ptr<MetalDrawableFetch>& fetch,
                                                      const detail::AcquireDeadline& deadline)
         {
+            {
+                std::scoped_lock const fetchLock(fetch->mutex);
+                if (fetch->done)
+                {
+                    return true;
+                }
+                if (deadline.expired())
+                {
+                    return false;
+                }
+            }
             if (deadline.remaining() == std::chrono::nanoseconds::max())
             {
                 std::unique_lock fetchLock(fetch->mutex);
@@ -820,7 +838,12 @@ namespace rachis::metal
                 return true;
             }
             const auto left = deadline.remaining();
-            const auto expired = std::make_shared<std::atomic_bool>(left == std::chrono::nanoseconds::zero());
+            if (left == std::chrono::nanoseconds::zero())
+            {
+                std::scoped_lock const fetchLock(fetch->mutex);
+                return fetch->done;
+            }
+            const auto expired = std::make_shared<std::atomic_bool>(false);
             const std::shared_ptr<MetalDrawableFetch> pending = fetch;
             const MetalStrictTimer alarm(left, std::chrono::nanoseconds::zero(), ^{
               {
@@ -849,21 +872,26 @@ namespace rachis::metal
                                                                             std::uint64_t value,
                                                                             const detail::AcquireDeadline& deadline)
         {
+            auto status = queryMetalValue(native, timeline, value);
+            if (!status || *status == TimelinePointStatus::complete || deadline.expired())
+            {
+                return status;
+            }
             dispatch_semaphore_t const tick = dispatch_semaphore_create(0);
             const MetalStrictTimer ticker(std::chrono::milliseconds(1), std::chrono::milliseconds(1), ^{
               dispatch_semaphore_signal(tick);
             });
             for (;;)
             {
-                auto status = queryMetalValue(native, timeline, value);
-                if (!status || *status == TimelinePointStatus::complete || deadline.expired())
-                {
-                    return status;
-                }
                 const auto left = static_cast<std::int64_t>(std::min<std::uint64_t>(
                     deadline.remainingNs(), static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())));
                 static_cast<void>(dispatch_semaphore_wait(
                     tick, ticker.armed() ? DISPATCH_TIME_FOREVER : dispatch_time(DISPATCH_TIME_NOW, left)));
+                status = queryMetalValue(native, timeline, value);
+                if (!status || *status == TimelinePointStatus::complete || deadline.expired())
+                {
+                    return status;
+                }
             }
         }
 

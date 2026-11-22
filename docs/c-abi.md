@@ -25,7 +25,7 @@ The C ABI lives in the `rachis` shared library (`Rachis::C` in CMake) and export
 
 ## Version
 
-Call `rachis_abi_version()` before creating a device and abort unless it equals the `RACHIS_ABI_VERSION` your module compiled against (currently `4`). ABI versions are not backwards-compatible.
+Call `rachis_abi_version()` before creating a device and abort unless it equals the `RACHIS_ABI_VERSION` your module compiled against. ABI versions are not backwards-compatible.
 
 ## Creating a device
 
@@ -185,7 +185,6 @@ Each `rachis_mapped_range` is an `offset` from the start of the buffer (not of t
 - **One swapchain per window:** Only one live swapchain may exist per native window on a device. Creating a second on that surface—or on another surface for the same window—returns `RACHIS_STATUS_INVALID_STATE` (creating multiple `rachis_surface` handles for one window is allowed). See [Surfaces](using.md#surfaces) for cross-device caveats.
 - **Metal layers:** Creating a surface leaves `CAMetalLayer` untouched (if `layer.device` is set, it must match the device's GPU). Creating a swapchain sets `device`, `pixelFormat`, `drawableSize`, `colorspace`, `opaque`, `allowsNextDrawableTimeout`, `displaySyncEnabled` (`NO` for `RACHIS_PRESENT_IMMEDIATE`), `framebufferOnly` (unless copy-source usage is requested), and `name` (if the surface has a label). With an `NSView`, hidden views or non-visible windows cause `rachis_swapchain_acquire` to return `RACHIS_STATUS_NOT_READY` and `rachis_swapchain_present` to report `RACHIS_PRESENT_STATUS_OCCLUDED` (without an `NSView`, only zero drawable size counts as hidden). View visibility is read on the main thread, so off-main-thread callers observe updates after the main run loop runs.
 - **Capabilities bitmasks vs ordinals:** `rachis_surface_query_capabilities` populates the first `format_count` slots of `formats` (zeroing the rest) and returns two bitmasks: `present_modes` (`RACHIS_PRESENT_MODE_FIFO_BIT` / `RACHIS_PRESENT_MODE_IMMEDIATE_BIT`) and `usages` (`RACHIS_TEXTURE_*`). In `rachis_swapchain_desc`, `present_mode` takes an **ordinal** (`RACHIS_PRESENT_FIFO` or `RACHIS_PRESENT_IMMEDIATE`), not a bit flag—test support with `present_modes & RACHIS_PRESENT_MODE_IMMEDIATE_BIT`, never `& RACHIS_PRESENT_IMMEDIATE`.
-- **Timed acquire:** `rachis_swapchain_acquire_for` waits at most `timeout_ns` (`0` polls; values above `INT64_MAX` wait indefinitely) and returns `RACHIS_STATUS_TIMEOUT` if no image is ready. Hidden surfaces still return `RACHIS_STATUS_NOT_READY`.
 - **D3D12 sRGB sampling:** On D3D12 devices lacking fully typed format casting, `rachis_swapchain_create` returns `RACHIS_STATUS_UNSUPPORTED` for `RACHIS_FORMAT_RGBA8_UNORM_SRGB` or `RACHIS_FORMAT_BGRA8_UNORM_SRGB` combined with `RACHIS_TEXTURE_SAMPLED` (see [Surfaces](using.md#surfaces)).
 
 ## Handles and lifetime
@@ -222,7 +221,7 @@ if (rachis_command_submit(device, command, &timeline, &error) == RACHIS_STATUS_O
 
 ### Swapchain images
 
-- Image and view handles from `rachis_swapchain_acquire` are **borrowed**: they cannot be leased or used to create views, and `present`, `cancel`, `resize`, or `destroy` invalidates them.
+- Image and view handles from `rachis_swapchain_acquire` and `rachis_swapchain_acquire_for` (which returns `RACHIS_STATUS_TIMEOUT` after `timeout_ns`) are **borrowed**: they cannot be leased or used to create views, and `present`, `cancel`, `resize`, or `destroy` invalidates them.
 - On Metal, submitting a command buffer referencing an invalidated swapchain image returns `RACHIS_STATUS_INVALID_STATE`.
 - On Direct3D 12 and Vulkan, `rachis_swapchain_cancel` returns `RACHIS_STATUS_INVALID_STATE` while a command buffer referencing the acquired image is recording or submitted-but-unpresented (see [Surfaces](using.md#surfaces)).
 - Frame flow: transition from `rachis_swapchain_acquire`'s reported `initial` state -> write -> transition to required presentation state -> submit -> pass the resulting timeline handle to `rachis_swapchain_present` -> release the timeline handle. On Vulkan, the timeline must come from a graphics-queue submission made after `rachis_swapchain_acquire` (otherwise `rachis_swapchain_present` returns `RACHIS_STATUS_INVALID_ARGUMENT` and leaves the image acquired).

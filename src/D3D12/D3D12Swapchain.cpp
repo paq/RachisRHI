@@ -792,24 +792,34 @@ namespace rachis::d3d12
             {
                 return {};
             }
-            const DWORD waitResult =
-                WaitForSingleObjectEx(record.frameLatencyWaitableObject.get(), frameLatencyWaitMs(deadline), FALSE);
-            if (waitResult == WAIT_TIMEOUT)
+            for (;;)
             {
-                return std::unexpected(
-                    deadline.expiry("Timed out waiting for the DXGI swapchain frame latency waitable object.",
-                                    static_cast<std::int64_t>(WAIT_TIMEOUT)));
+                const DWORD waitMs = frameLatencyWaitMs(deadline);
+                const DWORD waitResult = WaitForSingleObjectEx(record.frameLatencyWaitableObject.get(), waitMs, FALSE);
+                if (waitResult == WAIT_OBJECT_0)
+                {
+                    record.latencySlot.onWaitSucceeded();
+                    return {};
+                }
+                if (waitResult != WAIT_TIMEOUT)
+                {
+                    return std::unexpected(Error{
+                        ErrorCode::nativeFailure,
+                        waitResult == WAIT_FAILED ? static_cast<std::int64_t>(GetLastError()) : 0,
+                        "WaitForSingleObjectEx failed on the DXGI swapchain frame latency waitable object.",
+                    });
+                }
+                if (!deadline.timed() || deadline.expired())
+                {
+                    return std::unexpected(
+                        deadline.expiry("Timed out waiting for the DXGI swapchain frame latency waitable object.",
+                                        static_cast<std::int64_t>(WAIT_TIMEOUT)));
+                }
+                if (waitMs == 0)
+                {
+                    static_cast<void>(SwitchToThread());
+                }
             }
-            if (waitResult != WAIT_OBJECT_0)
-            {
-                return std::unexpected(Error{
-                    ErrorCode::nativeFailure,
-                    waitResult == WAIT_FAILED ? static_cast<std::int64_t>(GetLastError()) : 0,
-                    "WaitForSingleObjectEx failed on the DXGI swapchain frame latency waitable object.",
-                });
-            }
-            record.latencySlot.onWaitSucceeded();
-            return {};
         }
 
         [[nodiscard]] Status waitForAndClearPreviousUse(QueueManager& queues,
