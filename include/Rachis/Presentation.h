@@ -17,6 +17,7 @@ namespace rachis
         wayland,
         xcb,
         caMetalLayer,
+        win32Composition,
     };
 
     struct SurfaceDesc final

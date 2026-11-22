@@ -301,6 +301,7 @@ Create a surface by populating `SurfaceDesc` (`Rachis/Presentation.h`):
 | `SurfaceKind` | `windowHandle` | `displayHandle` | Notes |
 | --- | --- | --- | --- |
 | `win32` | `HWND` | Ignored | Windows only |
+| `win32Composition` | `HWND` | Ignored | Windows Direct3D 12 only (`CreateSwapChainForComposition`, `PresentMode::fifo` only) |
 | `wayland` | `wl_surface*` | `wl_display*` | Both non-null |
 | `xcb` | `xcb_window_t` cast via `uintptr_t` (`void*`) | `xcb_connection_t*` | Window ID passed as pointer integer value, **not** `&window` |
 | `caMetalLayer` | `CAMetalLayer*` or `NSView*` | Ignored | Native Metal only; rejected by MoltenVK |

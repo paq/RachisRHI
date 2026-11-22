@@ -381,6 +381,9 @@ namespace rachis::vulkan
             case SurfaceKind::caMetalLayer:
                 return std::unexpected(unsupportedWindowSystem(
                     "CAMetalLayer surfaces are Metal-only. Selection did not fall back to Vulkan WSI."));
+            case SurfaceKind::win32Composition:
+                return std::unexpected(unsupportedWindowSystem(
+                    "Win32 DirectComposition surfaces are Direct3D 12-only. Selection did not fall back to Win32."));
             }
 
             return std::unexpected(unsupportedWindowSystem(

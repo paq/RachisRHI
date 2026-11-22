@@ -28,8 +28,8 @@ namespace
     class HiddenWindow final
     {
     public:
-        HiddenWindow()
-            : window_(CreateWindowExW(0,
+        explicit HiddenWindow(DWORD exStyle = 0)
+            : window_(CreateWindowExW(exStyle,
                                       L"STATIC",
                                       L"Rachis presentation contract",
                                       WS_OVERLAPPEDWINDOW,
@@ -2319,4 +2319,527 @@ TEST_CASE("D3D12 swapchains support multi-submit and batch-submit passes without
     const auto diagnostics = device.diagnosticCounts();
     CHECK(diagnostics.errors == 0);
     CHECK(diagnostics.corruptions == 0);
+}
+
+TEST_CASE("DirectComposition surface capabilities omit immediate present mode and enforce contract",
+          "[size:medium][rhi][presentation][warp]")
+{
+    const HiddenWindow window(WS_EX_NOREDIRECTIONBITMAP);
+    REQUIRE(window.get() != nullptr);
+
+    auto created = rachis::createDevice(rachis::DeviceDesc{
+        .adapterPreference = rachis::AdapterPreference::warp,
+        .validation = rachis::ValidationLevel::standard,
+        .requireValidation = false,
+        .enableDred = true,
+        .diagnosticCallback = &printDiagnostic,
+    });
+    REQUIRE(created.has_value());
+    auto device = std::move(*created);
+
+    auto nullWindow = device.createSurface(rachis::SurfaceDesc{
+        .kind = rachis::SurfaceKind::win32Composition,
+        .windowHandle = nullptr,
+        .label = "Invalid composition surface",
+    });
+    REQUIRE_FALSE(nullWindow.has_value());
+    CHECK(nullWindow.error().code == rachis::ErrorCode::invalidArgument);
+
+    auto surface = device.createSurface(rachis::SurfaceDesc{
+        .kind = rachis::SurfaceKind::win32Composition,
+        .windowHandle = window.get(),
+        .label = "DirectComposition capability surface",
+    });
+    REQUIRE(surface.has_value());
+
+    auto capabilities = device.querySurfaceCapabilities(*surface);
+    REQUIRE(capabilities.has_value());
+    CHECK(capabilities->minImageCount == 2);
+    CHECK(capabilities->maxImageCount >= 3);
+    CHECK(capabilities->maxWidth >= initialWidth);
+    CHECK(capabilities->maxHeight >= initialHeight);
+    CHECK(rachis::hasAny(capabilities->usages, rachis::TextureUsage::renderTarget));
+    CHECK(rachis::hasAny(capabilities->usages, rachis::TextureUsage::copySource));
+    CHECK(rachis::hasAny(capabilities->usages, rachis::TextureUsage::copyDestination));
+    CHECK(rachis::hasAny(capabilities->usages, rachis::TextureUsage::sampled));
+    CHECK(rachis::supportsPresentMode(capabilities->presentModes, rachis::PresentMode::fifo));
+    CHECK_FALSE(rachis::supportsPresentMode(capabilities->presentModes, rachis::PresentMode::immediate));
+    CHECK(std::ranges::find(capabilities->formats,
+                            rachis::SurfaceFormat{
+                                .format = rachis::Format::bgra8Unorm,
+                                .colorSpace = rachis::SurfaceColorSpace::srgbNonlinear,
+                            }) != capabilities->formats.end());
+    CHECK(std::ranges::find(capabilities->formats,
+                            rachis::SurfaceFormat{
+                                .format = rachis::Format::rgba8UnormSrgb,
+                                .colorSpace = rachis::SurfaceColorSpace::srgbNonlinear,
+                            }) != capabilities->formats.end());
+
+    const rachis::SwapchainDesc swapchainDesc{
+        .surface = *surface,
+        .width = initialWidth,
+        .height = initialHeight,
+        .imageCount = 3,
+        .format = rachis::Format::bgra8Unorm,
+        .usage = rachis::TextureUsage::renderTarget | rachis::TextureUsage::copySource,
+        .presentMode = rachis::PresentMode::fifo,
+        .label = "DirectComposition capability swapchain",
+    };
+
+    auto immediateDesc = swapchainDesc;
+    immediateDesc.presentMode = rachis::PresentMode::immediate;
+    auto immediate = device.createSwapchain(immediateDesc);
+    REQUIRE_FALSE(immediate.has_value());
+    CHECK(immediate.error().code == rachis::ErrorCode::unsupported);
+
+    const auto leakedBefore = rachis::d3d12::test::nativeSwapchainsReleasedWhileReferenced().load();
+    auto swapchain = device.createSwapchain(swapchainDesc);
+    if (!swapchain)
+    {
+        INFO(swapchain.error().message);
+    }
+    REQUIRE(swapchain.has_value());
+
+    auto busySurface = device.destroySurface(*surface);
+    REQUIRE_FALSE(busySurface.has_value());
+    CHECK(busySurface.error().code == rachis::ErrorCode::invalidState);
+
+    REQUIRE(device.destroySwapchain(*swapchain).has_value());
+    CHECK(rachis::d3d12::test::nativeSwapchainsReleasedWhileReferenced().load() == leakedBefore);
+    REQUIRE(device.destroySurface(*surface).has_value());
+
+    const auto counts = device.diagnosticCounts();
+    CHECK(counts.errors == 0);
+    CHECK(counts.corruptions == 0);
+}
+
+TEST_CASE("DirectComposition swapchains render, present, resize, and release cleanly",
+          "[size:medium][rhi][presentation][warp]")
+{
+    const DWORD exStyle = GENERATE(DWORD{0}, DWORD{WS_EX_NOREDIRECTIONBITMAP});
+    const auto format = GENERATE(rachis::Format::bgra8Unorm, rachis::Format::bgra8UnormSrgb);
+    CAPTURE(exStyle, format);
+
+    const HiddenWindow window(exStyle);
+    REQUIRE(window.get() != nullptr);
+
+    auto created = rachis::createDevice(rachis::DeviceDesc{
+        .adapterPreference = rachis::AdapterPreference::warp,
+        .validation = rachis::ValidationLevel::standard,
+        .requireValidation = false,
+        .enableDred = true,
+        .diagnosticCallback = &printDiagnostic,
+    });
+    REQUIRE(created.has_value());
+    auto device = std::move(*created);
+
+    auto surface = device.createSurface(rachis::SurfaceDesc{
+        .kind = rachis::SurfaceKind::win32Composition,
+        .windowHandle = window.get(),
+        .label = "DirectComposition render surface",
+    });
+    REQUIRE(surface.has_value());
+
+    const auto leakedBefore = rachis::d3d12::test::nativeSwapchainsReleasedWhileReferenced().load();
+    auto swapchain = device.createSwapchain(rachis::SwapchainDesc{
+        .surface = *surface,
+        .width = initialWidth,
+        .height = initialHeight,
+        .imageCount = 3,
+        .format = format,
+        .usage = rachis::TextureUsage::renderTarget | rachis::TextureUsage::copySource |
+                 rachis::TextureUsage::copyDestination | rachis::TextureUsage::sampled,
+        .presentMode = rachis::PresentMode::fifo,
+        .label = "DirectComposition swapchain",
+    });
+    if (!swapchain)
+    {
+        INFO(swapchain.error().message);
+    }
+    REQUIRE(swapchain.has_value());
+
+    auto info = device.querySwapchainPresentation(*swapchain);
+    REQUIRE(info.has_value());
+    CHECK(info->width == initialWidth);
+    CHECK(info->height == initialHeight);
+    CHECK(info->format == format);
+    CHECK(info->presentMode == rachis::PresentMode::fifo);
+    CHECK(info->imageCount == 3);
+
+    auto readback = device.createBuffer({
+        .size = readbackSize,
+        .usage = rachis::BufferUsage::copyDestination,
+        .memoryType = rachis::MemoryType::readback,
+        .label = "DirectComposition readback",
+    });
+    REQUIRE(readback.has_value());
+
+    auto renderClearAndPresent = [&](std::uint32_t expectedWidth,
+                                     std::uint32_t expectedHeight,
+                                     std::uint64_t expectedGeneration,
+                                     rachis::ClearColor clearColor,
+                                     bool verifyReadback) {
+        auto acquired = device.acquireNextImage(*swapchain);
+        REQUIRE(acquired.has_value());
+        CHECK(acquired->width == expectedWidth);
+        CHECK(acquired->height == expectedHeight);
+        CHECK(acquired->generation == expectedGeneration);
+        CHECK(acquired->format == format);
+
+        auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::graphics);
+        REQUIRE(command.has_value());
+        REQUIRE(device
+                    .textureBarrier(*command,
+                                    {
+                                        .texture = acquired->texture,
+                                        .stagesBefore = acquired->initialStages,
+                                        .stagesAfter = rachis::PipelineStage::renderTarget,
+                                        .accessBefore = acquired->initialAccess,
+                                        .accessAfter = rachis::Access::renderTarget,
+                                        .layoutBefore = acquired->initialLayout,
+                                        .layoutAfter = rachis::TextureLayout::renderTarget,
+                                    })
+                    .has_value());
+        const std::array attachments{
+            rachis::ColorAttachment{
+                .view = acquired->renderTargetView,
+                .loadOperation = rachis::LoadOperation::clear,
+                .storeOperation = rachis::StoreOperation::store,
+                .clearValue = clearColor,
+            },
+        };
+        REQUIRE(device.beginRendering(*command, {.colorAttachments = attachments}).has_value());
+        REQUIRE(device.endRendering(*command).has_value());
+        if (verifyReadback)
+        {
+            REQUIRE(device
+                        .textureBarrier(*command,
+                                        {
+                                            .texture = acquired->texture,
+                                            .stagesBefore = rachis::PipelineStage::renderTarget,
+                                            .stagesAfter = rachis::PipelineStage::copy,
+                                            .accessBefore = rachis::Access::renderTarget,
+                                            .accessAfter = rachis::Access::copySource,
+                                            .layoutBefore = rachis::TextureLayout::renderTarget,
+                                            .layoutAfter = rachis::TextureLayout::copySource,
+                                        })
+                        .has_value());
+            REQUIRE(device
+                        .copyTextureToBuffer(*command,
+                                             rachis::BufferTextureCopy{
+                                                 .buffer = *readback,
+                                                 .bytesPerRow = rowPitch,
+                                                 .rowsPerImage = expectedHeight,
+                                                 .texture = acquired->texture,
+                                                 .extent = {1, 1, 1},
+                                             })
+                        .has_value());
+            REQUIRE(device
+                        .textureBarrier(*command,
+                                        {
+                                            .texture = acquired->texture,
+                                            .stagesBefore = rachis::PipelineStage::copy,
+                                            .stagesAfter = acquired->requiredFinalStages,
+                                            .accessBefore = rachis::Access::copySource,
+                                            .accessAfter = acquired->requiredFinalAccess,
+                                            .layoutBefore = rachis::TextureLayout::copySource,
+                                            .layoutAfter = acquired->requiredFinalLayout,
+                                        })
+                        .has_value());
+        }
+        else
+        {
+            REQUIRE(device
+                        .textureBarrier(*command,
+                                        {
+                                            .texture = acquired->texture,
+                                            .stagesBefore = rachis::PipelineStage::renderTarget,
+                                            .stagesAfter = acquired->requiredFinalStages,
+                                            .accessBefore = rachis::Access::renderTarget,
+                                            .accessAfter = acquired->requiredFinalAccess,
+                                            .layoutBefore = rachis::TextureLayout::renderTarget,
+                                            .layoutAfter = acquired->requiredFinalLayout,
+                                        })
+                        .has_value());
+        }
+        auto submitted = device.submit(std::move(*command));
+        REQUIRE(submitted.has_value());
+        auto presented = device.present(*swapchain, *submitted);
+        if (!presented)
+        {
+            INFO(presented.error().message);
+        }
+        REQUIRE(presented.has_value());
+        CHECK((*presented == rachis::PresentStatus::presented || *presented == rachis::PresentStatus::occluded));
+        REQUIRE(device.wait(*submitted).has_value());
+    };
+
+    renderClearAndPresent(initialWidth, initialHeight, 1, {0.25F, 0.5F, 0.75F, 1.0F}, true);
+    {
+        std::array<std::byte, 4> pixel{};
+        REQUIRE(device.readBuffer(*readback, 0, pixel).has_value());
+        if (format == rachis::Format::bgra8Unorm)
+        {
+            CHECK(nearByte(pixel[0], 191));
+            CHECK(nearByte(pixel[1], 128));
+            CHECK(nearByte(pixel[2], 64));
+            CHECK(nearByte(pixel[3], 255));
+        }
+        else
+        {
+            CHECK(std::to_integer<std::uint8_t>(pixel[0]) > 210);
+            CHECK(std::to_integer<std::uint8_t>(pixel[1]) > 180);
+            CHECK(std::to_integer<std::uint8_t>(pixel[2]) > 130);
+            CHECK(nearByte(pixel[3], 255));
+        }
+    }
+
+    auto timingBeforeResize = device.querySwapchainFrameTiming(*swapchain);
+    REQUIRE(timingBeforeResize.has_value());
+    CHECK(timingBeforeResize->displayedPresentationSequence <= timingBeforeResize->submittedPresentationSequence);
+
+    REQUIRE(device.resizeSwapchain(*swapchain, resizedWidth, resizedHeight).has_value());
+    auto resizedInfo = device.querySwapchainPresentation(*swapchain);
+    REQUIRE(resizedInfo.has_value());
+    CHECK(resizedInfo->width == resizedWidth);
+    CHECK(resizedInfo->height == resizedHeight);
+
+    renderClearAndPresent(resizedWidth, resizedHeight, 2, {1.0F, 0.0F, 0.0F, 1.0F}, true);
+    {
+        std::array<std::byte, 4> pixel{};
+        REQUIRE(device.readBuffer(*readback, 0, pixel).has_value());
+        CHECK(pixel[0] == std::byte{0});
+        CHECK(pixel[1] == std::byte{0});
+        CHECK(pixel[2] == std::byte{255});
+        CHECK(pixel[3] == std::byte{255});
+    }
+
+    REQUIRE(device.resizeSwapchain(*swapchain, 128, 96).has_value());
+    renderClearAndPresent(128, 96, 3, {0.0F, 1.0F, 0.0F, 1.0F}, false);
+
+    auto cancelled = device.acquireNextImage(*swapchain);
+    REQUIRE(cancelled.has_value());
+    REQUIRE(device.cancelSwapchainImage(*swapchain).has_value());
+
+    REQUIRE(device.waitIdle().has_value());
+    REQUIRE(device.destroyBuffer(*readback).has_value());
+    REQUIRE(device.destroySwapchain(*swapchain).has_value());
+    CHECK(rachis::d3d12::test::nativeSwapchainsReleasedWhileReferenced().load() == leakedBefore);
+    REQUIRE(device.destroySurface(*surface).has_value());
+
+    const auto counts = device.diagnosticCounts();
+    CHECK(counts.errors == 0);
+    CHECK(counts.corruptions == 0);
+}
+
+TEST_CASE("a window enforces one live swapchain across win32 and win32Composition surfaces",
+          "[size:medium][rhi][presentation][warp]")
+{
+    const HiddenWindow window;
+    REQUIRE(window.get() != nullptr);
+
+    auto created = rachis::createDevice(rachis::DeviceDesc{
+        .adapterPreference = rachis::AdapterPreference::warp,
+        .validation = rachis::ValidationLevel::standard,
+        .requireValidation = false,
+        .enableDred = true,
+        .diagnosticCallback = &printDiagnostic,
+    });
+    REQUIRE(created.has_value());
+    auto device = std::move(*created);
+
+    auto hwndSurface = device.createSurface(rachis::SurfaceDesc{
+        .kind = rachis::SurfaceKind::win32,
+        .windowHandle = window.get(),
+        .label = "Win32 surface",
+    });
+    REQUIRE(hwndSurface.has_value());
+    auto compSurface = device.createSurface(rachis::SurfaceDesc{
+        .kind = rachis::SurfaceKind::win32Composition,
+        .windowHandle = window.get(),
+        .label = "Win32 composition surface",
+    });
+    REQUIRE(compSurface.has_value());
+
+    const auto desc = [](rachis::SurfaceHandle surface) {
+        return rachis::SwapchainDesc{
+            .surface = surface,
+            .width = initialWidth,
+            .height = initialHeight,
+            .imageCount = 2,
+            .format = rachis::Format::bgra8Unorm,
+            .usage = rachis::TextureUsage::renderTarget,
+            .presentMode = rachis::PresentMode::fifo,
+        };
+    };
+
+    const auto leakedBefore = rachis::d3d12::test::nativeSwapchainsReleasedWhileReferenced().load();
+
+    auto compSwapchain = device.createSwapchain(desc(*compSurface));
+    REQUIRE(compSwapchain.has_value());
+    auto refusedHwnd = device.createSwapchain(desc(*hwndSurface));
+    REQUIRE_FALSE(refusedHwnd.has_value());
+    CHECK(refusedHwnd.error().code == rachis::ErrorCode::invalidState);
+    CHECK(refusedHwnd.error().message == "The native window already has a live swapchain.");
+    REQUIRE(device.destroySwapchain(*compSwapchain).has_value());
+
+    auto hwndSwapchain = device.createSwapchain(desc(*hwndSurface));
+    REQUIRE(hwndSwapchain.has_value());
+    auto refusedComp = device.createSwapchain(desc(*compSurface));
+    REQUIRE_FALSE(refusedComp.has_value());
+    CHECK(refusedComp.error().code == rachis::ErrorCode::invalidState);
+    REQUIRE(device.destroySwapchain(*hwndSwapchain).has_value());
+
+    auto recreatedComp1 = device.createSwapchain(desc(*compSurface));
+    REQUIRE(recreatedComp1.has_value());
+    REQUIRE(device.destroySwapchain(*recreatedComp1).has_value());
+
+    auto recreatedComp2 = device.createSwapchain(desc(*compSurface));
+    REQUIRE(recreatedComp2.has_value());
+    REQUIRE(device.destroySwapchain(*recreatedComp2).has_value());
+
+    CHECK(rachis::d3d12::test::nativeSwapchainsReleasedWhileReferenced().load() == leakedBefore);
+    REQUIRE(device.destroySurface(*compSurface).has_value());
+    REQUIRE(device.destroySurface(*hwndSurface).has_value());
+
+    const auto counts = device.diagnosticCounts();
+    CHECK(counts.errors == 0);
+    CHECK(counts.corruptions == 0);
+}
+
+TEST_CASE("DirectComposition swapchain GetBuffer failure detaches target and allows retry",
+          "[size:medium][rhi][presentation][warp]")
+{
+    const HiddenWindow window(WS_EX_NOREDIRECTIONBITMAP);
+    REQUIRE(window.get() != nullptr);
+
+    auto created = rachis::createDevice(rachis::DeviceDesc{
+        .adapterPreference = rachis::AdapterPreference::warp,
+        .validation = rachis::ValidationLevel::standard,
+        .requireValidation = false,
+        .enableDred = true,
+        .diagnosticCallback = &printDiagnostic,
+    });
+    REQUIRE(created.has_value());
+    auto device = std::move(*created);
+
+    auto surface = device.createSurface(rachis::SurfaceDesc{
+        .kind = rachis::SurfaceKind::win32Composition,
+        .windowHandle = window.get(),
+        .label = "DirectComposition failure recovery surface",
+    });
+    REQUIRE(surface.has_value());
+
+    const rachis::SwapchainDesc desc{
+        .surface = *surface,
+        .width = initialWidth,
+        .height = initialHeight,
+        .imageCount = 2,
+        .format = rachis::Format::bgra8Unorm,
+        .usage = rachis::TextureUsage::renderTarget,
+        .presentMode = rachis::PresentMode::fifo,
+    };
+
+    const auto leakedBefore = rachis::d3d12::test::nativeSwapchainsReleasedWhileReferenced().load();
+    rachis::d3d12::test::nextSwapchainGetBufferResult().store(static_cast<std::int32_t>(E_FAIL),
+                                                              std::memory_order_relaxed);
+    auto failed = device.createSwapchain(desc);
+    rachis::d3d12::test::nextSwapchainGetBufferResult().store(0, std::memory_order_relaxed);
+    REQUIRE_FALSE(failed.has_value());
+    CHECK(failed.error().code == rachis::ErrorCode::nativeFailure);
+
+    auto retried = device.createSwapchain(desc);
+    if (!retried)
+    {
+        INFO(retried.error().message);
+    }
+    REQUIRE(retried.has_value());
+    REQUIRE(device.destroySwapchain(*retried).has_value());
+    CHECK(rachis::d3d12::test::nativeSwapchainsReleasedWhileReferenced().load() == leakedBefore);
+    REQUIRE(device.destroySurface(*surface).has_value());
+}
+
+TEST_CASE("DirectComposition swapchains work on hardware D3D12 adapters",
+          "[size:medium][requires:HardwareD3D12][rhi][presentation]")
+{
+    auto adapters = rachis::enumerateAdapters(rachis::Backend::d3d12);
+    REQUIRE(adapters.has_value());
+    const auto hardware = std::ranges::find_if(
+        *adapters, [](const rachis::AdapterInfo& adapter) { return adapter.type != rachis::AdapterType::software; });
+    if (hardware == adapters->end())
+    {
+        SKIP("No hardware D3D12 adapter is available.");
+    }
+
+    const HiddenWindow window(WS_EX_NOREDIRECTIONBITMAP);
+    REQUIRE(window.get() != nullptr);
+
+    auto created = rachis::createDevice(rachis::DeviceDesc{
+        .backend = rachis::Backend::d3d12,
+        .adapterId = hardware->id,
+        .validation = rachis::ValidationLevel::standard,
+        .requireValidation = false,
+        .enableDred = true,
+        .diagnosticCallback = &printDiagnostic,
+    });
+    REQUIRE(created.has_value());
+    auto device = std::move(*created);
+
+    auto surface = device.createSurface(rachis::SurfaceDesc{
+        .kind = rachis::SurfaceKind::win32Composition,
+        .windowHandle = window.get(),
+        .label = "Hardware DirectComposition surface",
+    });
+    REQUIRE(surface.has_value());
+
+    const auto leakedBefore = rachis::d3d12::test::nativeSwapchainsReleasedWhileReferenced().load();
+    auto swapchain = device.createSwapchain(rachis::SwapchainDesc{
+        .surface = *surface,
+        .width = initialWidth,
+        .height = initialHeight,
+        .imageCount = 3,
+        .format = rachis::Format::bgra8Unorm,
+        .usage = rachis::TextureUsage::renderTarget | rachis::TextureUsage::copySource |
+                 rachis::TextureUsage::copyDestination,
+        .presentMode = rachis::PresentMode::fifo,
+        .label = "Hardware DirectComposition swapchain",
+    });
+    if (!swapchain)
+    {
+        INFO(swapchain.error().message);
+    }
+    REQUIRE(swapchain.has_value());
+
+    auto frame1 = device.acquireNextImage(*swapchain);
+    REQUIRE(frame1.has_value());
+    auto point1 = submitPresentableFrame(device, frame1->texture);
+    REQUIRE(point1.has_value());
+    auto presented1 = device.present(*swapchain, *point1);
+    REQUIRE(presented1.has_value());
+    REQUIRE(device.wait(*point1).has_value());
+
+    REQUIRE(device.resizeSwapchain(*swapchain, resizedWidth, resizedHeight).has_value());
+    auto frame2 = device.acquireNextImage(*swapchain);
+    REQUIRE(frame2.has_value());
+    CHECK(frame2->width == resizedWidth);
+    CHECK(frame2->height == resizedHeight);
+    CHECK(frame2->generation == 2);
+    auto point2 = submitPresentableFrame(device, frame2->texture);
+    REQUIRE(point2.has_value());
+    auto presented2 = device.present(*swapchain, *point2);
+    REQUIRE(presented2.has_value());
+    REQUIRE(device.wait(*point2).has_value());
+
+    auto timing = device.querySwapchainFrameTiming(*swapchain);
+    REQUIRE(timing.has_value());
+    CHECK(timing->displayedPresentationSequence <= timing->submittedPresentationSequence);
+
+    REQUIRE(device.waitIdle().has_value());
+    REQUIRE(device.destroySwapchain(*swapchain).has_value());
+    CHECK(rachis::d3d12::test::nativeSwapchainsReleasedWhileReferenced().load() == leakedBefore);
+    REQUIRE(device.destroySurface(*surface).has_value());
+
+    const auto counts = device.diagnosticCounts();
+    CHECK(counts.errors == 0);
+    CHECK(counts.corruptions == 0);
 }

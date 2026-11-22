@@ -784,3 +784,125 @@ TEST_CASE("C ABI swapchain cancel keeps borrowed handles while a recorded comman
     CHECK(counts.errors == 0);
     CHECK(counts.corruptions == 0);
 }
+
+TEST_CASE("C ABI DirectComposition surface contract matches backend support",
+          "[size:medium]" RACHIS_CABI_DEVICE_REQUIRES "[rachis][cabi][presentation]")
+{
+    HWND const window = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP,
+                                        L"STATIC",
+                                        L"Rachis C ABI DirectComposition",
+                                        WS_OVERLAPPEDWINDOW,
+                                        CW_USEDEFAULT,
+                                        CW_USEDEFAULT,
+                                        static_cast<int>(windowWidth),
+                                        static_cast<int>(windowHeight),
+                                        nullptr,
+                                        nullptr,
+                                        GetModuleHandleW(nullptr),
+                                        nullptr);
+    REQUIRE(window != nullptr);
+    struct WindowCloser final
+    {
+        HWND handle = nullptr;
+        ~WindowCloser()
+        {
+            if (handle != nullptr)
+            {
+                static_cast<void>(DestroyWindow(handle));
+            }
+        }
+    } const closer{window};
+
+    auto error = makeError();
+    rachis_device_desc deviceDesc{};
+    deviceDesc.struct_size = sizeof(deviceDesc);
+    deviceDesc.abi_version = RACHIS_ABI_VERSION;
+    deviceDesc.backend = RACHIS_SMOKE_BACKEND;
+    deviceDesc.adapter_preference = RACHIS_SMOKE_ADAPTER;
+    deviceDesc.validation_level = RACHIS_VALIDATION_STANDARD;
+    deviceDesc.application_name = "Rachis C ABI DirectComposition";
+    rachis_device* native = nullptr;
+    requireOk(rachis_device_create(&deviceDesc, &native, &error), error);
+    const Device device{native, &rachis_device_destroy};
+
+    rachis_surface_desc surfaceDesc{};
+    surfaceDesc.struct_size = sizeof(surfaceDesc);
+    surfaceDesc.abi_version = RACHIS_ABI_VERSION;
+    surfaceDesc.kind = RACHIS_SURFACE_WIN32_COMPOSITION;
+    surfaceDesc.window_handle = window;
+    surfaceDesc.label = "C ABI DirectComposition surface";
+    rachis_handle surface = 0;
+
+    std::uint32_t backend = 0;
+    requireOk(rachis_device_backend(device.get(), &backend, &error), error);
+    if (backend != RACHIS_BACKEND_D3D12)
+    {
+        CHECK(rachis_surface_create(device.get(), &surfaceDesc, &surface, &error) == RACHIS_STATUS_UNSUPPORTED);
+        CHECK(surface == 0);
+        return;
+    }
+
+    requireOk(rachis_surface_create(device.get(), &surfaceDesc, &surface, &error), error);
+
+    rachis_surface_capabilities capabilities{};
+    capabilities.struct_size = sizeof(capabilities);
+    requireOk(rachis_surface_query_capabilities(device.get(), surface, &capabilities, &error), error);
+    CHECK(capabilities.present_modes == RACHIS_PRESENT_MODE_FIFO_BIT);
+
+    rachis_swapchain_desc swapchainDesc{};
+    swapchainDesc.struct_size = sizeof(swapchainDesc);
+    swapchainDesc.abi_version = RACHIS_ABI_VERSION;
+    swapchainDesc.surface = surface;
+    swapchainDesc.width = 64;
+    swapchainDesc.height = 64;
+    swapchainDesc.image_count = 3;
+    swapchainDesc.format = RACHIS_FORMAT_BGRA8_UNORM;
+    swapchainDesc.color_space = RACHIS_COLOR_SPACE_SRGB_NONLINEAR;
+    swapchainDesc.usage = RACHIS_TEXTURE_RENDER_TARGET;
+    swapchainDesc.present_mode = RACHIS_PRESENT_IMMEDIATE;
+    rachis_handle swapchain = 0;
+    CHECK(rachis_swapchain_create(device.get(), &swapchainDesc, &swapchain, &error) == RACHIS_STATUS_UNSUPPORTED);
+    CHECK(swapchain == 0);
+
+    swapchainDesc.present_mode = RACHIS_PRESENT_FIFO;
+    requireOk(rachis_swapchain_create(device.get(), &swapchainDesc, &swapchain, &error), error);
+
+    rachis_command_pool_desc poolDesc{};
+    poolDesc.struct_size = sizeof(poolDesc);
+    poolDesc.abi_version = RACHIS_ABI_VERSION;
+    poolDesc.queue_type = RACHIS_QUEUE_GRAPHICS;
+    poolDesc.max_command_buffers = 2;
+    rachis_handle pool = 0;
+    requireOk(rachis_command_pool_create(device.get(), &poolDesc, &pool, &error), error);
+
+    const auto image = acquireImage(device.get(), swapchain, error);
+    CHECK(image.width == 64);
+    CHECK(image.height == 64);
+    rachis_handle command = 0;
+    requireOk(rachis_command_acquire(device.get(), pool, &command, &error), error);
+    recordClear(device.get(), command, image, error);
+    rachis_handle timeline = 0;
+    requireOk(rachis_command_submit(device.get(), command, &timeline, &error), error);
+    std::uint32_t presentStatus = RACHIS_PRESENT_STATUS_SURFACE_OUT_OF_DATE;
+    requireOk(rachis_swapchain_present(device.get(), swapchain, timeline, &presentStatus, &error), error);
+    CHECK((presentStatus == RACHIS_PRESENT_STATUS_PRESENTED || presentStatus == RACHIS_PRESENT_STATUS_OCCLUDED));
+    requireOk(rachis_timeline_wait(device.get(), timeline, &error), error);
+    requireOk(rachis_timeline_release(device.get(), timeline, &error), error);
+
+    requireOk(rachis_swapchain_resize(device.get(), swapchain, 96, 72, &error), error);
+    const auto resized = acquireImage(device.get(), swapchain, error);
+    CHECK(resized.width == 96);
+    CHECK(resized.height == 72);
+    CHECK(resized.generation == 2);
+    requireOk(rachis_swapchain_cancel(device.get(), swapchain, &error), error);
+
+    requireOk(rachis_command_pool_destroy(device.get(), pool, &error), error);
+    requireOk(rachis_swapchain_destroy(device.get(), swapchain, &error), error);
+    requireOk(rachis_surface_destroy(device.get(), surface, &error), error);
+
+    rachis_diagnostic_counts counts{};
+    counts.struct_size = sizeof(counts);
+    requireOk(rachis_device_diagnostic_counts(device.get(), &counts, &error), error);
+    CHECK(counts.errors == 0);
+    CHECK(counts.corruptions == 0);
+}
