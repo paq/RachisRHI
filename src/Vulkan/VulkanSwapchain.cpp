@@ -2234,6 +2234,30 @@ namespace rachis::vulkan
         return {};
     }
 
+    bool VulkanSwapchainManager::retainImageIfWindowHidden(SwapchainRecord& record, TimelinePoint renderComplete)
+    {
+#ifdef _WIN32
+        if (record.surface != nullptr && record.surface->kind == SurfaceKind::win32 && surfaceIsHidden(record))
+        {
+            // Keep the native acquisition: releasing and reacquiring a hidden Win32 image can leave its next
+            // acquire semaphore unsignaled. Later graphics submissions remain ordered after the rendered frame.
+            auto& image = record.images[record.acquiredIndex];
+            image.contentsDefined = true;
+            image.acquireBridge = renderComplete;
+            record.contentsDefined = true;
+            record.acquired = false;
+            record.cancelledAcquire = true;
+            record.suspended = record.suspended || hiddenSurfaceHasZeroExtent(record);
+            recordPresentCompletion(record);
+            return true;
+        }
+#else
+        static_cast<void>(record);
+        static_cast<void>(renderComplete);
+#endif
+        return false;
+    }
+
     Result<bool> VulkanSwapchainManager::releaseImageIfSurfaceHidden(SwapchainRecord& record,
                                                                      TimelinePoint renderComplete)
     {
@@ -2406,6 +2430,10 @@ namespace rachis::vulkan
                                                                        TimelinePoint renderComplete,
                                                                        bool& injectedDeviceLoss)
     {
+        if (retainImageIfWindowHidden(record, renderComplete))
+        {
+            return PresentStatus::occluded;
+        }
         auto releasedWhileHidden = releaseImageIfSurfaceHidden(record, renderComplete);
         if (!releasedWhileHidden)
         {

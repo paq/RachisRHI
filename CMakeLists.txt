@@ -2549,6 +2549,7 @@ if(rachis_build_tests)
     catch_discover_tests(
         RachisRHITests
         TEST_PREFIX "RachisRHI."
+        TEST_SPEC "~[hidden-present]"
         DISCOVERY_MODE PRE_TEST
         ADD_TAGS_AS_LABELS
         PROPERTIES TIMEOUT 30
@@ -2679,6 +2680,7 @@ if(rachis_build_tests)
         catch_discover_tests(
             RachisRHITests
             TEST_PREFIX "RachisRHI."
+            TEST_SPEC "~[hidden-present]"
             DISCOVERY_MODE PRE_TEST
             ADD_TAGS_AS_LABELS
             PROPERTIES TIMEOUT 30
@@ -2775,6 +2777,14 @@ if(rachis_build_tests)
         )
     endif()
     if(TARGET RachisRHITests)
+        if(WIN32 AND RACHIS_ENABLE_VULKAN)
+            set(rachis_hidden_present_test
+                "RachisRHI.Vulkan hidden presents remain reusable after visible rendering and restore")
+            add_test(NAME "${rachis_hidden_present_test}" COMMAND RachisRHITests "[hidden-present]")
+            set_tests_properties("${rachis_hidden_present_test}" PROPERTIES
+                TIMEOUT 180
+                LABELS "size:large;requires:InteractiveDesktop;requires:HardwareVulkan;rhi;vulkan;present;regression;hidden-present")
+        endif()
         rachis_ensure_shader_binary_tool(rachis_test_shader_binary_tool_cmd rachis_test_shader_binary_tool_depends)
         target_compile_definitions(RachisRHITests PRIVATE
             RACHIS_SHADER_BINARY_TOOL_PATH="${rachis_test_shader_binary_tool_cmd}"

@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -373,6 +374,92 @@ namespace
     }
 
 } // namespace
+
+TEST_CASE("Vulkan hidden presents remain reusable after visible rendering and restore",
+          "[size:large][requires:InteractiveDesktop][requires:HardwareVulkan][rhi][vulkan][present][regression]"
+          "[hidden-present]")
+{
+    using Clock = std::chrono::steady_clock;
+    PresentFixture fixture(true, 3);
+    if (!fixture.ready)
+    {
+        FAIL(fixture.error.message);
+    }
+    const auto pump = [] {
+        MSG message{};
+        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE) != FALSE)
+        {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    };
+    rachis::TimelinePoint previous{};
+    const auto frame = [&](rachis::PresentStatus expected, bool wait = true) {
+        pump();
+        const auto acquired = fixture.device.acquireNextImage(fixture.swapchain);
+        REQUIRE(acquired);
+        if (previous.isValid())
+        {
+            const auto stale = fixture.device.present(fixture.swapchain, previous);
+            REQUIRE_FALSE(stale);
+            CHECK(stale.error().code == rachis::ErrorCode::invalidArgument);
+        }
+        const auto submitted = fixture.drawAcquired(*acquired);
+        REQUIRE(submitted);
+        const auto started = Clock::now();
+        const auto presented = fixture.device.present(fixture.swapchain, *submitted);
+        const auto elapsed = Clock::now() - started;
+        REQUIRE(presented);
+        CHECK(*presented == expected);
+        if (expected == rachis::PresentStatus::occluded)
+        {
+            CHECK(elapsed < std::chrono::seconds{1});
+            CHECK_FALSE(fixture.device.present(fixture.swapchain, *submitted));
+        }
+        if (wait)
+        {
+            REQUIRE(fixture.device.wait(*submitted));
+        }
+        previous = *submitted;
+    };
+    const auto initialSemaphores = semaphoreCount(fixture.swapchain);
+    for (int index = 0; index < 280; ++index)
+    {
+        INFO("visible frame " << index);
+        frame(rachis::PresentStatus::presented);
+    }
+    for (int cycle = 0; cycle < 3; ++cycle)
+    {
+        INFO("visibility cycle " << cycle);
+        ShowWindow(fixture.window.get(), SW_HIDE);
+        pump();
+        REQUIRE_FALSE(IsWindowVisible(fixture.window.get()));
+        REQUIRE_FALSE(IsIconic(fixture.window.get()));
+        for (int index = 0; index < 16; ++index)
+        {
+            INFO("hidden frame " << index);
+            frame(rachis::PresentStatus::occluded, cycle != 1 || index == 15);
+            CHECK(semaphoreCount(fixture.swapchain) == initialSemaphores);
+        }
+        ShowWindow(fixture.window.get(), SW_SHOWNOACTIVATE);
+        for (int index = 0; index < 16; ++index)
+        {
+            INFO("restored frame " << index);
+            frame(rachis::PresentStatus::presented);
+        }
+    }
+    ShowWindow(fixture.window.get(), SW_HIDE);
+    frame(rachis::PresentStatus::occluded);
+    REQUIRE(fixture.device.resizeSwapchain(fixture.swapchain, fixture.width, fixture.height));
+    frame(rachis::PresentStatus::occluded);
+    ShowWindow(fixture.window.get(), SW_SHOWNOACTIVATE);
+    frame(rachis::PresentStatus::presented);
+    ShowWindow(fixture.window.get(), SW_HIDE);
+    frame(rachis::PresentStatus::occluded, false);
+    REQUIRE(fixture.device.destroySwapchain(fixture.swapchain));
+    fixture.swapchain = {};
+    CHECK(fixture.errors.load(std::memory_order_relaxed) == 0);
+}
 
 TEST_CASE("Vulkan present sync covers min-image-count and injected acquire/present failures",
           "[size:medium][requires:InteractiveDesktop][requires:HardwareVulkan][rhi][vulkan][present]")
