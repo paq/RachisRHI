@@ -19,6 +19,7 @@ The C ABI lives in the `rachis` shared library (`Rachis::C` in CMake) and export
   - [Timelines](#timelines)
   - [Texture leases](#texture-leases)
   - [Swapchain images](#swapchain-images)
+  - [Present timings](#present-timings)
 - [Threads](#threads)
 - [Device loss](#device-loss)
 - [Timestamps and memory budget](#timestamps-and-memory-budget)
@@ -183,9 +184,9 @@ Each `rachis_mapped_range` is an `offset` from the start of the buffer (not of t
 ### Surface and swapchain rules
 
 - **Ownership:** Native windows, displays, and layers remain caller-owned and must outlive the surface. Destroy all swapchains on a surface before calling `rachis_surface_destroy` (otherwise returns `RACHIS_STATUS_INVALID_STATE`).
-- **One swapchain per window:** Only one live swapchain may exist per native window on a device (including across `RACHIS_SURFACE_WIN32` and `RACHIS_SURFACE_WIN32_COMPOSITION` surfaces on the same `HWND`). Creating a second on that surface—or on another surface for the same window—returns `RACHIS_STATUS_INVALID_STATE` (creating multiple `rachis_surface` handles for one window is allowed). See [Surfaces](using.md#surfaces) for cross-device caveats.
-- **Win32 DirectComposition surfaces:** `RACHIS_SURFACE_WIN32_COMPOSITION` creates a D3D12 composition swapchain (`CreateSwapChainForComposition`) attached to the `HWND` via DirectComposition (`dcomp.dll`, loaded dynamically on demand) and pairs cleanly with `WS_EX_NOREDIRECTIONBITMAP` windows. Because DXGI composition swapchains do not support tearing, `rachis_surface_query_capabilities` reports only `RACHIS_PRESENT_MODE_FIFO_BIT`, and requesting `RACHIS_PRESENT_IMMEDIATE` returns `RACHIS_STATUS_UNSUPPORTED`.
-- **Metal layers:** Creating a surface leaves `CAMetalLayer` untouched (if `layer.device` is set, it must match the device's GPU). Creating a swapchain sets `device`, `pixelFormat`, `drawableSize`, `colorspace`, `opaque`, `allowsNextDrawableTimeout`, `displaySyncEnabled` (`NO` for `RACHIS_PRESENT_IMMEDIATE`), `framebufferOnly` (unless copy-source usage is requested), and `name` (if the surface has a label). With an `NSView`, hidden views or non-visible windows cause `rachis_swapchain_acquire` to return `RACHIS_STATUS_NOT_READY` and `rachis_swapchain_present` to report `RACHIS_PRESENT_STATUS_OCCLUDED` (without an `NSView`, only zero drawable size counts as hidden). View visibility is read on the main thread, so off-main-thread callers observe updates after the main run loop runs.
+- **One swapchain per window:** Only one live swapchain may exist per native window on a device. Creating a second on that surface—or on another surface for the same window—returns `RACHIS_STATUS_INVALID_STATE` (creating multiple `rachis_surface` handles for one window is allowed). See [Surfaces](using.md#surfaces) for cross-device caveats.
+- **Win32 composition surfaces:** `RACHIS_SURFACE_WIN32_COMPOSITION` uses `CreateSwapChainForComposition` with DirectComposition (D3D12 only) and supports only `RACHIS_PRESENT_MODE_FIFO_BIT` (`RACHIS_PRESENT_IMMEDIATE` returns `RACHIS_STATUS_UNSUPPORTED`).
+- **Metal layers:** Creating a surface leaves `CAMetalLayer` untouched (if `layer.device` is set, it must match the device's GPU). Creating a swapchain sets `device`, `pixelFormat`, `drawableSize`, `colorspace`, `opaque`, `allowsNextDrawableTimeout`, `displaySyncEnabled` (`NO` for `RACHIS_PRESENT_IMMEDIATE`), `maximumDrawableCount` (2 for `RACHIS_PRESENT_IMMEDIATE`, 3 for `RACHIS_PRESENT_FIFO`), `framebufferOnly` (unless copy-source usage is requested), and `name` (if the surface has a label). With an `NSView`, hidden views or non-visible windows cause `rachis_swapchain_acquire` to return `RACHIS_STATUS_NOT_READY` and `rachis_swapchain_present` to report `RACHIS_PRESENT_STATUS_OCCLUDED` (without an `NSView`, only zero drawable size counts as hidden). View visibility is read on the main thread, so off-main-thread callers observe updates after the main run loop runs.
 - **Capabilities bitmasks vs ordinals:** `rachis_surface_query_capabilities` populates the first `format_count` slots of `formats` (zeroing the rest) and returns two bitmasks: `present_modes` (`RACHIS_PRESENT_MODE_FIFO_BIT` / `RACHIS_PRESENT_MODE_IMMEDIATE_BIT`) and `usages` (`RACHIS_TEXTURE_*`). In `rachis_swapchain_desc`, `present_mode` takes an **ordinal** (`RACHIS_PRESENT_FIFO` or `RACHIS_PRESENT_IMMEDIATE`), not a bit flag—test support with `present_modes & RACHIS_PRESENT_MODE_IMMEDIATE_BIT`, never `& RACHIS_PRESENT_IMMEDIATE`.
 - **D3D12 sRGB sampling:** On D3D12 devices lacking fully typed format casting, `rachis_swapchain_create` returns `RACHIS_STATUS_UNSUPPORTED` for `RACHIS_FORMAT_RGBA8_UNORM_SRGB` or `RACHIS_FORMAT_BGRA8_UNORM_SRGB` combined with `RACHIS_TEXTURE_SAMPLED` (see [Surfaces](using.md#surfaces)).
 
@@ -227,6 +228,14 @@ if (rachis_command_submit(device, command, &timeline, &error) == RACHIS_STATUS_O
 - On Metal, submitting a command buffer referencing an invalidated swapchain image returns `RACHIS_STATUS_INVALID_STATE`.
 - On Direct3D 12 and Vulkan, `rachis_swapchain_cancel` returns `RACHIS_STATUS_INVALID_STATE` while a command buffer referencing the acquired image is recording or submitted-but-unpresented (see [Surfaces](using.md#surfaces)).
 - Frame flow: transition from `rachis_swapchain_acquire`'s reported `initial` state -> write -> transition to required presentation state -> submit -> pass the resulting timeline handle to `rachis_swapchain_present` -> release the timeline handle. On Vulkan, the timeline must come from a graphics-queue submission made after `rachis_swapchain_acquire` (otherwise `rachis_swapchain_present` returns `RACHIS_STATUS_INVALID_ARGUMENT` and leaves the image acquired).
+
+### Present timings
+
+`rachis_swapchain_query_present_timings` writes settled records with `first_sequence <= present_sequence <= settled_sequence` (oldest first, up to `capacity`; `records` may be `NULL` when `capacity == 0`), keeping at least `RACHIS_PRESENT_TIMING_MIN_HISTORY` (64) records per swapchain generation.
+
+- `present_time` uses `cpu_clock` at `cpu_frequency` ticks/s (matching `rachis_timestamp_calibration.cpu_timestamp`); `refresh_interval_ns` / `max_refresh_interval_ns` report display refresh bounds in ns (0 if unknown).
+- Flags: `RACHIS_PRESENT_TIMING_DISPLAYED`, `RACHIS_PRESENT_TIMING_DROPPED`, `RACHIS_PRESENT_TIMING_HIDDEN`, `RACHIS_PRESENT_TIMING_ESTIMATED` (`0` = unknown outcome).
+- Supported on Metal and Direct3D 12; returns `RACHIS_STATUS_UNSUPPORTED` on Vulkan or when frame statistics are unavailable.
 
 ## Threads
 

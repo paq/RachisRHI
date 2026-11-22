@@ -195,6 +195,7 @@ TEST_CASE("Metal device create rejects injected missing features and releases pa
     {
         rachis::metal::ScopedFailCommandApiCreate const failCommandApi;
         rachis::metal::ScopedFailSharedEventProbe const failSharedEvent;
+        rachis::metal::ScopedSharedEventCount const fullTable(65535);
         const auto started = std::chrono::steady_clock::now();
         auto created = rachis::createDevice(rachis::DeviceDesc{
             .backend = rachis::Backend::metal,
@@ -205,8 +206,49 @@ TEST_CASE("Metal device create rejects injected missing features and releases pa
         REQUIRE_FALSE(created.has_value());
         CHECK(created.error().code == rachis::ErrorCode::resourceExhausted);
         CHECK(created.error().message.contains("shared-event table is full"));
-        CHECK(created.error().message.contains("of 65535 in use"));
+        CHECK(created.error().message.contains("(65535 of 65535 in use)"));
         CHECK(elapsed < std::chrono::milliseconds(200));
+    }
+
+    {
+        rachis::metal::ScopedFailCommandApiCreate const failCommandApi;
+        rachis::metal::ScopedFailSharedEventProbe const failSharedEvent;
+        rachis::metal::ScopedSharedEventCount const roomyTable(1024);
+        auto created = rachis::createDevice(rachis::DeviceDesc{
+            .backend = rachis::Backend::metal,
+            .validation = rachis::ValidationLevel::standard,
+            .enableDred = false,
+        });
+        REQUIRE_FALSE(created.has_value());
+        CHECK(created.error().code == rachis::ErrorCode::notReady);
+        CHECK(created.error().message.starts_with("Retry device creation later: "));
+        CHECK_FALSE(created.error().message.contains("shared-event table is full"));
+    }
+
+    {
+        rachis::metal::ScopedFailCommandApiCreate const failCommandApi;
+        rachis::metal::ScopedSharedEventCount const nearlyFullTable(65500);
+        auto created = rachis::createDevice(rachis::DeviceDesc{
+            .backend = rachis::Backend::metal,
+            .validation = rachis::ValidationLevel::standard,
+            .enableDred = false,
+        });
+        REQUIRE_FALSE(created.has_value());
+        CHECK(created.error().code == rachis::ErrorCode::notReady);
+        CHECK(created.error().message.starts_with("Retry device creation later: "));
+    }
+
+    {
+        rachis::metal::ScopedFailCommandApiCreate const failCommandApi;
+        rachis::metal::ScopedFailSharedEventProbe const failSharedEvent;
+        rachis::metal::ScopedSharedEventCount const unreadableTable(std::nullopt);
+        auto created = rachis::createDevice(rachis::DeviceDesc{
+            .backend = rachis::Backend::metal,
+            .validation = rachis::ValidationLevel::standard,
+            .enableDred = false,
+        });
+        REQUIRE_FALSE(created.has_value());
+        CHECK(created.error().code == rachis::ErrorCode::notReady);
     }
 
     {

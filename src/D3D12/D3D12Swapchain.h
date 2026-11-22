@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 
 namespace rachis::d3d12
 {
@@ -57,6 +58,9 @@ namespace rachis::d3d12
                                                     TimelinePoint renderComplete);
         [[nodiscard]] Result<SwapchainPresentationInfo> queryPresentation(SwapchainHandle swapchain) const;
         [[nodiscard]] Result<SwapchainFrameTiming> queryFrameTiming(SwapchainHandle swapchain) const;
+        [[nodiscard]] Result<SwapchainPresentTimings> queryPresentTimings(SwapchainHandle swapchain,
+                                                                          std::uint64_t firstSequence,
+                                                                          std::span<PresentTiming> records) const;
 
     private:
         struct Impl;

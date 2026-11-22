@@ -2,6 +2,7 @@
 
 #include "Common/AcquireDeadline.h"
 #include "Common/HandleTable.h"
+#include "Common/TimedMutex.h"
 #include "D3D12/D3D12Format.h"
 #include "D3D12/D3D12NativeHelpers.h"
 #include "D3D12/D3D12PresentationProgress.h"
@@ -71,7 +72,7 @@ namespace rachis::d3d12
 
         struct SwapchainRecord final
         {
-            mutable std::mutex recordMutex;
+            mutable rachis::detail::TimedMutex recordMutex;
             std::shared_ptr<SurfaceRecord> surface;
             ComPtr<IDXGISwapChain4> swapchain;
             ComPtr<IDCompositionDevice> compositionDevice;
@@ -96,7 +97,7 @@ namespace rachis::d3d12
         class PendingSurfaceClaim final
         {
         public:
-            PendingSurfaceClaim(std::shared_ptr<SurfaceRecord> surface, std::mutex& mutex) noexcept
+            PendingSurfaceClaim(std::shared_ptr<SurfaceRecord> surface, rachis::detail::TimedMutex& mutex) noexcept
                 : surface_(std::move(surface)), mutex_(&mutex)
             {
             }
@@ -122,7 +123,7 @@ namespace rachis::d3d12
 
         private:
             std::shared_ptr<SurfaceRecord> surface_;
-            std::mutex* mutex_ = nullptr;
+            rachis::detail::TimedMutex* mutex_ = nullptr;
         };
 
         [[nodiscard]] Error invalidSwapchainError() noexcept
@@ -140,7 +141,7 @@ namespace rachis::d3d12
         }
 
         [[nodiscard]] std::shared_ptr<SwapchainRecord> findSwapchainRecord(
-            std::mutex& mutex,
+            rachis::detail::TimedMutex& mutex,
             const detail::HandleTable<std::shared_ptr<SwapchainRecord>, SwapchainHandle>& swapchains,
             SwapchainHandle swapchain) noexcept
         {
@@ -149,8 +150,23 @@ namespace rachis::d3d12
             return found != nullptr ? *found : nullptr;
         }
 
+        [[nodiscard]] std::optional<std::shared_ptr<SwapchainRecord>> findSwapchainRecord(
+            rachis::detail::TimedMutex& mutex,
+            const detail::HandleTable<std::shared_ptr<SwapchainRecord>, SwapchainHandle>& swapchains,
+            SwapchainHandle swapchain,
+            const rachis::detail::AcquireDeadline& deadline)
+        {
+            const auto lock = deadline.lock(mutex);
+            if (!lock.owns_lock())
+            {
+                return std::nullopt;
+            }
+            const auto* found = swapchains.find(swapchain);
+            return found != nullptr ? *found : nullptr;
+        }
+
         [[nodiscard]] std::shared_ptr<SurfaceRecord> findSurfaceRecord(
-            std::mutex& mutex,
+            rachis::detail::TimedMutex& mutex,
             const detail::HandleTable<std::shared_ptr<SurfaceRecord>, SurfaceHandle>& surfaces,
             SurfaceHandle surface)
         {
@@ -553,7 +569,7 @@ namespace rachis::d3d12
         }
 
         [[nodiscard]] Status claimSurfaceForSwapchain(
-            std::mutex& mutex,
+            rachis::detail::TimedMutex& mutex,
             const detail::HandleTable<std::shared_ptr<SurfaceRecord>, SurfaceHandle>& surfaces,
             const detail::HandleTable<std::shared_ptr<SwapchainRecord>, SwapchainHandle>& swapchains,
             SurfaceHandle handle,
@@ -1124,6 +1140,33 @@ namespace rachis::d3d12
             return attempt.result != DXGI_STATUS_OCCLUDED;
         }
 
+        [[nodiscard]] std::uint64_t queryPerformanceFrequency() noexcept
+        {
+            LARGE_INTEGER frequency{};
+            return QueryPerformanceFrequency(&frequency) != FALSE && frequency.QuadPart > 0
+                       ? static_cast<std::uint64_t>(frequency.QuadPart)
+                       : 0;
+        }
+
+        void observeFrameStatistics(SwapchainRecord& record) noexcept
+        {
+            auto& presentation = record.presentation;
+            if (!presentation.supported() || record.swapchain == nullptr)
+            {
+                return;
+            }
+            DXGI_FRAME_STATISTICS statistics{};
+            if (FAILED(record.swapchain->GetFrameStatistics(&statistics)))
+            {
+                return;
+            }
+            presentation.observedFrame(
+                statistics.PresentCount,
+                statistics.PresentRefreshCount,
+                statistics.SyncRefreshCount,
+                statistics.SyncQPCTime.QuadPart > 0 ? static_cast<std::uint64_t>(statistics.SyncQPCTime.QuadPart) : 0);
+        }
+
         void updatePresentationProgressAndLatencySlot(SwapchainRecord& record, const NativePresentAttempt& attempt)
         {
             std::uint32_t presentCountAfter = 0;
@@ -1131,6 +1174,7 @@ namespace rachis::d3d12
             if (hadPresentCountAfter)
             {
                 record.presentation.presented(presentCountAfter);
+                observeFrameStatistics(record);
             }
             else
             {
@@ -1158,7 +1202,7 @@ namespace rachis::d3d12
         ComPtr<IDXGIFactory7> factory;
         bool tearingSupported = false;
         bool fullyTypedFormatCasting = false;
-        std::mutex mutex;
+        rachis::detail::TimedMutex mutex;
         detail::HandleTable<std::shared_ptr<SurfaceRecord>, SurfaceHandle> surfaces;
         detail::HandleTable<std::shared_ptr<SwapchainRecord>, SwapchainHandle> swapchains;
     };
@@ -1459,13 +1503,22 @@ namespace rachis::d3d12
                                                                       std::optional<std::chrono::nanoseconds> timeout)
     {
         const rachis::detail::AcquireDeadline deadline(timeout, std::chrono::milliseconds(frameLatencyWaitTimeoutMs));
-        const auto recordOwner = findSwapchainRecord(impl_->mutex, impl_->swapchains, swapchain);
+        const auto found = findSwapchainRecord(impl_->mutex, impl_->swapchains, swapchain, deadline);
+        if (!found)
+        {
+            return std::unexpected(deadline.lockTimeout());
+        }
+        const auto& recordOwner = *found;
         if (recordOwner == nullptr)
         {
             return std::unexpected(invalidSwapchainError());
         }
         auto& record = *recordOwner;
-        const std::scoped_lock recordLock(record.recordMutex);
+        const auto recordLock = deadline.lock(record.recordMutex);
+        if (!recordLock.owns_lock())
+        {
+            return std::unexpected(deadline.lockTimeout());
+        }
         auto acquirable = validateAcquirableState(record);
         if (!acquirable)
         {
@@ -1688,20 +1741,53 @@ namespace rachis::d3d12
             return std::unexpected(invalidSwapchainError());
         }
         auto& presentation = record.presentation;
-
-        if (presentation.supported() && record.swapchain != nullptr)
-        {
-            DXGI_FRAME_STATISTICS statistics{};
-            if (SUCCEEDED(record.swapchain->GetFrameStatistics(&statistics)))
-            {
-                presentation.observed(statistics.PresentCount);
-            }
-        }
+        observeFrameStatistics(record);
         return SwapchainFrameTiming{
             .presentationSupported = presentation.supported(),
             .presentationGeneration = presentation.generation(),
             .submittedPresentationSequence = presentation.submittedSequence(),
             .displayedPresentationSequence = presentation.displayedSequence(),
+        };
+    }
+
+    Result<SwapchainPresentTimings> SwapchainManager::queryPresentTimings(SwapchainHandle swapchain,
+                                                                          std::uint64_t firstSequence,
+                                                                          std::span<PresentTiming> records) const
+    {
+        const auto recordOwner = findSwapchainRecord(impl_->mutex, impl_->swapchains, swapchain);
+        if (recordOwner == nullptr)
+        {
+            return std::unexpected(invalidSwapchainError());
+        }
+        auto& record = *recordOwner;
+        const std::scoped_lock recordLock(record.recordMutex);
+        if (record.destroyed)
+        {
+            return std::unexpected(invalidSwapchainError());
+        }
+        const auto frequency = queryPerformanceFrequency();
+        if (!record.presentation.supported() || record.swapchain == nullptr || frequency == 0)
+        {
+            return std::unexpected(Error{
+                ErrorCode::unsupported,
+                0,
+                "This swapchain reports no DXGI frame statistics, so it has no per-present timing.",
+            });
+        }
+        observeFrameStatistics(record);
+        const auto snapshot = record.presentation.readTimings(firstSequence, records);
+        const auto refreshTicks = record.presentation.refreshTicks();
+        const auto intervalNs = refreshTicks == 0 ? 0 : (refreshTicks * 1'000'000'000ULL + frequency / 2) / frequency;
+        return SwapchainPresentTimings{
+            .cpuClock = CpuClock::queryPerformanceCounter,
+            .cpuFrequency = frequency,
+            .generation = record.presentation.generation(),
+            .submittedSequence = snapshot.submittedSequence,
+            .settledSequence = snapshot.settledSequence,
+            .firstAvailableSequence = snapshot.firstAvailableSequence,
+            .refreshIntervalNs = intervalNs,
+            .maxRefreshIntervalNs = intervalNs,
+            .recordCount = snapshot.recordCount,
         };
     }
 

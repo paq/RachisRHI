@@ -26,6 +26,28 @@ namespace rachis::metal
             return visible != nil && ![visible boolValue];
         }
 
+        [[nodiscard]] std::uint64_t metalIntervalNs(NSTimeInterval seconds) noexcept
+        {
+            return seconds > 0.0 && seconds < 10.0 ? static_cast<std::uint64_t>(std::llround(seconds * 1.0e9)) : 0;
+        }
+
+        void readMetalViewScreen(id view, bool hidden, MetalViewVisibility& visibility) noexcept
+        {
+            constexpr NSUInteger occlusionStateVisible = 1U << 1U; // NSWindowOcclusionStateVisible
+            id const window = view != nil ? [view valueForKey:@"window"] : nil;
+            const bool onScreen =
+                !hidden && window != nil && [[window valueForKey:@"visible"] boolValue] &&
+                ![[window valueForKey:@"miniaturized"] boolValue] &&
+                ([[window valueForKey:@"occlusionState"] unsignedIntegerValue] & occlusionStateVisible) != 0;
+            visibility.onScreen.store(onScreen, std::memory_order_release);
+            id const screen = window != nil ? [window valueForKey:@"screen"] : nil;
+            const auto interval = [&](NSString* key) -> std::uint64_t {
+                return screen != nil ? metalIntervalNs([[screen valueForKey:key] doubleValue]) : 0;
+            };
+            visibility.minRefreshIntervalNs.store(interval(@"minimumRefreshInterval"), std::memory_order_release);
+            visibility.maxRefreshIntervalNs.store(interval(@"maximumRefreshInterval"), std::memory_order_release);
+        }
+
         void refreshMetalViewVisibility(const std::shared_ptr<MetalViewVisibility>& visibility) noexcept
         {
             if (visibility == nullptr)
@@ -37,7 +59,9 @@ namespace rachis::metal
                 @autoreleasepool
                 {
                     id const view = visibility->view;
-                    visibility->hidden.store(metalReadViewHidden(view), std::memory_order_release);
+                    const bool hidden = metalReadViewHidden(view);
+                    visibility->hidden.store(hidden, std::memory_order_release);
+                    readMetalViewScreen(view, hidden, *visibility);
                 }
                 return;
             }
@@ -156,7 +180,9 @@ namespace rachis::metal
 
         void applyMetalPresentMode(CAMetalLayer* layer, PresentMode mode) noexcept
         {
-            layer.displaySyncEnabled = mode == PresentMode::immediate ? NO : YES;
+            const bool immediate = mode == PresentMode::immediate;
+            layer.displaySyncEnabled = immediate ? NO : YES;
+            layer.maximumDrawableCount = immediate ? 2 : 3;
         }
 
         void applyMetalSwapchainLayer(CAMetalLayer* layer, const SwapchainDesc& desc) noexcept
@@ -294,11 +320,13 @@ namespace rachis::metal
         struct MetalSwapchainOperationLock final
         {
             std::shared_ptr<MetalSwapchainRecord> record;
-            std::unique_lock<std::mutex> lock;
+            std::unique_lock<rachis::detail::TimedMutex> lock;
         };
 
         [[nodiscard]] MetalSwapchainOperationLock lockMetalSwapchainOperations(
-            std::mutex& deviceMutex, const std::shared_ptr<MetalDeviceNative>& native, SwapchainHandle swapchain)
+            rachis::detail::TimedMutex& deviceMutex,
+            const std::shared_ptr<MetalDeviceNative>& native,
+            SwapchainHandle swapchain)
         {
             MetalSwapchainOperationLock operation;
             {
@@ -314,6 +342,38 @@ namespace rachis::metal
             if (operation.record != nullptr)
             {
                 operation.lock = std::unique_lock(operation.record->operationMutex);
+            }
+            return operation;
+        }
+
+        [[nodiscard]] std::optional<MetalSwapchainOperationLock> lockMetalSwapchainOperations(
+            rachis::detail::TimedMutex& deviceMutex,
+            const std::shared_ptr<MetalDeviceNative>& native,
+            SwapchainHandle swapchain,
+            const detail::AcquireDeadline& deadline)
+        {
+            MetalSwapchainOperationLock operation;
+            {
+                const auto lock = deadline.lock(deviceMutex);
+                if (!lock.owns_lock())
+                {
+                    return std::nullopt;
+                }
+                if (native != nullptr)
+                {
+                    if (auto* found = native->swapchains.find(swapchain); found != nullptr)
+                    {
+                        operation.record = *found;
+                    }
+                }
+            }
+            if (operation.record != nullptr)
+            {
+                operation.lock = deadline.lock(operation.record->operationMutex);
+                if (!operation.lock.owns_lock())
+                {
+                    return std::nullopt;
+                }
             }
             return operation;
         }
@@ -853,16 +913,9 @@ namespace rachis::metal
               pending->arrived.notify_all();
             });
             std::unique_lock fetchLock(fetch->mutex);
-            while (!fetch->done && !expired->load(std::memory_order_acquire))
+            while (!fetch->done && !expired->load(std::memory_order_acquire) && !deadline.expired())
             {
-                if (alarm.armed())
-                {
-                    fetch->arrived.wait(fetchLock);
-                }
-                else if (fetch->arrived.wait_for(fetchLock, deadline.remaining()) == std::cv_status::timeout)
-                {
-                    break;
-                }
+                static_cast<void>(fetch->arrived.wait_for(fetchLock, deadline.remaining()));
             }
             return fetch->done;
         }
@@ -885,8 +938,7 @@ namespace rachis::metal
             {
                 const auto left = static_cast<std::int64_t>(std::min<std::uint64_t>(
                     deadline.remainingNs(), static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())));
-                static_cast<void>(dispatch_semaphore_wait(
-                    tick, ticker.armed() ? DISPATCH_TIME_FOREVER : dispatch_time(DISPATCH_TIME_NOW, left)));
+                static_cast<void>(dispatch_semaphore_wait(tick, dispatch_time(DISPATCH_TIME_NOW, left)));
                 status = queryMetalValue(native, timeline, value);
                 if (!status || *status == TimelinePointStatus::complete || deadline.expired())
                 {
@@ -943,8 +995,16 @@ namespace rachis::metal
         }
         const detail::AcquireDeadline deadline(timeout, std::chrono::seconds(1));
 
-        const auto operation = lockMetalSwapchainOperations(mutex_, native_, swapchain);
-        std::unique_lock lock(mutex_);
+        const auto operation = lockMetalSwapchainOperations(mutex_, native_, swapchain, deadline);
+        if (!operation)
+        {
+            return std::unexpected(deadline.lockTimeout());
+        }
+        auto lock = deadline.lock(mutex_);
+        if (!lock.owns_lock())
+        {
+            return std::unexpected(deadline.lockTimeout());
+        }
         auto ready = validateMetalSwapchainAcquirable(native_, swapchain);
         if (!ready)
         {
@@ -957,7 +1017,7 @@ namespace rachis::metal
         }
 #endif
         const auto record = ready->first;
-        if (record->drawableFetch == nullptr && record->inFlightPresents >= 3 && !record->inFlight.empty())
+        if (record->inFlightPresents >= 3 && !record->inFlight.empty())
         {
             const auto backend = native_;
             const auto oldestValue = record->inFlight.front().timelineValue;
@@ -974,7 +1034,10 @@ namespace rachis::metal
             {
                 return std::unexpected(std::move(blocked.error()));
             }
-            lock.lock();
+            if (!deadline.relock(lock))
+            {
+                return std::unexpected(deadline.lockTimeout());
+            }
             ready = validateMetalSwapchainAcquirable(native_, swapchain);
             if (!ready)
             {
@@ -997,7 +1060,10 @@ namespace rachis::metal
             lock.unlock();
             const bool arrived = waitForMetalDrawableFetch(fetch, deadline);
             auto active = requireActive();
-            lock.lock();
+            if (!deadline.relock(lock))
+            {
+                return std::unexpected(deadline.lockTimeout());
+            }
             if (!active)
             {
                 return std::unexpected(std::move(active.error()));
@@ -1178,10 +1244,19 @@ namespace rachis::metal
                 }
                 const auto presentationSequence = record.submittedPresentationSequence + 1;
                 const auto feedback = record.presentationFeedback;
+                std::shared_ptr<MetalViewVisibility> visibility;
+                if (const auto* surface = native.surfaces.find(record.surface);
+                    surface != nullptr && *surface != nullptr)
+                {
+                    visibility = (*surface)->viewVisibility;
+                }
+                feedback->submitted(presentationSequence);
                 [drawable addPresentedHandler:^(id<MTLDrawable> presentedDrawable) {
                   @autoreleasepool
                   {
-                      feedback->presented(presentationSequence, presentedDrawable.presentedTime);
+                      const bool visible =
+                          visibility == nullptr || visibility->onScreen.load(std::memory_order_acquire);
+                      feedback->presented(presentationSequence, presentedDrawable.presentedTime, visible);
                   }
                 }];
                 [native.commandQueue signalDrawable:drawable];
@@ -1267,7 +1342,14 @@ namespace rachis::metal
             else
 #endif
             {
-                return submitMetalDrawablePresent(*native_, record, timeline, renderComplete);
+                const auto status = submitMetalDrawablePresent(*native_, record, timeline, renderComplete);
+                if (auto* surface = native_->surfaces.find(record.surface); record.drawableFetch == nullptr &&
+                                                                            surface != nullptr && *surface != nullptr &&
+                                                                            (*surface)->layer != nil)
+                {
+                    record.drawableFetch = startMetalDrawableFetch((*surface)->layer);
+                }
+                return status;
             }
         }
 #ifdef RACHIS_TESTING
@@ -1332,6 +1414,49 @@ namespace rachis::metal
             .submittedPresentationSequence = record.submittedPresentationSequence,
             .displayedPresentationSequence = record.presentationFeedback->displayedSequence(),
         };
+    }
+
+    Result<SwapchainPresentTimings> MetalDevice::querySwapchainPresentTimings(SwapchainHandle swapchain,
+                                                                              std::uint64_t firstSequence,
+                                                                              std::span<PresentTiming> records) const
+    {
+        std::scoped_lock const lock(mutex_);
+        if (native_ == nullptr)
+        {
+            return std::unexpected(metalSelectionError(
+                ErrorCode::invalidState, "Metal querySwapchainPresentTimings requires an active device."));
+        }
+        auto* found = native_->swapchains.find(swapchain);
+        if (found == nullptr || *found == nullptr)
+        {
+            return std::unexpected(
+                metalSelectionError(ErrorCode::invalidArgument, "The swapchain handle is invalid or stale."));
+        }
+        const auto& record = **found;
+        SwapchainPresentTimings timings{
+            .cpuClock = CpuClock::machAbsoluteTime,
+            .cpuFrequency = record.presentationFeedback->ticksPerSecond(),
+            .generation = record.generation,
+        };
+        if (const auto* surface = native_->surfaces.find(record.surface);
+            surface != nullptr && *surface != nullptr && (*surface)->viewVisibility != nullptr)
+        {
+            const auto& visibility = *(*surface)->viewVisibility;
+            refreshMetalViewVisibility((*surface)->viewVisibility);
+            timings.refreshIntervalNs = visibility.minRefreshIntervalNs.load(std::memory_order_acquire);
+            timings.maxRefreshIntervalNs = visibility.maxRefreshIntervalNs.load(std::memory_order_acquire);
+            if (timings.refreshIntervalNs == 0 || timings.maxRefreshIntervalNs < timings.refreshIntervalNs)
+            {
+                timings.refreshIntervalNs = 0;
+                timings.maxRefreshIntervalNs = 0;
+            }
+        }
+        const auto snapshot = record.presentationFeedback->readTimings(firstSequence, records);
+        timings.submittedSequence = snapshot.submittedSequence;
+        timings.settledSequence = snapshot.settledSequence;
+        timings.firstAvailableSequence = snapshot.firstAvailableSequence;
+        timings.recordCount = snapshot.recordCount;
+        return timings;
     }
 
 } // namespace rachis::metal

@@ -1303,6 +1303,95 @@ TEST_CASE("CAbiDeviceMutex admits a waiting shared caller before exclusive calle
 }
 #endif
 
+TEST_CASE("CAbiDeviceMutex timed locks give up at their deadline and leave the lock usable",
+          "[size:small][rachis][cabi][concurrency]")
+{
+    using namespace std::chrono_literals;
+    using Clock = std::chrono::steady_clock;
+    rachis::cabi::detail::CAbiDeviceMutex mutex;
+
+    REQUIRE(mutex.try_lock_until(Clock::now() + 1s));
+    mutex.unlock();
+    REQUIRE(mutex.try_lock_shared_until(Clock::now() + 1s));
+    mutex.unlock_shared();
+
+    const auto timedOutWithin = [](auto&& attempt, std::chrono::milliseconds bound) {
+        const auto started = Clock::now();
+        const bool acquired = attempt(started + bound);
+        const auto elapsed = Clock::now() - started;
+        CHECK_FALSE(acquired);
+        CHECK(elapsed >= bound);
+        CHECK(elapsed < bound + 50ms);
+    };
+
+    SECTION("an exclusive holder times out exclusive and shared callers")
+    {
+        std::latch held(1);
+        std::latch done(1);
+        std::jthread holder([&] {
+            mutex.lock();
+            held.count_down();
+            done.wait();
+            mutex.unlock();
+        });
+        held.wait();
+        timedOutWithin([&](Clock::time_point until) { return mutex.try_lock_until(until); }, 20ms);
+        timedOutWithin([&](Clock::time_point until) { return mutex.try_lock_shared_until(until); }, 20ms);
+        done.count_down();
+        holder.join();
+        REQUIRE(mutex.try_lock());
+        mutex.unlock();
+        REQUIRE(mutex.try_lock_shared());
+        mutex.unlock_shared();
+    }
+
+    SECTION("a timed-out exclusive caller does not hold back later shared callers or the next unlock")
+    {
+        REQUIRE(mutex.try_lock_shared());
+        timedOutWithin([&](Clock::time_point until) { return mutex.try_lock_until(until); }, 20ms);
+        CHECK(mutex.try_lock_shared());
+        mutex.unlock_shared();
+        mutex.unlock_shared();
+        CHECK(mutex.try_lock());
+        mutex.unlock();
+    }
+
+    SECTION("a timed-out waiter between blocking waiters leaves them their hand-off")
+    {
+        std::latch held(1);
+        std::latch done(1);
+        std::jthread holder([&] {
+            mutex.lock();
+            held.count_down();
+            done.wait();
+            mutex.unlock();
+        });
+        held.wait();
+        std::atomic_int admitted{0};
+        std::jthread blockingWriter([&] {
+            mutex.lock();
+            admitted.fetch_add(1);
+            mutex.unlock();
+        });
+        std::this_thread::sleep_for(20ms);
+        timedOutWithin([&](Clock::time_point until) { return mutex.try_lock_until(until); }, 20ms);
+        std::jthread blockingReader([&] {
+            mutex.lock_shared();
+            admitted.fetch_add(1);
+            mutex.unlock_shared();
+        });
+        std::this_thread::sleep_for(20ms);
+        CHECK(admitted.load() == 0);
+        done.count_down();
+        holder.join();
+        blockingWriter.join();
+        blockingReader.join();
+        CHECK(admitted.load() == 2);
+        CHECK(mutex.try_lock());
+        mutex.unlock();
+    }
+}
+
 TEST_CASE("C ABI allows concurrent command recording across pools under shared lock while rejecting concurrent "
           "same-lease use",
           RACHIS_CABI_DEVICE_SIZE RACHIS_CABI_DEVICE_REQUIRES "[rachis][cabi][concurrency]")
@@ -3291,6 +3380,314 @@ TEST_CASE("C ABI query_presentation_progress and sibling swapchains do not stall
     requireOk(rachis_swapchain_destroy(device.get(), swapchainA, &error), error);
     requireOk(rachis_surface_destroy(device.get(), surfaceB, &error), error);
     requireOk(rachis_surface_destroy(device.get(), surfaceA, &error), error);
+}
+TEST_CASE("C ABI present timings settle each present in order on the calibrated CPU clock",
+          "[size:large]" RACHIS_CABI_PRESENT_DESKTOP_REQUIRES RACHIS_CABI_DEVICE_REQUIRES
+          "[rachis][cabi][swapchain][presentation]")
+{
+    const SurfaceHost host;
+    REQUIRE(host.valid());
+    auto error = makeError();
+    auto device = createDevice(error);
+    const auto surfaceDesc = host.surfaceDesc();
+    rachis_handle surface = 0;
+    requireOk(rachis_surface_create(device.get(), &surfaceDesc, &surface, &error), error);
+    const auto swapchain = createSwapchain(device.get(), surface, error);
+    const auto pool = createPool(device.get(), RACHIS_QUEUE_GRAPHICS, error);
+
+    rachis_swapchain_present_timings timings{};
+    std::array<rachis_present_timing, 8> records{};
+    timings.struct_size = sizeof(timings) - 1;
+    CHECK(rachis_swapchain_query_present_timings(device.get(), swapchain, 1, records.data(), 8, &timings, &error) ==
+          RACHIS_STATUS_ABI_MISMATCH);
+    timings.struct_size = sizeof(timings);
+    CHECK(rachis_swapchain_query_present_timings(device.get(), swapchain, 1, records.data(), 8, nullptr, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_swapchain_query_present_timings(device.get(), swapchain, 1, nullptr, 1, &timings, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_swapchain_query_present_timings(device.get(), surface, 1, records.data(), 8, &timings, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+
+    const auto query = [&](std::uint64_t first, std::uint32_t capacity) {
+        timings = rachis_swapchain_present_timings{};
+        timings.struct_size = sizeof(timings);
+        return rachis_swapchain_query_present_timings(
+            device.get(), swapchain, first, capacity == 0 ? nullptr : records.data(), capacity, &timings, &error);
+    };
+    const auto supported = query(1, 0);
+    if (supported == RACHIS_STATUS_UNSUPPORTED)
+    {
+        CHECK(timings.cpu_clock == RACHIS_CPU_CLOCK_NONE);
+    }
+    else
+    {
+        REQUIRE(supported == RACHIS_STATUS_OK);
+        CHECK(timings.submitted_sequence == 0);
+        CHECK(timings.settled_sequence == 0);
+        CHECK(timings.first_available_sequence == 0);
+        CHECK(timings.record_count == 0);
+        CHECK(timings.max_refresh_interval_ns >= timings.refresh_interval_ns);
+
+        rachis_timestamp_calibration calibration{};
+        calibration.struct_size = sizeof(calibration);
+        requireOk(rachis_queue_calibrate_timestamps(device.get(), RACHIS_QUEUE_GRAPHICS, &calibration, &error), error);
+        CHECK(timings.cpu_clock == calibration.cpu_clock);
+        CHECK(timings.cpu_frequency == calibration.cpu_frequency);
+        const auto generation = timings.generation;
+
+        constexpr std::uint64_t frames = 3;
+        for (std::uint64_t frame = 1; frame <= frames; ++frame)
+        {
+            const auto image = acquireSwapchainImage(device.get(), swapchain, error);
+            const auto rendered = recordAndSubmitImageFrame(device.get(), pool, image, error);
+            std::uint32_t presentStatus = RACHIS_PRESENT_STATUS_SURFACE_OUT_OF_DATE;
+            requireOk(rachis_swapchain_present(device.get(), swapchain, rendered, &presentStatus, &error), error);
+            REQUIRE(presentStatus == RACHIS_PRESENT_STATUS_PRESENTED);
+            requireOk(rachis_timeline_wait(device.get(), rendered, &error), error);
+            requireOk(rachis_timeline_release(device.get(), rendered, &error), error);
+            requireOk(query(1, 0), error);
+            CHECK(timings.submitted_sequence == frame);
+            CHECK(timings.first_available_sequence == 1);
+        }
+
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        while (timings.settled_sequence < frames && std::chrono::steady_clock::now() < deadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            requireOk(query(1, 0), error);
+        }
+        rachis_timestamp_calibration after{};
+        after.struct_size = sizeof(after);
+        requireOk(rachis_queue_calibrate_timestamps(device.get(), RACHIS_QUEUE_GRAPHICS, &after, &error), error);
+
+        requireOk(query(1, static_cast<std::uint32_t>(records.size())), error);
+        CHECK(timings.generation == generation);
+        CHECK(timings.settled_sequence <= frames);
+        REQUIRE(timings.record_count == timings.settled_sequence);
+        constexpr std::uint32_t knownFlags = RACHIS_PRESENT_TIMING_DISPLAYED | RACHIS_PRESENT_TIMING_DROPPED |
+                                             RACHIS_PRESENT_TIMING_ESTIMATED | RACHIS_PRESENT_TIMING_HIDDEN;
+        for (std::uint32_t index = 0; index < timings.record_count; ++index)
+        {
+            const auto& record = records[index];
+            CHECK(record.present_sequence == index + 1);
+            CHECK((record.flags & ~knownFlags) == 0);
+            CHECK(record.reserved0 == 0);
+            if ((record.flags & RACHIS_PRESENT_TIMING_DISPLAYED) != 0)
+            {
+                CHECK((record.flags & (RACHIS_PRESENT_TIMING_DROPPED | RACHIS_PRESENT_TIMING_HIDDEN)) == 0);
+                CHECK(record.present_time > calibration.cpu_timestamp);
+                CHECK(record.present_time <= after.cpu_timestamp);
+            }
+            else
+            {
+                CHECK((record.flags & RACHIS_PRESENT_TIMING_ESTIMATED) == 0);
+                CHECK(record.present_time == 0);
+            }
+#if RACHIS_CABI_FAULT_BACKEND_METAL
+            CHECK(record.flags == RACHIS_PRESENT_TIMING_HIDDEN);
+#endif
+        }
+#if RACHIS_CABI_FAULT_BACKEND_METAL
+        CHECK(timings.settled_sequence == frames);
+#endif
+
+        requireOk(query(frames, static_cast<std::uint32_t>(records.size())), error);
+        CHECK(timings.record_count == (timings.settled_sequence == frames ? 1U : 0U));
+        requireOk(query(1, 1), error);
+        CHECK(timings.record_count == std::min<std::uint64_t>(1, timings.settled_sequence));
+
+        requireOk(
+            rachis_swapchain_resize(device.get(), swapchain, SurfaceHost::width + 16, SurfaceHost::height + 8, &error),
+            error);
+        requireOk(query(1, static_cast<std::uint32_t>(records.size())), error);
+        CHECK(timings.generation > generation);
+        CHECK(timings.submitted_sequence == 0);
+        CHECK(timings.settled_sequence == 0);
+        CHECK(timings.first_available_sequence == 0);
+        CHECK(timings.record_count == 0);
+    }
+
+    requireOk(rachis_command_pool_destroy(device.get(), pool, &error), error);
+    requireOk(rachis_swapchain_destroy(device.get(), swapchain, &error), error);
+    requireOk(rachis_surface_destroy(device.get(), surface, &error), error);
+}
+
+namespace
+{
+    struct ParkedCall final
+    {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool entered = false;
+        bool released = false;
+
+        void park()
+        {
+            std::unique_lock lock(mutex);
+            if (entered)
+            {
+                return;
+            }
+            entered = true;
+            cv.notify_all();
+            static_cast<void>(cv.wait_for(lock, std::chrono::seconds(30), [&] { return released; }));
+        }
+
+        [[nodiscard]] bool waitForEntry()
+        {
+            std::unique_lock lock(mutex);
+            return cv.wait_for(lock, std::chrono::seconds(10), [&] { return entered; });
+        }
+
+        void release()
+        {
+            {
+                const std::scoped_lock lock(mutex);
+                released = true;
+            }
+            cv.notify_all();
+        }
+    };
+
+    struct ParkedCallRelease final
+    {
+        ParkedCall& call;
+
+        ~ParkedCallRelease()
+        {
+            call.release();
+        }
+    };
+
+    void checkTimedAcquireTimesOut(rachis_device* device, rachis_handle swapchain)
+    {
+        constexpr auto slack = std::chrono::milliseconds(20);
+        for (const auto timeout :
+             {std::chrono::milliseconds(0), std::chrono::milliseconds(20), std::chrono::milliseconds(50)})
+        {
+            rachis_swapchain_image image{};
+            image.struct_size = sizeof(image);
+            auto error = makeError();
+            const auto started = std::chrono::steady_clock::now();
+            const auto status =
+                rachis_swapchain_acquire_for(device,
+                                             swapchain,
+                                             static_cast<std::uint64_t>(std::chrono::nanoseconds(timeout).count()),
+                                             &image,
+                                             &error);
+            const auto elapsed = std::chrono::steady_clock::now() - started;
+            INFO("timeout " << timeout.count() << " ms: " << error.message);
+            CHECK(status == RACHIS_STATUS_TIMEOUT);
+            CHECK(image.texture == 0);
+            CHECK(elapsed < timeout + slack);
+        }
+    }
+} // namespace
+
+TEST_CASE("C ABI timed acquire returns timeout within its bound while another call holds the swapchain or device lock",
+          "[size:large]" RACHIS_CABI_PRESENT_DESKTOP_REQUIRES RACHIS_CABI_DEVICE_REQUIRES
+          "[rachis][cabi][swapchain][concurrency][regression]")
+{
+    const SurfaceHost host;
+    REQUIRE(host.valid());
+
+    auto error = makeError();
+    auto device = createDevice(error);
+    const auto surfaceDesc = host.surfaceDesc();
+    rachis_handle surface = 0;
+    requireOk(rachis_surface_create(device.get(), &surfaceDesc, &surface, &error), error);
+    const auto swapchain = createSwapchain(device.get(), surface, error);
+    const auto graphicsPool = createPool(device.get(), RACHIS_QUEUE_GRAPHICS, error);
+    const auto copyPool = createPool(device.get(), RACHIS_QUEUE_COPY, error);
+
+    struct HookTarget final
+    {
+        rachis_handle handle = 0;
+        ParkedCall parked;
+    };
+
+    {
+        const auto image = acquireSwapchainImage(device.get(), swapchain, error);
+        const auto renderComplete = recordAndSubmitImageFrame(device.get(), graphicsPool, image, error);
+        HookTarget target{.handle = swapchain};
+        const auto presentHook = [](rachis_handle presented, void* userData) noexcept {
+            auto& hooked = *static_cast<HookTarget*>(userData);
+            if (presented == hooked.handle)
+            {
+                hooked.parked.park();
+            }
+        };
+        rachis_status presentStatus = RACHIS_STATUS_NATIVE_FAILURE;
+        std::uint32_t presented = RACHIS_PRESENT_STATUS_SURFACE_OUT_OF_DATE;
+        auto presentError = makeError();
+        {
+            const ScopedSwapchainPresentHook scopedHook(presentHook, &target);
+            const std::jthread presenter([&] {
+                presentStatus =
+                    rachis_swapchain_present(device.get(), swapchain, renderComplete, &presented, &presentError);
+            });
+            const ParkedCallRelease releaseOnExit{target.parked};
+            REQUIRE(target.parked.waitForEntry());
+            checkTimedAcquireTimesOut(device.get(), swapchain);
+        }
+        INFO(presentError.message);
+        CHECK(presentStatus == RACHIS_STATUS_OK);
+        requireOk(rachis_timeline_wait(device.get(), renderComplete, &error), error);
+        requireOk(rachis_timeline_release(device.get(), renderComplete, &error), error);
+    }
+
+    {
+        constexpr std::uint64_t byteCount = 16;
+        const auto upload =
+            createBuffer(device.get(), byteCount, RACHIS_BUFFER_COPY_SOURCE, RACHIS_MEMORY_UPLOAD, error);
+        const auto readback =
+            createBuffer(device.get(), byteCount, RACHIS_BUFFER_COPY_DESTINATION, RACHIS_MEMORY_READBACK, error);
+        HookTarget target{};
+        requireOk(rachis_command_acquire(device.get(), copyPool, &target.handle, &error), error);
+        const auto recordingHook = [](rachis_handle command, void* userData) noexcept {
+            auto& hooked = *static_cast<HookTarget*>(userData);
+            if (command == hooked.handle)
+            {
+                hooked.parked.park();
+            }
+        };
+        rachis_status copyStatus = RACHIS_STATUS_NATIVE_FAILURE;
+        rachis_status progressStatus = RACHIS_STATUS_NATIVE_FAILURE;
+        auto copyError = makeError();
+        {
+            const ScopedCommandRecordingHook scopedHook(recordingHook, &target);
+            const std::jthread recorder([&] {
+                copyStatus = rachis_command_copy_buffer(
+                    device.get(), target.handle, upload, readback, 0, 0, byteCount, &copyError);
+            });
+            const ParkedCallRelease releaseOnExit{target.parked};
+            REQUIRE(target.parked.waitForEntry());
+            checkTimedAcquireTimesOut(device.get(), swapchain);
+
+            rachis_swapchain_presentation_progress progress{};
+            progress.struct_size = sizeof(progress);
+            auto progressError = makeError();
+            const auto progressStarted = std::chrono::steady_clock::now();
+            progressStatus =
+                rachis_swapchain_query_presentation_progress(device.get(), swapchain, &progress, &progressError);
+            CHECK(std::chrono::steady_clock::now() - progressStarted < std::chrono::seconds(1));
+        }
+        INFO(copyError.message);
+        CHECK(copyStatus == RACHIS_STATUS_OK);
+        CHECK(progressStatus == RACHIS_STATUS_OK);
+        requireOk(rachis_command_discard(device.get(), target.handle, &error), error);
+        requireOk(rachis_buffer_destroy(device.get(), readback, &error), error);
+        requireOk(rachis_buffer_destroy(device.get(), upload, &error), error);
+    }
+
+    rachis_swapchain_image recovered{};
+    recovered.struct_size = sizeof(recovered);
+    requireOk(rachis_swapchain_acquire_for(device.get(), swapchain, 3'000'000'000ULL, &recovered, &error), error);
+    requireOk(rachis_swapchain_cancel(device.get(), swapchain, &error), error);
+    requireOk(rachis_command_pool_destroy(device.get(), copyPool, &error), error);
+    requireOk(rachis_command_pool_destroy(device.get(), graphicsPool, &error), error);
+    requireOk(rachis_swapchain_destroy(device.get(), swapchain, &error), error);
+    requireOk(rachis_surface_destroy(device.get(), surface, &error), error);
 }
 #endif
 

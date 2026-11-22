@@ -6,7 +6,9 @@
 #include <chrono>
 #include <cstdint>
 #include <limits>
+#include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 #include <utility>
 
@@ -79,6 +81,42 @@ namespace rachis::detail
         [[nodiscard]] bool expired() const noexcept
         {
             return timed_ && deadline_.has_value() && Clock::now() >= *deadline_;
+        }
+
+        template<typename Mutex>
+        [[nodiscard]] std::unique_lock<Mutex> lock(Mutex& mutex) const
+        {
+            if (!timed_ || !deadline_.has_value())
+            {
+                return std::unique_lock<Mutex>(mutex);
+            }
+            return std::unique_lock<Mutex>(mutex, *deadline_);
+        }
+
+        template<typename Mutex>
+        [[nodiscard]] std::shared_lock<Mutex> lockShared(Mutex& mutex) const
+        {
+            if (!timed_ || !deadline_.has_value())
+            {
+                return std::shared_lock<Mutex>(mutex);
+            }
+            return std::shared_lock<Mutex>(mutex, *deadline_);
+        }
+
+        template<typename Mutex>
+        [[nodiscard]] bool relock(std::unique_lock<Mutex>& held) const
+        {
+            if (!timed_ || !deadline_.has_value())
+            {
+                held.lock();
+                return true;
+            }
+            return held.try_lock_until(*deadline_);
+        }
+
+        [[nodiscard]] Error lockTimeout() const
+        {
+            return expiry("Another call held the swapchain past the acquire timeout; no image was acquired.");
         }
 
         [[nodiscard]] Error expiry(std::string message, std::int64_t nativeCode = 0) const

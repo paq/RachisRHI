@@ -54,7 +54,7 @@ namespace rachis::vulkan
         class PendingSurfaceClaim final
         {
         public:
-            PendingSurfaceClaim(std::shared_ptr<SurfaceRecordT> surface, std::mutex& mutex) noexcept
+            PendingSurfaceClaim(std::shared_ptr<SurfaceRecordT> surface, rachis::detail::TimedMutex& mutex) noexcept
                 : surface_(std::move(surface)), mutex_(&mutex)
             {
             }
@@ -80,7 +80,7 @@ namespace rachis::vulkan
 
         private:
             std::shared_ptr<SurfaceRecordT> surface_;
-            std::mutex* mutex_ = nullptr;
+            rachis::detail::TimedMutex* mutex_ = nullptr;
         };
 
         template<typename SurfaceRecordT>
@@ -663,6 +663,18 @@ namespace rachis::vulkan
         SwapchainHandle swapchain) const noexcept
     {
         const std::scoped_lock lock(mutex_);
+        const auto* found = swapchains_.find(swapchain);
+        return found != nullptr ? *found : nullptr;
+    }
+
+    std::optional<std::shared_ptr<VulkanSwapchainManager::SwapchainRecord>> VulkanSwapchainManager::findSwapchainRecord(
+        SwapchainHandle swapchain, const rachis::detail::AcquireDeadline& deadline) const
+    {
+        const auto lock = deadline.lock(mutex_);
+        if (!lock.owns_lock())
+        {
+            return std::nullopt;
+        }
         const auto* found = swapchains_.find(swapchain);
         return found != nullptr ? *found : nullptr;
     }
@@ -2033,13 +2045,22 @@ namespace rachis::vulkan
         SwapchainHandle swapchain, std::optional<std::chrono::nanoseconds> timeout)
     {
         const rachis::detail::AcquireDeadline deadline(timeout, std::chrono::nanoseconds{acquireTimeoutNs});
-        const auto recordOwner = findSwapchainRecord(swapchain);
+        const auto found = findSwapchainRecord(swapchain, deadline);
+        if (!found)
+        {
+            return std::unexpected(deadline.lockTimeout());
+        }
+        const auto& recordOwner = *found;
         if (recordOwner == nullptr)
         {
             return std::unexpected(invalidSwapchain());
         }
         auto& record = *recordOwner;
-        const std::scoped_lock recordLock(record.recordMutex);
+        const auto recordLock = deadline.lock(record.recordMutex);
+        if (!recordLock.owns_lock())
+        {
+            return std::unexpected(deadline.lockTimeout());
+        }
         if (record.destroyed)
         {
             return std::unexpected(invalidSwapchain());

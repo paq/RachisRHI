@@ -173,6 +173,7 @@ RxMetalTestLayerState rxMetalTestQueryLayerState(void* layer)
           state.rgba16Float = metalLayer.pixelFormat == MTLPixelFormatRGBA16Float;
           state.framebufferOnly = metalLayer.framebufferOnly == YES;
           state.displaySyncEnabled = metalLayer.displaySyncEnabled == YES;
+          state.maximumDrawableCount = static_cast<std::uint32_t>(metalLayer.maximumDrawableCount);
           if (metalLayer.name != nil)
           {
               state.name = metalLayer.name.UTF8String;
