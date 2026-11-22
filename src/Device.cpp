@@ -3605,19 +3605,33 @@ namespace rachis
         });
     }
 
+    namespace
+    {
+        [[nodiscard]] Result<AcquiredSwapchainImage> acquireBackendImage(
+            detail::BackendDevice* backend, SwapchainHandle swapchain, std::optional<std::chrono::nanoseconds> timeout)
+        {
+            return guardBadAlloc([&]() -> Result<AcquiredSwapchainImage> {
+                if (backend == nullptr)
+                {
+                    return std::unexpected(Error{
+                        ErrorCode::invalidState,
+                        0,
+                        "Cannot acquire a swapchain image on an invalid device.",
+                    });
+                }
+                return backend->acquireNextImage(swapchain, timeout);
+            });
+        }
+    } // namespace
+
     Result<AcquiredSwapchainImage> Device::acquireNextImage(SwapchainHandle swapchain)
     {
-        return guardBadAlloc([&]() -> Result<AcquiredSwapchainImage> {
-            if (backend_ == nullptr)
-            {
-                return std::unexpected(Error{
-                    ErrorCode::invalidState,
-                    0,
-                    "Cannot acquire a swapchain image on an invalid device.",
-                });
-            }
-            return backend_->acquireNextImage(swapchain);
-        });
+        return acquireBackendImage(backend_.get(), swapchain, std::nullopt);
+    }
+
+    Result<AcquiredSwapchainImage> Device::acquireNextImage(SwapchainHandle swapchain, std::chrono::nanoseconds timeout)
+    {
+        return acquireBackendImage(backend_.get(), swapchain, std::max(timeout, std::chrono::nanoseconds::zero()));
     }
 
     bool Device::hasAcquiredSwapchainImage(SwapchainHandle swapchain) const noexcept

@@ -531,6 +531,9 @@ TEST_CASE("Vulkan swapchain suspends minimize and resumes without resetting devi
     auto suspended = device.acquireNextImage(*swapchain);
     REQUIRE_FALSE(suspended.has_value());
     CHECK(suspended.error().code == rachis::ErrorCode::invalidState);
+    auto suspendedTimed = device.acquireNextImage(*swapchain, std::chrono::milliseconds(20));
+    REQUIRE_FALSE(suspendedTimed.has_value());
+    CHECK(suspendedTimed.error().code == rachis::ErrorCode::invalidState);
 
     static_cast<void>(ShowWindow(window.get(), SW_MINIMIZE));
     auto minimizedCaps = device.querySurfaceCapabilities(*surface);
@@ -784,9 +787,21 @@ TEST_CASE("Vulkan swapchain creation on a minimized Win32 window gives a suspend
     auto refused = device.acquireNextImage(*swapchain);
     REQUIRE_FALSE(refused.has_value());
     CHECK(refused.error().code == rachis::ErrorCode::invalidState);
+    for (const auto timeout : {std::chrono::milliseconds(0), std::chrono::milliseconds(20)})
+    {
+        const auto started = std::chrono::steady_clock::now();
+        auto hidden = device.acquireNextImage(*swapchain, timeout);
+        const auto elapsed = std::chrono::steady_clock::now() - started;
+        REQUIRE_FALSE(hidden.has_value());
+        CHECK(hidden.error().code == rachis::ErrorCode::notReady);
+        CHECK(elapsed < timeout + std::chrono::milliseconds(20));
+    }
 
     showWindow(window.get(), SW_RESTORE);
     REQUIRE(IsIconic(window.get()) == FALSE);
+    auto restoredUnresized = device.acquireNextImage(*swapchain, std::chrono::milliseconds(20));
+    REQUIRE_FALSE(restoredUnresized.has_value());
+    CHECK(restoredUnresized.error().code == rachis::ErrorCode::invalidState);
     auto resized = device.resizeSwapchain(*swapchain, width, height);
     if (!resized)
     {

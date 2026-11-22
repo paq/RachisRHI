@@ -817,6 +817,8 @@ namespace rachis
         [[nodiscard]] Status destroySwapchain(SwapchainHandle swapchain);
         [[nodiscard]] Status resizeSwapchain(SwapchainHandle swapchain, std::uint32_t width, std::uint32_t height);
         [[nodiscard]] Result<AcquiredSwapchainImage> acquireNextImage(SwapchainHandle swapchain);
+        [[nodiscard]] Result<AcquiredSwapchainImage> acquireNextImage(SwapchainHandle swapchain,
+                                                                      std::chrono::nanoseconds timeout);
 
         [[nodiscard]] bool hasAcquiredSwapchainImage(SwapchainHandle swapchain) const noexcept;
 

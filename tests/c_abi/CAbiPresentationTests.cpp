@@ -269,6 +269,16 @@ TEST_CASE("C ABI presents cleared and copied swapchain images",
               error);
     submitAndPresent(device.get(), command, swapchain, error);
 
+    rachis_swapchain_image timed{};
+    timed.struct_size = sizeof(timed);
+    requireOk(rachis_swapchain_acquire_for(device.get(), swapchain, 2'000'000'000ULL, &timed, &error), error);
+    CHECK(timed.texture != 0);
+    rachis_swapchain_image second{};
+    second.struct_size = sizeof(second);
+    CHECK(rachis_swapchain_acquire_for(device.get(), swapchain, 0, &second, &error) == RACHIS_STATUS_INVALID_STATE);
+    CHECK(second.texture == 0);
+    requireOk(rachis_swapchain_cancel(device.get(), swapchain, &error), error);
+
     requireOk(rachis_command_acquire(device.get(), pool, &command, &error), error);
     CHECK(recordBarrier(device.get(),
                         command,

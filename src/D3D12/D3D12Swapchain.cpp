@@ -1,5 +1,6 @@
 #include "D3D12/D3D12Swapchain.h"
 
+#include "Common/AcquireDeadline.h"
 #include "Common/HandleTable.h"
 #include "D3D12/D3D12Format.h"
 #include "D3D12/D3D12NativeHelpers.h"
@@ -12,6 +13,7 @@
 
 #include <Windows.h>
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <limits>
@@ -771,39 +773,78 @@ namespace rachis::d3d12
             return {};
         }
 
-        [[nodiscard]] Status waitForFrameLatencySlot(SwapchainRecord& record)
+        [[nodiscard]] DWORD frameLatencyWaitMs(const rachis::detail::AcquireDeadline& deadline) noexcept
+        {
+            if (!deadline.timed())
+            {
+                return frameLatencyWaitTimeoutMs;
+            }
+            const auto left = deadline.remainingMs();
+            return left == std::numeric_limits<std::uint64_t>::max()
+                       ? INFINITE
+                       : static_cast<DWORD>(std::min<std::uint64_t>(left, INFINITE - 1));
+        }
+
+        [[nodiscard]] Status waitForFrameLatencySlot(SwapchainRecord& record,
+                                                     const rachis::detail::AcquireDeadline& deadline)
         {
             if (!record.latencySlot.needsWait(record.frameLatencyWaitableObject != nullptr))
             {
                 return {};
             }
-            const DWORD waitResult =
-                WaitForSingleObjectEx(record.frameLatencyWaitableObject.get(), frameLatencyWaitTimeoutMs, FALSE);
-            if (waitResult == WAIT_TIMEOUT)
+            for (;;)
             {
-                return std::unexpected(Error{
-                    ErrorCode::notReady,
-                    static_cast<std::int64_t>(WAIT_TIMEOUT),
-                    "Timed out waiting for the DXGI swapchain frame latency waitable object.",
-                });
+                const DWORD waitMs = frameLatencyWaitMs(deadline);
+                const DWORD waitResult = WaitForSingleObjectEx(record.frameLatencyWaitableObject.get(), waitMs, FALSE);
+                if (waitResult == WAIT_OBJECT_0)
+                {
+                    record.latencySlot.onWaitSucceeded();
+                    return {};
+                }
+                if (waitResult != WAIT_TIMEOUT)
+                {
+                    return std::unexpected(Error{
+                        ErrorCode::nativeFailure,
+                        waitResult == WAIT_FAILED ? static_cast<std::int64_t>(GetLastError()) : 0,
+                        "WaitForSingleObjectEx failed on the DXGI swapchain frame latency waitable object.",
+                    });
+                }
+                if (!deadline.timed() || deadline.expired())
+                {
+                    return std::unexpected(
+                        deadline.expiry("Timed out waiting for the DXGI swapchain frame latency waitable object.",
+                                        static_cast<std::int64_t>(WAIT_TIMEOUT)));
+                }
+                if (waitMs == 0)
+                {
+                    static_cast<void>(SwitchToThread());
+                }
             }
-            if (waitResult != WAIT_OBJECT_0)
-            {
-                return std::unexpected(Error{
-                    ErrorCode::nativeFailure,
-                    waitResult == WAIT_FAILED ? static_cast<std::int64_t>(GetLastError()) : 0,
-                    "WaitForSingleObjectEx failed on the DXGI swapchain frame latency waitable object.",
-                });
-            }
-            record.latencySlot.onWaitSucceeded();
-            return {};
         }
 
         [[nodiscard]] Status waitForAndClearPreviousUse(QueueManager& queues,
                                                         SwapchainRecord& record,
-                                                        SwapchainBuffer& buffer)
+                                                        SwapchainBuffer& buffer,
+                                                        const rachis::detail::AcquireDeadline& deadline)
         {
             const bool hadPreviousUse = buffer.lastUse.isValid();
+            if (hadPreviousUse && deadline.timed() && !deadline.unbounded())
+            {
+                auto polled = queues.wait(buffer.lastUse, deadline.remaining());
+                if (!polled)
+                {
+                    if (polled.error().code == ErrorCode::deviceLost)
+                    {
+                        record.deviceLost = true;
+                    }
+                    return std::unexpected(std::move(polled.error()));
+                }
+                if (*polled != TimelinePointStatus::complete)
+                {
+                    return std::unexpected(
+                        deadline.expiry("The GPU has not finished the previous frame on this back buffer yet."));
+                }
+            }
             auto waited = waitForBackBuffer(queues, record, buffer.lastUse);
             if (!waited)
             {
@@ -1235,8 +1276,11 @@ namespace rachis::d3d12
         return {};
     }
 
-    Result<AcquiredSwapchainImage> SwapchainManager::acquireNextImage(QueueManager& queues, SwapchainHandle swapchain)
+    Result<AcquiredSwapchainImage> SwapchainManager::acquireNextImage(QueueManager& queues,
+                                                                      SwapchainHandle swapchain,
+                                                                      std::optional<std::chrono::nanoseconds> timeout)
     {
+        const rachis::detail::AcquireDeadline deadline(timeout, std::chrono::milliseconds(frameLatencyWaitTimeoutMs));
         const auto recordOwner = findSwapchainRecord(impl_->mutex, impl_->swapchains, swapchain);
         if (recordOwner == nullptr)
         {
@@ -1249,10 +1293,20 @@ namespace rachis::d3d12
         {
             return std::unexpected(std::move(acquirable.error()));
         }
-        auto latencySlotReady = waitForFrameLatencySlot(record);
+        const auto expired = [&](Error error) {
+            if (error.code == ErrorCode::timeout && record.surface != nullptr &&
+                (record.surface->window == nullptr || IsWindowVisible(record.surface->window) == FALSE ||
+                 IsIconic(record.surface->window) != FALSE))
+            {
+                error.code = ErrorCode::notReady;
+                error.message = "The swapchain window is hidden or minimized; no image was ready in time.";
+            }
+            return std::unexpected(std::move(error));
+        };
+        auto latencySlotReady = waitForFrameLatencySlot(record, deadline);
         if (!latencySlotReady)
         {
-            return std::unexpected(std::move(latencySlotReady.error()));
+            return expired(std::move(latencySlotReady.error()));
         }
         const auto imageIndex = record.swapchain->GetCurrentBackBufferIndex();
         if (imageIndex >= record.buffers.size())
@@ -1264,10 +1318,10 @@ namespace rachis::d3d12
             });
         }
         auto& buffer = record.buffers[imageIndex];
-        auto previousUseComplete = waitForAndClearPreviousUse(queues, record, buffer);
+        auto previousUseComplete = waitForAndClearPreviousUse(queues, record, buffer, deadline);
         if (!previousUseComplete)
         {
-            return std::unexpected(std::move(previousUseComplete.error()));
+            return expired(std::move(previousUseComplete.error()));
         }
         auto acquiredLease = buffer.lease->acquire();
         if (!acquiredLease)
