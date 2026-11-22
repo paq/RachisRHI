@@ -1,6 +1,7 @@
 #include "D3D12/D3D12PresentationProgress.h"
 #include "D3D12/D3D12TestHooks.h"
 #include "Rachis/Device.h"
+#include "Rachis/TestSupport/D3D12FrameStatistics.h"
 #include "RhiTestSupport.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -96,8 +97,10 @@ namespace
         }
     }
 
-    [[nodiscard]] rachis::SwapchainFrameTiming queryTiming(const rachis::Device& device,
-                                                           rachis::SwapchainHandle swapchain)
+    [[nodiscard]] rachis::SwapchainFrameTiming queryTiming(
+        const rachis::Device& device,
+        rachis::SwapchainHandle swapchain,
+        const rachis::test::ScopedD3D12FrameStatistics* statistics = nullptr)
     {
         auto timing = device.querySwapchainFrameTiming(swapchain);
         if (!timing)
@@ -106,6 +109,10 @@ namespace
         }
         REQUIRE(timing.has_value());
         CHECK(timing->displayedPresentationSequence <= timing->submittedPresentationSequence);
+        if (statistics != nullptr)
+        {
+            REQUIRE(timing->displayedPresentationSequence >= statistics->observedSequence());
+        }
         return *timing;
     }
 
@@ -188,12 +195,14 @@ namespace
         REQUIRE(device.waitIdle().has_value());
     }
 
-    [[nodiscard]] rachis::SwapchainFrameTiming awaitDisplayed(rachis::Device& device,
-                                                              rachis::SwapchainHandle swapchain,
-                                                              std::uint64_t generation,
-                                                              std::uint64_t target)
+    [[nodiscard]] rachis::SwapchainFrameTiming awaitDisplayed(
+        rachis::Device& device,
+        rachis::SwapchainHandle swapchain,
+        std::uint64_t generation,
+        std::uint64_t target,
+        const rachis::test::ScopedD3D12FrameStatistics& statistics)
     {
-        auto timing = queryTiming(device, swapchain);
+        auto timing = queryTiming(device, swapchain, &statistics);
         auto previous = timing.displayedPresentationSequence;
         for (int followUps = 0; timing.displayedPresentationSequence < target && followUps <= maxFollowUpFrames;
              ++followUps)
@@ -207,7 +216,7 @@ namespace
             {
                 pumpMessages();
                 Sleep(2);
-                timing = queryTiming(device, swapchain);
+                timing = queryTiming(device, swapchain, &statistics);
                 CHECK(timing.presentationGeneration == generation);
                 CHECK(timing.submittedPresentationSequence == target + static_cast<std::uint64_t>(followUps));
                 CHECK(timing.displayedPresentationSequence >= previous);
@@ -219,6 +228,7 @@ namespace
 
     void checkDisplayedProgress(rachis::Device& device, HWND window)
     {
+        rachis::test::ScopedD3D12FrameStatistics statistics;
         auto surface = device.createSurface(rachis::SurfaceDesc{
             .windowHandle = window,
             .label = "Presentation progress surface",
@@ -240,7 +250,7 @@ namespace
         }
         REQUIRE(swapchain.has_value());
 
-        auto timing = queryTiming(device, *swapchain);
+        auto timing = queryTiming(device, *swapchain, &statistics);
         REQUIRE(timing.presentationSupported);
         CHECK(timing.presentationGeneration == 1);
         CHECK(timing.submittedPresentationSequence == 0);
@@ -257,7 +267,7 @@ namespace
             }
             REQUIRE(presented.has_value());
             REQUIRE(*presented == rachis::PresentStatus::presented);
-            timing = queryTiming(device, *swapchain);
+            timing = queryTiming(device, *swapchain, &statistics);
             CHECK(timing.presentationGeneration == 1);
             CHECK(timing.submittedPresentationSequence == frame);
             CHECK(timing.displayedPresentationSequence >= displayed);
@@ -265,12 +275,17 @@ namespace
         }
 
         REQUIRE(device.waitIdle().has_value());
-        timing = awaitDisplayed(device, *swapchain, 1, firstFrames);
-        CAPTURE(timing.displayedPresentationSequence);
-        REQUIRE(timing.displayedPresentationSequence >= firstFrames);
+        timing = awaitDisplayed(device, *swapchain, 1, firstFrames, statistics);
+        CAPTURE(statistics.lastResult(), statistics.observedSequence(), timing.displayedPresentationSequence);
+        const bool firstFeedback = statistics.observedSequence() >= firstFrames;
+        if (firstFeedback)
+        {
+            REQUIRE(timing.displayedPresentationSequence >= firstFrames);
+        }
 
         REQUIRE(device.resizeSwapchain(*swapchain, windowWidth + 40, windowHeight + 30).has_value());
-        timing = queryTiming(device, *swapchain);
+        statistics.beginGeneration();
+        timing = queryTiming(device, *swapchain, &statistics);
         CHECK(timing.presentationSupported);
         CHECK(timing.presentationGeneration == 2);
         CHECK(timing.submittedPresentationSequence == 0);
@@ -280,7 +295,7 @@ namespace
         {
             pumpMessages();
             Sleep(5);
-            timing = queryTiming(device, *swapchain);
+            timing = queryTiming(device, *swapchain, &statistics);
             CHECK(timing.presentationGeneration == 2);
             CHECK(timing.displayedPresentationSequence == 0);
         }
@@ -293,9 +308,13 @@ namespace
             REQUIRE(*presented == rachis::PresentStatus::presented);
         }
         REQUIRE(device.waitIdle().has_value());
-        timing = awaitDisplayed(device, *swapchain, 2, secondFrames);
-        CAPTURE(timing.displayedPresentationSequence);
-        REQUIRE(timing.displayedPresentationSequence >= secondFrames);
+        timing = awaitDisplayed(device, *swapchain, 2, secondFrames, statistics);
+        CAPTURE(statistics.lastResult(), statistics.observedSequence(), timing.displayedPresentationSequence);
+        const bool secondFeedback = statistics.observedSequence() >= secondFrames;
+        if (secondFeedback)
+        {
+            REQUIRE(timing.displayedPresentationSequence >= secondFrames);
+        }
 
         const auto stale = *swapchain;
         REQUIRE(device.destroySwapchain(*swapchain).has_value());
@@ -307,6 +326,11 @@ namespace
         const auto diagnostics = device.diagnosticCounts();
         CHECK(diagnostics.errors == 0);
         CHECK(diagnostics.corruptions == 0);
+        if (!firstFeedback || !secondFeedback)
+        {
+            SKIP("DXGI did not supply display statistics through the target sequence in both generations; "
+                 "submission, native sample mapping, resize and cleanup checks completed.");
+        }
     }
 
 } // namespace
@@ -463,6 +487,81 @@ TEST_CASE("D3D12 WARP counts only Presents that reached DXGI", "[size:medium][rh
     REQUIRE(device.waitIdle().has_value());
     REQUIRE(device.destroySwapchain(*swapchain).has_value());
     REQUIRE(device.destroySurface(*surface).has_value());
+}
+
+TEST_CASE("D3D12 displayed progress requires a DXGI sample and recovers after missing statistics",
+          "[size:medium][rhi][presentation][d3d12][warp]")
+{
+    using Statistics = rachis::test::ScopedD3D12FrameStatistics;
+    Statistics statistics(Statistics::Source::zero);
+    const TestWindow window(false);
+    REQUIRE(window.get() != nullptr);
+    auto created = rachis::createDevice(rachis::test::d3d12WarpDeviceDesc());
+    REQUIRE(created.has_value());
+    auto device = std::move(*created);
+    auto surface = device.createSurface(rachis::SurfaceDesc{.windowHandle = window.get()});
+    REQUIRE(surface.has_value());
+    auto swapchain = device.createSwapchain(rachis::SwapchainDesc{
+        .surface = *surface,
+        .width = windowWidth,
+        .height = windowHeight,
+        .imageCount = 3,
+        .format = rachis::Format::bgra8Unorm,
+        .usage = rachis::TextureUsage::renderTarget,
+    });
+    REQUIRE(swapchain.has_value());
+    REQUIRE(queryTiming(device, *swapchain).submittedPresentationSequence == 0);
+
+    for (std::uint64_t frame = 1; frame <= 2; ++frame)
+    {
+        auto presented = clearAndPresent(device, *swapchain, 0.5F);
+        REQUIRE(presented.has_value());
+        REQUIRE(*presented == rachis::PresentStatus::presented);
+    }
+    REQUIRE(device.waitIdle().has_value());
+    for (const auto source : {Statistics::Source::zero, Statistics::Source::disjoint})
+    {
+        statistics.source(source);
+        const auto timing = queryTiming(device, *swapchain);
+        CHECK(timing.presentationSupported);
+        CHECK(timing.presentationGeneration == 1);
+        CHECK(timing.submittedPresentationSequence == 2);
+        CHECK(timing.displayedPresentationSequence == 0);
+    }
+
+    statistics.source(Statistics::Source::currentPresent);
+    auto timing = queryTiming(device, *swapchain);
+    CHECK(timing.presentationSupported);
+    CHECK(timing.submittedPresentationSequence == 2);
+    CHECK(timing.displayedPresentationSequence == 2);
+
+    REQUIRE(device.resizeSwapchain(*swapchain, windowWidth + 40, windowHeight + 30).has_value());
+    timing = queryTiming(device, *swapchain);
+    CHECK(timing.presentationGeneration == 2);
+    CHECK(timing.submittedPresentationSequence == 0);
+    CHECK(timing.displayedPresentationSequence == 0);
+    auto presented = clearAndPresent(device, *swapchain, 0.25F);
+    REQUIRE(presented.has_value());
+    REQUIRE(*presented == rachis::PresentStatus::presented);
+    timing = queryTiming(device, *swapchain);
+    CHECK(timing.submittedPresentationSequence == 1);
+    CHECK(timing.displayedPresentationSequence == 1);
+
+    rachis::d3d12::test::nextPresentCountResult().store(static_cast<std::int32_t>(E_FAIL));
+    REQUIRE(device.resizeSwapchain(*swapchain, windowWidth, windowHeight).has_value());
+    timing = queryTiming(device, *swapchain);
+    CHECK_FALSE(timing.presentationSupported);
+    CHECK(timing.presentationGeneration == 0);
+    CHECK(timing.submittedPresentationSequence == 0);
+    CHECK(timing.displayedPresentationSequence == 0);
+    REQUIRE(device.resizeSwapchain(*swapchain, windowWidth + 40, windowHeight + 30).has_value());
+    CHECK_FALSE(queryTiming(device, *swapchain).presentationSupported);
+
+    REQUIRE(device.waitIdle().has_value());
+    REQUIRE(device.destroySwapchain(*swapchain).has_value());
+    REQUIRE(device.destroySurface(*surface).has_value());
+    CHECK(device.diagnosticCounts().errors == 0);
+    CHECK(device.diagnosticCounts().corruptions == 0);
 }
 
 TEST_CASE("D3D12 WARP reports displayed presentation sequences apart from GPU completion",

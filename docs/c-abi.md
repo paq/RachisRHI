@@ -231,6 +231,8 @@ if (rachis_command_submit(device, command, &timeline, &error) == RACHIS_STATUS_O
 
 ### Present timings
 
+On Direct3D 12, `rachis_swapchain_query_presentation_progress` reports accepted presents in `submitted_sequence` and DXGI-observed display progress in `displayed_sequence`. `supported == 1` does not promise that display samples will arrive: DXGI can return successful all-zero statistics, so display progress can remain zero even after GPU completion. See [Surfaces](using.md#surfaces) for the native statistics limitations.
+
 `rachis_swapchain_query_present_timings` writes settled records with `first_sequence <= present_sequence <= settled_sequence` (oldest first, up to `capacity`; `records` may be `NULL` when `capacity == 0`), keeping at least `RACHIS_PRESENT_TIMING_MIN_HISTORY` (64) records per swapchain generation.
 
 - `present_time` uses `cpu_clock` at `cpu_frequency` ticks/s (matching `rachis_timestamp_calibration.cpu_timestamp`); `refresh_interval_ns` / `max_refresh_interval_ns` report display refresh bounds in ns (0 if unknown).

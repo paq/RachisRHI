@@ -65,6 +65,20 @@ namespace rachis::d3d12::test
         return s_value;
     }
 
+    using NativeFrameStatisticsReader = std::int32_t (*)(void* swapchain, void* statistics) noexcept;
+
+    [[nodiscard]] inline std::atomic_int32_t& nextPresentCountResult() noexcept
+    {
+        static std::atomic_int32_t s_value = 0;
+        return s_value;
+    }
+
+    [[nodiscard]] inline std::atomic<NativeFrameStatisticsReader>& nativeFrameStatisticsReader() noexcept
+    {
+        static std::atomic<NativeFrameStatisticsReader> s_value = nullptr;
+        return s_value;
+    }
+
     [[nodiscard]] inline std::atomic_int32_t& nextResizeBuffersResult() noexcept
     {
         static std::atomic_int32_t s_value = 0;
