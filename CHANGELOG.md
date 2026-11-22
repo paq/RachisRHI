@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Metal: in `PresentMode::immediate`, `acquireNextImage` waits for the oldest in-flight present once both drawables are in flight instead of blocking inside `nextDrawable`, and `framesInFlightBound` reports 2.
+
 ## 0.5.0
 
 - C ABI version 5 (`RACHIS_ABI_VERSION` 5, `librachis.so.5` / `librachis.5.dylib`):
