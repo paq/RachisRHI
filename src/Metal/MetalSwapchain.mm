@@ -322,8 +322,6 @@ namespace rachis::metal
             return operation;
         }
 
-        // Like lockMetalSwapchainOperations, but gives up at the deadline of a timed acquire; nullopt means it timed
-        // out.
         [[nodiscard]] std::optional<MetalSwapchainOperationLock> lockMetalSwapchainOperations(
             rachis::detail::TimedMutex& deviceMutex,
             const std::shared_ptr<MetalDeviceNative>& native,
@@ -890,8 +888,6 @@ namespace rachis::metal
               }
               pending->arrived.notify_all();
             });
-            // The strict timer wakes this wait on time even under timer coalescing. The wait is also bounded by the
-            // deadline itself, re-checked after every wake, so a late or missing timer event cannot extend it.
             std::unique_lock fetchLock(fetch->mutex);
             while (!fetch->done && !expired->load(std::memory_order_acquire) && !deadline.expired())
             {
@@ -916,8 +912,6 @@ namespace rachis::metal
             });
             for (;;)
             {
-                // The 1 ms strict ticker polls the timeline; the deadline bounds each wait in case a tick is late or
-                // never arrives.
                 const auto left = static_cast<std::int64_t>(std::min<std::uint64_t>(
                     deadline.remainingNs(), static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())));
                 static_cast<void>(dispatch_semaphore_wait(tick, dispatch_time(DISPATCH_TIME_NOW, left)));

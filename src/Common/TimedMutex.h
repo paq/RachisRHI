@@ -41,10 +41,6 @@ namespace rachis::detail
 #define RACHIS_DISPATCH_RELEASE(type, raw) dispatch_release(static_cast<type>(raw))
 #endif
 
-    // macOS coalesces condition-variable timeouts, so a timed wait there can return 100 ms or more after its
-    // deadline. A DISPATCH_TIMER_STRICT one-shot wakes the waiter on time instead. The destructor returns only once
-    // the timer can no longer fire; destroy it with the waiter's mutex unlocked, since the handler takes that mutex.
-    // The dispatch objects are held as void* so that the class is the same in C++ and Objective-C++ (ARC) code.
     class StrictDeadlineWake final
     {
     public:
@@ -108,8 +104,6 @@ namespace rachis::detail
         {
             auto& self = *static_cast<StrictDeadlineWake*>(context);
             {
-                // Taking the mutex orders the wake after the waiter has either checked its deadline or started to
-                // wait, so the notification cannot fall between the two.
                 const std::scoped_lock lock(*self.mutex_);
             }
             self.changed_->notify_all();
@@ -132,8 +126,6 @@ namespace rachis::detail
 #undef RACHIS_DISPATCH_RELEASE
 #endif
 
-    // Waits on changed until done() holds or the deadline passes, and returns done(). lock must own the mutex that
-    // guards done's state, and owns it again on return.
     template<typename Done>
     [[nodiscard]] bool strictWaitUntil(std::unique_lock<std::mutex>& lock,
                                        std::condition_variable& changed,
@@ -162,8 +154,6 @@ namespace rachis::detail
         return done();
     }
 
-    // A timed mutex whose try_lock_until returns at its deadline on every platform; std::timed_mutex can overrun it
-    // by 100 ms or more on macOS.
     class TimedMutex final
     {
     public:

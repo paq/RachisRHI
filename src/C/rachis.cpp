@@ -805,7 +805,6 @@ namespace
         return held;
     }
 
-    // Like lockSwapchainGate, but gives up at the deadline of a timed acquire; nullopt means it timed out.
     [[nodiscard]] std::optional<SwapchainGateLock> lockSwapchainGate(rachis_device& device,
                                                                      rachis_handle swapchain,
                                                                      const rachis::detail::AcquireDeadline& deadline)
@@ -3823,7 +3822,6 @@ namespace
             }
             output->texture = 0;
             output->render_target_view = 0;
-            // The deadline starts here, so that waiting for the gate or the device lock counts against it.
             const rachis::detail::AcquireDeadline deadline(timeout, std::chrono::nanoseconds::zero());
             const auto gate = lockSwapchainGate(*device, swapchain, deadline);
             if (!gate)

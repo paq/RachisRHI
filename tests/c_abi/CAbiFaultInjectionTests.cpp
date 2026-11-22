@@ -3384,7 +3384,6 @@ TEST_CASE("C ABI query_presentation_progress and sibling swapchains do not stall
 
 namespace
 {
-    // Parks one hooked call until release() or destruction, so a failed check cannot leave the call parked.
     struct ParkedCall final
     {
         std::mutex mutex;
@@ -3477,7 +3476,6 @@ TEST_CASE("C ABI timed acquire returns timeout within its bound while another ca
         ParkedCall parked;
     };
 
-    // A present parked in its hook holds the swapchain gate.
     {
         const auto image = acquireSwapchainImage(device.get(), swapchain, error);
         const auto renderComplete = recordAndSubmitImageFrame(device.get(), graphicsPool, image, error);
@@ -3508,7 +3506,6 @@ TEST_CASE("C ABI timed acquire returns timeout within its bound while another ca
         requireOk(rachis_timeline_release(device.get(), renderComplete, &error), error);
     }
 
-    // A command recording parked in its hook holds the device lock shared; the acquire needs it exclusively.
     {
         constexpr std::uint64_t byteCount = 16;
         const auto upload =
@@ -3537,7 +3534,6 @@ TEST_CASE("C ABI timed acquire returns timeout within its bound while another ca
             REQUIRE(target.parked.waitForEntry());
             checkTimedAcquireTimesOut(device.get(), swapchain);
 
-            // A timed-out acquire leaves the lock queue as it found it: shared callers still get in.
             rachis_swapchain_presentation_progress progress{};
             progress.struct_size = sizeof(progress);
             auto progressError = makeError();

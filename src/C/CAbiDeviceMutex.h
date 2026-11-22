@@ -112,8 +112,6 @@ namespace rachis::cabi::detail
         static constexpr std::uint64_t waitersQueued = std::uint64_t{1} << 62;
         static constexpr std::uint64_t sharedCountMask = waitersQueued - 1;
 
-        // Waits for admission, or until *deadline when one is given. Returns false only when the deadline passed
-        // before the lock was handed to this caller.
         [[nodiscard]] bool lockContended(bool shared, const std::chrono::steady_clock::time_point* deadline)
         {
             Waiter waiter;
@@ -164,7 +162,6 @@ namespace rachis::cabi::detail
             return false;
         }
 
-        // Removes a waiter whose deadline passed before admission. Runs under queueMutex_.
         void withdraw(Waiter& waiter) noexcept
         {
             Waiter* previous = nullptr;
@@ -181,9 +178,6 @@ namespace rachis::cabi::detail
             {
                 return;
             }
-            // The queue is empty. While a holder remains, clearing waitersQueued lets its unlock take the fast path.
-            // With no holder, an unlock already saw waitersQueued and its handOff, which waits on queueMutex_, will
-            // clear the flag itself; clearing it here could let a new caller in before that handOff overwrote it.
             auto state = state_.load(std::memory_order_relaxed);
             while ((state & (exclusiveHeld | sharedCountMask)) != 0 &&
                    !state_.compare_exchange_weak(

@@ -150,7 +150,6 @@ namespace rachis::vulkan
         };
 
         [[nodiscard]] std::shared_ptr<SwapchainRecord> findSwapchainRecord(SwapchainHandle swapchain) const noexcept;
-        // Gives up at the deadline of a timed acquire; nullopt means it timed out, nullptr that the handle is stale.
         [[nodiscard]] std::optional<std::shared_ptr<SwapchainRecord>> findSwapchainRecord(
             SwapchainHandle swapchain, const rachis::detail::AcquireDeadline& deadline) const;
         [[nodiscard]] Result<SurfaceCapabilities> capabilitiesFor(VkSurfaceKHR surface,

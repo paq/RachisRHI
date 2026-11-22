@@ -145,7 +145,6 @@ namespace rachis::d3d12
             return found != nullptr ? *found : nullptr;
         }
 
-        // Gives up at the deadline of a timed acquire; nullopt means it timed out, nullptr that the handle is stale.
         [[nodiscard]] std::optional<std::shared_ptr<SwapchainRecord>> findSwapchainRecord(
             rachis::detail::TimedMutex& mutex,
             const detail::HandleTable<std::shared_ptr<SwapchainRecord>, SwapchainHandle>& swapchains,

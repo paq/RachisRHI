@@ -83,8 +83,6 @@ namespace rachis::detail
             return timed_ && deadline_.has_value() && Clock::now() >= *deadline_;
         }
 
-        // Locks mutex, giving up at the deadline of a bounded timed acquire so that waiting for a lock never
-        // overruns it. Untimed and unbounded acquires block as before. Check owns_lock() on the result.
         template<typename Mutex>
         [[nodiscard]] std::unique_lock<Mutex> lock(Mutex& mutex) const
         {
@@ -105,7 +103,6 @@ namespace rachis::detail
             return std::shared_lock<Mutex>(mutex, *deadline_);
         }
 
-        // Relocks a lock released during a wait, under the same deadline. Returns false when it timed out.
         template<typename Mutex>
         [[nodiscard]] bool relock(std::unique_lock<Mutex>& held) const
         {
