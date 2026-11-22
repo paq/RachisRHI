@@ -606,6 +606,68 @@ TEST_CASE("Metal timed acquire keeps a drawable that arrives late and drops it o
     REQUIRE(device.destroySurface(*surface).has_value());
 }
 
+TEST_CASE("Metal timed acquire returns timeout within its bound while another acquire holds the swapchain",
+          "[size:large][rhi][metal][present][gpu][regression]")
+{
+    auto created = rachis::createDevice(metalDesc());
+    REQUIRE(created);
+    auto device = std::move(*created);
+    LayerHost const host(64, 48);
+    auto surface = device.createSurface({
+        .kind = rachis::SurfaceKind::caMetalLayer,
+        .windowHandle = host.layer,
+        .displayHandle = host.view,
+        .label = "contended acquire surface",
+    });
+    REQUIRE(surface);
+    auto swapchain = device.createSwapchain(swapchainDesc(*surface, 64, 48));
+    REQUIRE(swapchain);
+
+    struct AcquireGateRelease final
+    {
+        std::shared_ptr<rachis::metal::MetalCommitFeedbackGate> gate;
+
+        ~AcquireGateRelease()
+        {
+            gate->release();
+            rachis::metal::holdNextDrawableAcquire(nullptr);
+        }
+    };
+
+    std::optional<rachis::Result<rachis::AcquiredSwapchainImage>> parkedAcquire;
+    {
+        std::jthread parked;
+        const AcquireGateRelease release{std::make_shared<rachis::metal::MetalCommitFeedbackGate>()};
+        rachis::metal::holdNextDrawableAcquire(release.gate);
+        parked = std::jthread([&] { parkedAcquire.emplace(device.acquireNextImage(*swapchain)); });
+        REQUIRE(release.gate->waitForEntry(std::chrono::seconds(10)));
+
+        // The parked acquire holds the swapchain until its drawable arrives, so these acquires wait only for the
+        // swapchain lock, and that wait has to end at their deadline.
+        for (const auto timeout :
+             {std::chrono::milliseconds(0), std::chrono::milliseconds(20), std::chrono::milliseconds(50)})
+        {
+            const auto started = std::chrono::steady_clock::now();
+            auto contended = device.acquireNextImage(*swapchain, timeout);
+            const auto elapsed = std::chrono::steady_clock::now() - started;
+            REQUIRE_FALSE(contended);
+            CHECK(contended.error().code == rachis::ErrorCode::timeout);
+            CHECK(elapsed < timeout + timedAcquireSlack);
+        }
+    }
+
+    REQUIRE(parkedAcquire.has_value());
+    if (parkedAcquire->has_value())
+    {
+        REQUIRE(device.cancelSwapchainImage(*swapchain).has_value());
+    }
+    auto recovered = device.acquireNextImage(*swapchain, std::chrono::seconds(3));
+    REQUIRE(recovered);
+    REQUIRE(device.cancelSwapchainImage(*swapchain).has_value());
+    REQUIRE(device.destroySwapchain(*swapchain).has_value());
+    REQUIRE(device.destroySurface(*surface).has_value());
+}
+
 TEST_CASE("Metal acquireNextImage releases the device lock while it waits for a drawable",
           "[size:large][rhi][metal][present][gpu][regression]")
 {

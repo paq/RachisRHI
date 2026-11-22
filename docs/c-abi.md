@@ -221,7 +221,7 @@ if (rachis_command_submit(device, command, &timeline, &error) == RACHIS_STATUS_O
 
 ### Swapchain images
 
-- Image and view handles from `rachis_swapchain_acquire` and `rachis_swapchain_acquire_for` (which returns `RACHIS_STATUS_TIMEOUT` after `timeout_ns`) are **borrowed**: they cannot be leased or used to create views, and `present`, `cancel`, `resize`, or `destroy` invalidates them.
+- Image and view handles from `rachis_swapchain_acquire` and `rachis_swapchain_acquire_for` (which returns `RACHIS_STATUS_TIMEOUT` after `timeout_ns`, counted from the call, including time spent waiting for another call on the device or swapchain) are **borrowed**: they cannot be leased or used to create views, and `present`, `cancel`, `resize`, or `destroy` invalidates them.
 - On Metal, submitting a command buffer referencing an invalidated swapchain image returns `RACHIS_STATUS_INVALID_STATE`.
 - On Direct3D 12 and Vulkan, `rachis_swapchain_cancel` returns `RACHIS_STATUS_INVALID_STATE` while a command buffer referencing the acquired image is recording or submitted-but-unpresented (see [Surfaces](using.md#surfaces)).
 - Frame flow: transition from `rachis_swapchain_acquire`'s reported `initial` state -> write -> transition to required presentation state -> submit -> pass the resulting timeline handle to `rachis_swapchain_present` -> release the timeline handle. On Vulkan, the timeline must come from a graphics-queue submission made after `rachis_swapchain_acquire` (otherwise `rachis_swapchain_present` returns `RACHIS_STATUS_INVALID_ARGUMENT` and leaves the image acquired).

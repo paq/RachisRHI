@@ -1,6 +1,9 @@
 #pragma once
 
+#include "Common/TimedMutex.h"
+
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
@@ -23,8 +26,19 @@ namespace rachis::cabi::detail
         {
             if (!try_lock())
             {
-                lockContended(false);
+                static_cast<void>(lockContended(false, nullptr));
             }
+        }
+
+        template<typename Clock, typename Duration>
+        [[nodiscard]] bool try_lock_until(const std::chrono::time_point<Clock, Duration>& deadline)
+        {
+            if (try_lock())
+            {
+                return true;
+            }
+            const auto until = rachis::detail::toSteadyTimePoint(deadline);
+            return lockContended(false, &until);
         }
 
         [[nodiscard]] bool try_lock() noexcept
@@ -47,8 +61,19 @@ namespace rachis::cabi::detail
         {
             if (!try_lock_shared())
             {
-                lockContended(true);
+                static_cast<void>(lockContended(true, nullptr));
             }
+        }
+
+        template<typename Clock, typename Duration>
+        [[nodiscard]] bool try_lock_shared_until(const std::chrono::time_point<Clock, Duration>& deadline)
+        {
+            if (try_lock_shared())
+            {
+                return true;
+            }
+            const auto until = rachis::detail::toSteadyTimePoint(deadline);
+            return lockContended(true, &until);
         }
 
         [[nodiscard]] bool try_lock_shared() noexcept
@@ -87,7 +112,9 @@ namespace rachis::cabi::detail
         static constexpr std::uint64_t waitersQueued = std::uint64_t{1} << 62;
         static constexpr std::uint64_t sharedCountMask = waitersQueued - 1;
 
-        void lockContended(bool shared)
+        // Waits for admission, or until *deadline when one is given. Returns false only when the deadline passed
+        // before the lock was handed to this caller.
+        [[nodiscard]] bool lockContended(bool shared, const std::chrono::steady_clock::time_point* deadline)
         {
             Waiter waiter;
             waiter.shared = shared;
@@ -103,7 +130,7 @@ namespace rachis::cabi::detail
                                                      std::memory_order_acquire,
                                                      std::memory_order_relaxed))
                     {
-                        return;
+                        return true;
                     }
                 }
                 else if ((state & waitersQueued) != 0 ||
@@ -123,7 +150,46 @@ namespace rachis::cabi::detail
                 tail_->next = &waiter;
             }
             tail_ = &waiter;
-            waiter.admittedChanged.wait(lock, [&] { return waiter.admitted; });
+            if (deadline == nullptr)
+            {
+                waiter.admittedChanged.wait(lock, [&] { return waiter.admitted; });
+                return true;
+            }
+            if (rachis::detail::strictWaitUntil(
+                    lock, waiter.admittedChanged, *deadline, [&] { return waiter.admitted; }))
+            {
+                return true;
+            }
+            withdraw(waiter);
+            return false;
+        }
+
+        // Removes a waiter whose deadline passed before admission. Runs under queueMutex_.
+        void withdraw(Waiter& waiter) noexcept
+        {
+            Waiter* previous = nullptr;
+            for (Waiter* current = head_; current != &waiter; current = current->next)
+            {
+                previous = current;
+            }
+            (previous == nullptr ? head_ : previous->next) = waiter.next;
+            if (tail_ == &waiter)
+            {
+                tail_ = previous;
+            }
+            if (head_ != nullptr)
+            {
+                return;
+            }
+            // The queue is empty. While a holder remains, clearing waitersQueued lets its unlock take the fast path.
+            // With no holder, an unlock already saw waitersQueued and its handOff, which waits on queueMutex_, will
+            // clear the flag itself; clearing it here could let a new caller in before that handOff overwrote it.
+            auto state = state_.load(std::memory_order_relaxed);
+            while ((state & (exclusiveHeld | sharedCountMask)) != 0 &&
+                   !state_.compare_exchange_weak(
+                       state, state & ~waitersQueued, std::memory_order_relaxed, std::memory_order_relaxed))
+            {
+            }
         }
 
         void handOff() noexcept

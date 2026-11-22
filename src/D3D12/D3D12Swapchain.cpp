@@ -2,6 +2,7 @@
 
 #include "Common/AcquireDeadline.h"
 #include "Common/HandleTable.h"
+#include "Common/TimedMutex.h"
 #include "D3D12/D3D12Format.h"
 #include "D3D12/D3D12NativeHelpers.h"
 #include "D3D12/D3D12PresentationProgress.h"
@@ -69,7 +70,7 @@ namespace rachis::d3d12
 
         struct SwapchainRecord final
         {
-            mutable std::mutex recordMutex;
+            mutable rachis::detail::TimedMutex recordMutex;
             std::shared_ptr<SurfaceRecord> surface;
             ComPtr<IDXGISwapChain4> swapchain;
             UniqueWaitableHandle frameLatencyWaitableObject;
@@ -91,7 +92,7 @@ namespace rachis::d3d12
         class PendingSurfaceClaim final
         {
         public:
-            PendingSurfaceClaim(std::shared_ptr<SurfaceRecord> surface, std::mutex& mutex) noexcept
+            PendingSurfaceClaim(std::shared_ptr<SurfaceRecord> surface, rachis::detail::TimedMutex& mutex) noexcept
                 : surface_(std::move(surface)), mutex_(&mutex)
             {
             }
@@ -117,7 +118,7 @@ namespace rachis::d3d12
 
         private:
             std::shared_ptr<SurfaceRecord> surface_;
-            std::mutex* mutex_ = nullptr;
+            rachis::detail::TimedMutex* mutex_ = nullptr;
         };
 
         [[nodiscard]] Error invalidSwapchainError() noexcept
@@ -135,7 +136,7 @@ namespace rachis::d3d12
         }
 
         [[nodiscard]] std::shared_ptr<SwapchainRecord> findSwapchainRecord(
-            std::mutex& mutex,
+            rachis::detail::TimedMutex& mutex,
             const detail::HandleTable<std::shared_ptr<SwapchainRecord>, SwapchainHandle>& swapchains,
             SwapchainHandle swapchain) noexcept
         {
@@ -144,8 +145,24 @@ namespace rachis::d3d12
             return found != nullptr ? *found : nullptr;
         }
 
+        // Gives up at the deadline of a timed acquire; nullopt means it timed out, nullptr that the handle is stale.
+        [[nodiscard]] std::optional<std::shared_ptr<SwapchainRecord>> findSwapchainRecord(
+            rachis::detail::TimedMutex& mutex,
+            const detail::HandleTable<std::shared_ptr<SwapchainRecord>, SwapchainHandle>& swapchains,
+            SwapchainHandle swapchain,
+            const rachis::detail::AcquireDeadline& deadline)
+        {
+            const auto lock = deadline.lock(mutex);
+            if (!lock.owns_lock())
+            {
+                return std::nullopt;
+            }
+            const auto* found = swapchains.find(swapchain);
+            return found != nullptr ? *found : nullptr;
+        }
+
         [[nodiscard]] std::shared_ptr<SurfaceRecord> findSurfaceRecord(
-            std::mutex& mutex,
+            rachis::detail::TimedMutex& mutex,
             const detail::HandleTable<std::shared_ptr<SurfaceRecord>, SurfaceHandle>& surfaces,
             SurfaceHandle surface)
         {
@@ -533,7 +550,7 @@ namespace rachis::d3d12
         }
 
         [[nodiscard]] Status claimSurfaceForSwapchain(
-            std::mutex& mutex,
+            rachis::detail::TimedMutex& mutex,
             const detail::HandleTable<std::shared_ptr<SurfaceRecord>, SurfaceHandle>& surfaces,
             const detail::HandleTable<std::shared_ptr<SwapchainRecord>, SwapchainHandle>& swapchains,
             SurfaceHandle handle,
@@ -978,7 +995,7 @@ namespace rachis::d3d12
         ComPtr<IDXGIFactory7> factory;
         bool tearingSupported = false;
         bool fullyTypedFormatCasting = false;
-        std::mutex mutex;
+        rachis::detail::TimedMutex mutex;
         detail::HandleTable<std::shared_ptr<SurfaceRecord>, SurfaceHandle> surfaces;
         detail::HandleTable<std::shared_ptr<SwapchainRecord>, SwapchainHandle> swapchains;
     };
@@ -1281,13 +1298,22 @@ namespace rachis::d3d12
                                                                       std::optional<std::chrono::nanoseconds> timeout)
     {
         const rachis::detail::AcquireDeadline deadline(timeout, std::chrono::milliseconds(frameLatencyWaitTimeoutMs));
-        const auto recordOwner = findSwapchainRecord(impl_->mutex, impl_->swapchains, swapchain);
+        const auto found = findSwapchainRecord(impl_->mutex, impl_->swapchains, swapchain, deadline);
+        if (!found)
+        {
+            return std::unexpected(deadline.lockTimeout());
+        }
+        const auto& recordOwner = *found;
         if (recordOwner == nullptr)
         {
             return std::unexpected(invalidSwapchainError());
         }
         auto& record = *recordOwner;
-        const std::scoped_lock recordLock(record.recordMutex);
+        const auto recordLock = deadline.lock(record.recordMutex);
+        if (!recordLock.owns_lock())
+        {
+            return std::unexpected(deadline.lockTimeout());
+        }
         auto acquirable = validateAcquirableState(record);
         if (!acquirable)
         {

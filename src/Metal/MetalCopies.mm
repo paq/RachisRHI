@@ -314,7 +314,7 @@ namespace rachis::metal
         };
 
         [[nodiscard]] Result<MetalImmediateBufferCopy> captureMetalImmediateBufferCopy(
-            std::mutex& deviceMutex,
+            rachis::detail::TimedMutex& deviceMutex,
             const std::shared_ptr<MetalDeviceNative>& native,
             BufferHandle source,
             BufferHandle destination,
@@ -818,7 +818,7 @@ namespace rachis::metal
         }
 
         [[nodiscard]] Result<MetalBufferTextureCopyResources> captureMetalBufferToTextureResources(
-            std::mutex& deviceMutex,
+            rachis::detail::TimedMutex& deviceMutex,
             const std::shared_ptr<MetalDeviceNative>& native,
             BufferHandle source,
             TextureHandle destination)
@@ -1043,7 +1043,7 @@ namespace rachis::metal
     {
 
         [[nodiscard]] Result<MetalBufferTextureCopyResources> captureMetalTextureToBufferResources(
-            std::mutex& deviceMutex,
+            rachis::detail::TimedMutex& deviceMutex,
             const std::shared_ptr<MetalDeviceNative>& native,
             TextureHandle source,
             BufferHandle destination)
@@ -1205,7 +1205,7 @@ namespace rachis::metal
         }
 
         [[nodiscard]] Result<MetalTexturePair> captureMetalTextureCopyPair(
-            std::mutex& deviceMutex,
+            rachis::detail::TimedMutex& deviceMutex,
             const std::shared_ptr<MetalDeviceNative>& native,
             TextureHandle source,
             TextureHandle destination)
@@ -1410,7 +1410,9 @@ namespace rachis::metal
         };
 
         [[nodiscard]] Result<MetalResolveTextures> captureMetalResolveTextures(
-            std::mutex& deviceMutex, const std::shared_ptr<MetalDeviceNative>& native, const TextureResolve& resolve)
+            rachis::detail::TimedMutex& deviceMutex,
+            const std::shared_ptr<MetalDeviceNative>& native,
+            const TextureResolve& resolve)
         {
             std::scoped_lock const lock(deviceMutex);
             if (native == nullptr)
@@ -1940,7 +1942,9 @@ namespace rachis::metal
         };
 
         [[nodiscard]] Result<MetalMipmapTexture> captureMetalMipmapTexture(
-            std::mutex& deviceMutex, const std::shared_ptr<MetalDeviceNative>& native, TextureHandle texture)
+            rachis::detail::TimedMutex& deviceMutex,
+            const std::shared_ptr<MetalDeviceNative>& native,
+            TextureHandle texture)
         {
             std::scoped_lock const lock(deviceMutex);
             if (native == nullptr)
@@ -2059,7 +2063,7 @@ namespace rachis::metal
         };
 
         [[nodiscard]] Result<MetalMipmapResources> captureMetalMipmapResources(
-            std::mutex& deviceMutex,
+            rachis::detail::TimedMutex& deviceMutex,
             const std::shared_ptr<MetalDeviceNative>& native,
             bool encodeSrgb,
             const SamplerHandle& samplerHandle,
@@ -2178,7 +2182,9 @@ namespace rachis::metal
         };
 
         [[nodiscard]] std::optional<MetalMipmapViewTextures> findMetalMipmapViewTextures(
-            std::mutex& deviceMutex, const std::shared_ptr<MetalDeviceNative>& native, const MetalMipmapViews& views)
+            rachis::detail::TimedMutex& deviceMutex,
+            const std::shared_ptr<MetalDeviceNative>& native,
+            const MetalMipmapViews& views)
         {
             std::scoped_lock const lock(deviceMutex);
             auto* sampledRecord = native->views.find(views.sampled);
@@ -2198,7 +2204,7 @@ namespace rachis::metal
 
         [[nodiscard]] Result<MetalMipmapViewTextures> takeMetalMipmapViewTextures(
             MetalDevice& device,
-            std::mutex& deviceMutex,
+            rachis::detail::TimedMutex& deviceMutex,
             const std::shared_ptr<MetalDeviceNative>& native,
             const MetalMipmapViews& views)
         {
@@ -2311,7 +2317,7 @@ namespace rachis::metal
         }
 
         [[nodiscard]] Status encodeMetalMipmapChain(MetalDevice& device,
-                                                    std::mutex& deviceMutex,
+                                                    rachis::detail::TimedMutex& deviceMutex,
                                                     const std::shared_ptr<MetalDeviceNative>& deviceNative,
                                                     MetalCommandBuffer& command,
                                                     const MetalMipmapChain& chain,
