@@ -570,7 +570,7 @@ namespace rachis::metal
         }
 
         [[nodiscard]] std::vector<std::weak_ptr<MetalCommandPoolState>> takeCommandPoolsForTeardown(
-            MetalDeviceNative& native, std::mutex& deviceMutex) noexcept
+            MetalDeviceNative& native, rachis::detail::TimedMutex& deviceMutex) noexcept
         {
             std::vector<std::weak_ptr<MetalCommandPoolState>> pools;
             {

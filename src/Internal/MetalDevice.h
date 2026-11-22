@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Common/TimedMutex.h"
 #include "Internal/BackendDevice.h"
 #include "Internal/MetalDiagnostics.h"
 
@@ -317,7 +318,7 @@ namespace rachis::metal
         QueueProperties graphicsQueue_{};
         std::shared_ptr<MetalDeviceNative> native_{};
         std::uint64_t deviceToken_ = 0;
-        mutable std::mutex mutex_{};
+        mutable rachis::detail::TimedMutex mutex_{};
         bool mipmapsReady_ = false;
         SamplerHandle mipmapSampler_{};
         std::array<BindingLayoutHandle, 3> mipmapBindingLayouts_{};

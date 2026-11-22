@@ -1445,7 +1445,7 @@ namespace rachis::metal
         };
 
         [[nodiscard]] Result<MetalLibraryShaderSource> metalFindLibraryShaderSource(
-            std::mutex& deviceMutex,
+            rachis::detail::TimedMutex& deviceMutex,
             const std::shared_ptr<MetalDeviceNative>& native,
             const ShaderModuleDesc& desc,
             const MetalSpecializationSet& specializationConstants)
@@ -2135,7 +2135,7 @@ namespace rachis::metal
 
         [[nodiscard]] Result<MetalPipelineCompilerChoice> metalChoosePipelineCompiler(
             const std::shared_ptr<MetalPipelineCacheRecord>& cache,
-            std::mutex& deviceMutex,
+            rachis::detail::TimedMutex& deviceMutex,
             const std::shared_ptr<MetalDeviceNative>& native,
             const char* inactiveCompilerMessage)
         {
@@ -2178,7 +2178,9 @@ namespace rachis::metal
         };
 
         [[nodiscard]] Result<MetalComputePipelineInputs> metalAcquireComputePipelineInputs(
-            std::mutex& deviceMutex, const std::shared_ptr<MetalDeviceNative>& native, const ComputePipelineDesc& desc)
+            rachis::detail::TimedMutex& deviceMutex,
+            const std::shared_ptr<MetalDeviceNative>& native,
+            const ComputePipelineDesc& desc)
         {
             std::scoped_lock const lock(deviceMutex);
             if (native == nullptr || native->compiler == nil)
@@ -2320,7 +2322,7 @@ namespace rachis::metal
             const std::shared_ptr<MetalPipelineCacheRecord>& cache,
             const MetalPipelineCacheIdentity& identity,
             const std::vector<std::byte>& fingerprint,
-            std::mutex& deviceMutex,
+            rachis::detail::TimedMutex& deviceMutex,
             const std::shared_ptr<MetalDeviceNative>& native)
         {
             std::shared_lock<std::shared_mutex> serializeLock;
@@ -2508,7 +2510,9 @@ namespace rachis::metal
         }
 
         [[nodiscard]] Result<MetalGraphicsPipelineInputs> metalAcquireGraphicsPipelineInputs(
-            std::mutex& deviceMutex, const std::shared_ptr<MetalDeviceNative>& native, const GraphicsPipelineDesc& desc)
+            rachis::detail::TimedMutex& deviceMutex,
+            const std::shared_ptr<MetalDeviceNative>& native,
+            const GraphicsPipelineDesc& desc)
         {
             MetalGraphicsPipelineInputs inputs;
             inputs.hasPixel = desc.pixelShader.isValid();
@@ -2894,7 +2898,7 @@ namespace rachis::metal
             const std::shared_ptr<MetalPipelineCacheRecord>& cache,
             const MetalPipelineCacheIdentity& identity,
             const std::vector<std::byte>& fingerprint,
-            std::mutex& deviceMutex,
+            rachis::detail::TimedMutex& deviceMutex,
             const std::shared_ptr<MetalDeviceNative>& native)
         {
             std::shared_lock<std::shared_mutex> serializeLock;

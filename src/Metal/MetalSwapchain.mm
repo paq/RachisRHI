@@ -296,11 +296,13 @@ namespace rachis::metal
         struct MetalSwapchainOperationLock final
         {
             std::shared_ptr<MetalSwapchainRecord> record;
-            std::unique_lock<std::mutex> lock;
+            std::unique_lock<rachis::detail::TimedMutex> lock;
         };
 
         [[nodiscard]] MetalSwapchainOperationLock lockMetalSwapchainOperations(
-            std::mutex& deviceMutex, const std::shared_ptr<MetalDeviceNative>& native, SwapchainHandle swapchain)
+            rachis::detail::TimedMutex& deviceMutex,
+            const std::shared_ptr<MetalDeviceNative>& native,
+            SwapchainHandle swapchain)
         {
             MetalSwapchainOperationLock operation;
             {
@@ -316,6 +318,38 @@ namespace rachis::metal
             if (operation.record != nullptr)
             {
                 operation.lock = std::unique_lock(operation.record->operationMutex);
+            }
+            return operation;
+        }
+
+        [[nodiscard]] std::optional<MetalSwapchainOperationLock> lockMetalSwapchainOperations(
+            rachis::detail::TimedMutex& deviceMutex,
+            const std::shared_ptr<MetalDeviceNative>& native,
+            SwapchainHandle swapchain,
+            const detail::AcquireDeadline& deadline)
+        {
+            MetalSwapchainOperationLock operation;
+            {
+                const auto lock = deadline.lock(deviceMutex);
+                if (!lock.owns_lock())
+                {
+                    return std::nullopt;
+                }
+                if (native != nullptr)
+                {
+                    if (auto* found = native->swapchains.find(swapchain); found != nullptr)
+                    {
+                        operation.record = *found;
+                    }
+                }
+            }
+            if (operation.record != nullptr)
+            {
+                operation.lock = deadline.lock(operation.record->operationMutex);
+                if (!operation.lock.owns_lock())
+                {
+                    return std::nullopt;
+                }
             }
             return operation;
         }
@@ -855,16 +889,9 @@ namespace rachis::metal
               pending->arrived.notify_all();
             });
             std::unique_lock fetchLock(fetch->mutex);
-            while (!fetch->done && !expired->load(std::memory_order_acquire))
+            while (!fetch->done && !expired->load(std::memory_order_acquire) && !deadline.expired())
             {
-                if (alarm.armed())
-                {
-                    fetch->arrived.wait(fetchLock);
-                }
-                else if (fetch->arrived.wait_for(fetchLock, deadline.remaining()) == std::cv_status::timeout)
-                {
-                    break;
-                }
+                static_cast<void>(fetch->arrived.wait_for(fetchLock, deadline.remaining()));
             }
             return fetch->done;
         }
@@ -887,8 +914,7 @@ namespace rachis::metal
             {
                 const auto left = static_cast<std::int64_t>(std::min<std::uint64_t>(
                     deadline.remainingNs(), static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())));
-                static_cast<void>(dispatch_semaphore_wait(
-                    tick, ticker.armed() ? DISPATCH_TIME_FOREVER : dispatch_time(DISPATCH_TIME_NOW, left)));
+                static_cast<void>(dispatch_semaphore_wait(tick, dispatch_time(DISPATCH_TIME_NOW, left)));
                 status = queryMetalValue(native, timeline, value);
                 if (!status || *status == TimelinePointStatus::complete || deadline.expired())
                 {
@@ -945,8 +971,16 @@ namespace rachis::metal
         }
         const detail::AcquireDeadline deadline(timeout, std::chrono::seconds(1));
 
-        const auto operation = lockMetalSwapchainOperations(mutex_, native_, swapchain);
-        std::unique_lock lock(mutex_);
+        const auto operation = lockMetalSwapchainOperations(mutex_, native_, swapchain, deadline);
+        if (!operation)
+        {
+            return std::unexpected(deadline.lockTimeout());
+        }
+        auto lock = deadline.lock(mutex_);
+        if (!lock.owns_lock())
+        {
+            return std::unexpected(deadline.lockTimeout());
+        }
         auto ready = validateMetalSwapchainAcquirable(native_, swapchain);
         if (!ready)
         {
@@ -976,7 +1010,10 @@ namespace rachis::metal
             {
                 return std::unexpected(std::move(blocked.error()));
             }
-            lock.lock();
+            if (!deadline.relock(lock))
+            {
+                return std::unexpected(deadline.lockTimeout());
+            }
             ready = validateMetalSwapchainAcquirable(native_, swapchain);
             if (!ready)
             {
@@ -999,7 +1036,10 @@ namespace rachis::metal
             lock.unlock();
             const bool arrived = waitForMetalDrawableFetch(fetch, deadline);
             auto active = requireActive();
-            lock.lock();
+            if (!deadline.relock(lock))
+            {
+                return std::unexpected(deadline.lockTimeout());
+            }
             if (!active)
             {
                 return std::unexpected(std::move(active.error()));

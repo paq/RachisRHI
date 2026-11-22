@@ -4,7 +4,9 @@
 #include "C/CAbiSlotTable.h"
 #include "C/CAbiText.h"
 #include "C/CAbiTokenSource.h"
+#include "Common/AcquireDeadline.h"
 #include "Common/MonotonicIdentitySource.h"
+#include "Common/TimedMutex.h"
 #include "Rachis/Device.h"
 
 #include <algorithm>
@@ -89,7 +91,7 @@ namespace
     struct SwapchainEntry final
     {
         rachis::SwapchainHandle native;
-        std::shared_ptr<std::mutex> gate;
+        std::shared_ptr<rachis::detail::TimedMutex> gate;
         rachis::cabi::detail::CAbiBorrowedImageHandles borrowed;
     };
 
@@ -782,8 +784,8 @@ namespace
 
     struct SwapchainGateLock final
     {
-        std::shared_ptr<std::mutex> gate;
-        std::unique_lock<std::mutex> lock;
+        std::shared_ptr<rachis::detail::TimedMutex> gate;
+        std::unique_lock<rachis::detail::TimedMutex> lock;
     };
 
     [[nodiscard]] SwapchainGateLock lockSwapchainGate(rachis_device& device, rachis_handle swapchain)
@@ -800,6 +802,33 @@ namespace
         }
 
         held.lock = std::unique_lock{*held.gate};
+        return held;
+    }
+
+    [[nodiscard]] std::optional<SwapchainGateLock> lockSwapchainGate(rachis_device& device,
+                                                                     rachis_handle swapchain,
+                                                                     const rachis::detail::AcquireDeadline& deadline)
+    {
+        SwapchainGateLock held;
+        {
+            const auto lock = deadline.lockShared(device.mutex);
+            if (!lock.owns_lock())
+            {
+                return std::nullopt;
+            }
+            const auto* const entry = findSwapchain(device, swapchain);
+            if (entry == nullptr)
+            {
+                return held;
+            }
+            held.gate = entry->gate;
+        }
+
+        held.lock = deadline.lock(*held.gate);
+        if (!held.lock.owns_lock())
+        {
+            return std::nullopt;
+        }
         return held;
     }
 
@@ -3689,7 +3718,7 @@ extern "C"
             }
             try
             {
-                device->swapchains.find(id)->gate = std::make_shared<std::mutex>();
+                device->swapchains.find(id)->gate = std::make_shared<rachis::detail::TimedMutex>();
                 auto created = device->native.createSwapchain(rachis::SwapchainDesc{
                     .surface = nativeSurface,
                     .width = desc->width,
@@ -3793,8 +3822,17 @@ namespace
             }
             output->texture = 0;
             output->render_target_view = 0;
-            const auto gate = lockSwapchainGate(*device, swapchain);
-            std::scoped_lock const lock(device->mutex);
+            const rachis::detail::AcquireDeadline deadline(timeout, std::chrono::nanoseconds::zero());
+            const auto gate = lockSwapchainGate(*device, swapchain, deadline);
+            if (!gate)
+            {
+                return result(error, deadline.lockTimeout());
+            }
+            const auto lock = deadline.lock(device->mutex);
+            if (!lock.owns_lock())
+            {
+                return result(error, deadline.lockTimeout());
+            }
             if (const auto lost = rejectLostDevice(*device, error))
             {
                 return *lost;
@@ -3827,8 +3865,9 @@ namespace
             std::optional<rachis::Result<rachis::AcquiredSwapchainImage>> acquired;
             try
             {
-                acquired.emplace(timeout.has_value() ? device->native.acquireNextImage(swapchainEntry->native, *timeout)
-                                                     : device->native.acquireNextImage(swapchainEntry->native));
+                acquired.emplace(timeout.has_value()
+                                     ? device->native.acquireNextImage(swapchainEntry->native, deadline.remaining())
+                                     : device->native.acquireNextImage(swapchainEntry->native));
             }
             catch (...)
             {
