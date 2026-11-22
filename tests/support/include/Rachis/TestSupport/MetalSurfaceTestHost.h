@@ -10,6 +10,7 @@ struct RxMetalTestLayerState final
     bool rgba16Float = false;
     bool framebufferOnly = false;
     bool displaySyncEnabled = false;
+    std::uint32_t maximumDrawableCount = 0;
     std::string name;
 };
 

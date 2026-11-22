@@ -458,6 +458,9 @@ TEST_CASE("Metal timed acquire returns timeout within its bound while presents h
           "[size:large][rhi][metal][present][gpu][regression]")
 {
     auto feedbackGate = std::make_shared<rachis::metal::MetalCommitFeedbackGate>();
+    auto created = rachis::createDevice(metalDesc());
+    REQUIRE(created);
+    auto device = std::move(*created);
     struct ScopedGateRelease final
     {
         std::shared_ptr<rachis::metal::MetalCommitFeedbackGate> gate;
@@ -466,10 +469,6 @@ TEST_CASE("Metal timed acquire returns timeout within its bound while presents h
             gate->release();
         }
     } const releaseOnExit{feedbackGate};
-
-    auto created = rachis::createDevice(metalDesc());
-    REQUIRE(created);
-    auto device = std::move(*created);
     LayerHost const host(64, 48);
     auto surface = device.createSurface({
         .kind = rachis::SurfaceKind::caMetalLayer,
@@ -606,6 +605,62 @@ TEST_CASE("Metal timed acquire keeps a drawable that arrives late and drops it o
     REQUIRE(device.destroySurface(*surface).has_value());
 }
 
+TEST_CASE("Metal present asks for the next drawable before the next acquire",
+          "[size:large][rhi][metal][present][gpu][regression]")
+{
+    auto created = rachis::createDevice(metalDesc());
+    REQUIRE(created);
+    auto device = std::move(*created);
+    LayerHost const host(64, 48);
+    auto surface = device.createSurface({
+        .kind = rachis::SurfaceKind::caMetalLayer,
+        .windowHandle = host.layer,
+        .displayHandle = host.view,
+        .label = "next drawable surface",
+    });
+    REQUIRE(surface);
+    auto swapchain = device.createSwapchain(swapchainDesc(*surface, 64, 48));
+    REQUIRE(swapchain);
+
+    struct AcquireGateRelease final
+    {
+        std::shared_ptr<rachis::metal::MetalCommitFeedbackGate> gate;
+
+        ~AcquireGateRelease()
+        {
+            gate->release();
+            rachis::metal::holdNextDrawableAcquire(nullptr);
+        }
+    };
+
+    auto first = device.acquireNextImage(*swapchain, std::chrono::seconds(3));
+    REQUIRE(first);
+    {
+        const AcquireGateRelease release{std::make_shared<rachis::metal::MetalCommitFeedbackGate>()};
+        rachis::metal::holdNextDrawableAcquire(release.gate);
+        auto command = rachis::test::acquireCommandBuffer(device, rachis::QueueType::graphics);
+        REQUIRE(command);
+        REQUIRE(device.insertDebugMarker(*command, {.label = "Prefetch frame"}).has_value());
+        auto rendered = device.submit(std::move(*command));
+        REQUIRE(rendered);
+        auto presented = device.present(*swapchain, *rendered);
+        REQUIRE(presented);
+        CHECK(*presented == rachis::PresentStatus::presented);
+
+        REQUIRE(release.gate->waitForEntry(std::chrono::seconds(10)));
+        auto pending = device.acquireNextImage(*swapchain, std::chrono::milliseconds(0));
+        REQUIRE_FALSE(pending);
+        CHECK(pending.error().code == rachis::ErrorCode::timeout);
+    }
+    auto next = device.acquireNextImage(*swapchain, std::chrono::seconds(3));
+    REQUIRE(next);
+    CHECK(next->width == 64);
+    REQUIRE(device.cancelSwapchainImage(*swapchain).has_value());
+    REQUIRE(device.waitIdle().has_value());
+    REQUIRE(device.destroySwapchain(*swapchain).has_value());
+    REQUIRE(device.destroySurface(*surface).has_value());
+}
+
 TEST_CASE("Metal timed acquire returns timeout within its bound while another acquire holds the swapchain",
           "[size:large][rhi][metal][present][gpu][regression]")
 {
@@ -642,8 +697,6 @@ TEST_CASE("Metal timed acquire returns timeout within its bound while another ac
         parked = std::jthread([&] { parkedAcquire.emplace(device.acquireNextImage(*swapchain)); });
         REQUIRE(release.gate->waitForEntry(std::chrono::seconds(10)));
 
-        // The parked acquire holds the swapchain until its drawable arrives, so these acquires wait only for the
-        // swapchain lock, and that wait has to end at their deadline.
         for (const auto timeout :
              {std::chrono::milliseconds(0), std::chrono::milliseconds(20), std::chrono::milliseconds(50)})
         {
@@ -924,6 +977,9 @@ TEST_CASE("Metal presents retire only after the commit feedback of earlier graph
           "[size:large][rhi][metal][present][gpu][regression]")
 {
     auto feedbackGate = std::make_shared<rachis::metal::MetalCommitFeedbackGate>();
+    auto created = rachis::createDevice(metalDesc());
+    REQUIRE(created);
+    auto device = std::move(*created);
     struct ScopedGateRelease final
     {
         std::shared_ptr<rachis::metal::MetalCommitFeedbackGate> gate;
@@ -932,10 +988,6 @@ TEST_CASE("Metal presents retire only after the commit feedback of earlier graph
             gate->release();
         }
     } const releaseOnExit{feedbackGate};
-
-    auto created = rachis::createDevice(metalDesc());
-    REQUIRE(created);
-    auto device = std::move(*created);
     LayerHost const host(80, 60);
     auto surface = device.createSurface({
         .kind = rachis::SurfaceKind::caMetalLayer,
