@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 4.0)
 project(RachisPackageConfig LANGUAGES C CXX)
 
-find_package(Rachis 0.4 CONFIG REQUIRED COMPONENTS RHI C)
+find_package(Rachis 0.5 CONFIG REQUIRED COMPONENTS RHI C)
 
 foreach(component IN ITEMS RHI C RHID3D12 RHIVulkan RHIMetal ShaderBinaryTool)
     if(TARGET Rachis::${component})
@@ -10,7 +10,7 @@ foreach(component IN ITEMS RHI C RHID3D12 RHIVulkan RHIMetal ShaderBinaryTool)
                 "The package has Rachis::${component}, but Rachis_${component}_FOUND is "
                 "'${Rachis_${component}_FOUND}'.")
         endif()
-        find_package(Rachis 0.4 CONFIG QUIET COMPONENTS ${component})
+        find_package(Rachis 0.5 CONFIG QUIET COMPONENTS ${component})
         if(NOT Rachis_FOUND)
             message(FATAL_ERROR
                 "find_package(Rachis COMPONENTS ${component}) failed, although the package has "
@@ -22,20 +22,20 @@ foreach(component IN ITEMS RHI C RHID3D12 RHIVulkan RHIMetal ShaderBinaryTool)
                 "The package lacks Rachis::${component}, but Rachis_${component}_FOUND is "
                 "'${Rachis_${component}_FOUND}'.")
         endif()
-        find_package(Rachis 0.4 CONFIG QUIET COMPONENTS ${component})
+        find_package(Rachis 0.5 CONFIG QUIET COMPONENTS ${component})
         if(Rachis_FOUND)
             message(FATAL_ERROR
                 "find_package(Rachis COMPONENTS ${component}) succeeded, although the package lacks "
                 "Rachis::${component}.")
         endif()
-        find_package(Rachis 0.4 CONFIG QUIET OPTIONAL_COMPONENTS ${component})
+        find_package(Rachis 0.5 CONFIG QUIET OPTIONAL_COMPONENTS ${component})
         if(NOT Rachis_FOUND)
             message(FATAL_ERROR "find_package(Rachis OPTIONAL_COMPONENTS ${component}) failed.")
         endif()
     endif()
 endforeach()
 
-find_package(Rachis 0.4 CONFIG QUIET COMPONENTS NotARachisComponent)
+find_package(Rachis 0.5 CONFIG QUIET COMPONENTS NotARachisComponent)
 if(Rachis_FOUND)
     message(FATAL_ERROR "find_package(Rachis COMPONENTS NotARachisComponent) succeeded.")
 endif()

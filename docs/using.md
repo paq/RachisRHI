@@ -13,7 +13,7 @@
 
 ## CMake targets
 
-An installed Rachis package (`find_package(Rachis 0.4 CONFIG REQUIRED)`) exports the following targets:
+An installed Rachis package (`find_package(Rachis 0.5 CONFIG REQUIRED)`) exports the following targets:
 
 | Target | Kind | Purpose |
 | --- | --- | --- |
@@ -27,7 +27,7 @@ An installed Rachis package (`find_package(Rachis 0.4 CONFIG REQUIRED)`) exports
 Minimal C++ consumer configuration:
 
 ```cmake
-find_package(Rachis 0.4 CONFIG REQUIRED)
+find_package(Rachis 0.5 CONFIG REQUIRED)
 
 add_executable(app main.cpp)
 target_compile_features(app PRIVATE cxx_std_23)
@@ -48,7 +48,7 @@ CMake searches `<prefix>/<libdir>/cmake/Rachis` (or an explicit `Rachis_DIR` dir
 - **Bundled internal libraries:** The installed package bundles private copies of `volk` and `D3D12MemoryAllocator` under `<libdir>/Rachis` with no headers or CMake package configs exported, preventing other copies on `CMAKE_PREFIX_PATH` from replacing them (`find_package(Rachis)` only looks up `Threads` for Vulkan). If your own targets also link static `volk` or `D3D12MemoryAllocator` (or define `VMA_IMPLEMENTATION`), embed RachisRHI from source instead of consuming the installed package to avoid duplicate symbols; see [Using the source tree directly](building.md#using-the-source-tree-directly).
 - **MSVC multi-configuration linking:** `Rachis::RHI` must link with a matching Debug or Release CRT configuration (mismatching triggers `LNK2038`). A combined prefix built per [Debug and Release in one prefix](building.md#debug-and-release-in-one-prefix) satisfies both (`RelWithDebInfo` and `MinSizeRel` resolve to the Release libraries). `Rachis::C` (`rachis.dll`) is configuration-independent.
 - **Backend detection and components:** Enabled backends are exposed as boolean target properties on `Rachis::RHI`: `RACHIS_ENABLE_D3D12`, `RACHIS_ENABLE_VULKAN`, and `RACHIS_ENABLE_METAL`. Package components drop the `Rachis::` prefix and report `Rachis_<component>_FOUND`:
-  - `find_package(Rachis 0.4 CONFIG REQUIRED COMPONENTS RHI RHIVulkan)` fails configuration if the Vulkan backend is absent.
+  - `find_package(Rachis 0.5 CONFIG REQUIRED COMPONENTS RHI RHIVulkan)` fails configuration if the Vulkan backend is absent.
   - Passing components under `OPTIONAL_COMPONENTS` leaves `Rachis_<component>_FOUND` for conditional checks without failing configure.
 - **C ABI consumers:** Link `Rachis::C` instead of `Rachis::RHI`; no C++ toolchain or standard library linkage is required by the caller. On Windows, deploy `rachis.dll` alongside the executable. See [`tests/package/consumer`](../tests/package/consumer) for a complete package consumer example.
 

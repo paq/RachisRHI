@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0
+
+- C ABI version 5 (`RACHIS_ABI_VERSION` 5, `librachis.so.5` / `librachis.5.dylib`):
+  - `SurfaceKind::win32Composition` / `RACHIS_SURFACE_WIN32_COMPOSITION`: DirectComposition swapchains (`CreateSwapChainForComposition`) on Windows Direct3D 12.
+  - `Device::queryPresentTimings` and `rachis_swapchain_query_present_timings` (`rachis_present_timing`, `rachis_present_timing_query`, `RACHIS_PRESENT_TIMING_*`) on Metal and Direct3D 12.
+- Timed swapchain acquire (`acquireNextImage(swapchain, timeout)` / `rachis_swapchain_acquire_for`) measures its deadline from call entry, bounding internal device-lock and drawable waits.
+- Metal: use two drawables in `PresentMode::immediate` and request the next drawable at present; report shared-event table exhaustion only near the cap.
+
 ## 0.4.0
 
 - `Device::acquireNextImage(swapchain, timeout)` and `rachis_swapchain_acquire_for` (`ErrorCode::timeout` / `RACHIS_STATUS_TIMEOUT`, `RACHIS_ABI_VERSION` 4: `librachis.so.4` / `librachis.4.dylib`).
