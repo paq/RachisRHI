@@ -827,6 +827,8 @@ namespace rachis
         [[nodiscard]] Result<PresentStatus> present(SwapchainHandle swapchain, TimelinePoint renderComplete);
         [[nodiscard]] Result<SwapchainPresentationInfo> querySwapchainPresentation(SwapchainHandle swapchain) const;
         [[nodiscard]] Result<SwapchainFrameTiming> querySwapchainFrameTiming(SwapchainHandle swapchain) const;
+        [[nodiscard]] Result<SwapchainPresentTimings> querySwapchainPresentTimings(
+            SwapchainHandle swapchain, std::uint64_t firstSequence, std::span<PresentTiming> records) const;
 
     private:
         explicit Device(std::unique_ptr<detail::BackendDevice> backend) noexcept;

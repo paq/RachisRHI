@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Rachis/Command.h"
+#include "Rachis/Query.h"
 #include "Rachis/Resource.h"
 
 #include <cstdint>
@@ -161,6 +162,47 @@ namespace rachis
         std::uint64_t presentationGeneration = 0;
         std::uint64_t submittedPresentationSequence = 0;
         std::uint64_t displayedPresentationSequence = 0;
+    };
+
+    inline constexpr std::uint32_t presentTimingMinHistory = 64;
+
+    enum class PresentTimingFlags : std::uint32_t
+    {
+        none = 0,
+        displayed = 1U << 0U,
+        dropped = 1U << 1U,
+        estimated = 1U << 2U,
+        hidden = 1U << 3U,
+    };
+
+    [[nodiscard]] constexpr PresentTimingFlags operator|(PresentTimingFlags left, PresentTimingFlags right) noexcept
+    {
+        return static_cast<PresentTimingFlags>(static_cast<std::uint32_t>(left) | static_cast<std::uint32_t>(right));
+    }
+
+    [[nodiscard]] constexpr bool hasAny(PresentTimingFlags value, PresentTimingFlags flags) noexcept
+    {
+        return (static_cast<std::uint32_t>(value) & static_cast<std::uint32_t>(flags)) != 0;
+    }
+
+    struct PresentTiming final
+    {
+        std::uint64_t presentSequence = 0;
+        std::uint64_t presentTime = 0;
+        PresentTimingFlags flags = PresentTimingFlags::none;
+    };
+
+    struct SwapchainPresentTimings final
+    {
+        CpuClock cpuClock = CpuClock::none;
+        std::uint64_t cpuFrequency = 0;
+        std::uint64_t generation = 0;
+        std::uint64_t submittedSequence = 0;
+        std::uint64_t settledSequence = 0;
+        std::uint64_t firstAvailableSequence = 0;
+        std::uint64_t refreshIntervalNs = 0;
+        std::uint64_t maxRefreshIntervalNs = 0;
+        std::uint32_t recordCount = 0;
     };
 
 } // namespace rachis

@@ -21,7 +21,7 @@ extern "C"
 {
 #endif
 
-#define RACHIS_ABI_VERSION 4U
+#define RACHIS_ABI_VERSION 5U
 #define RACHIS_ERROR_MESSAGE_CAPACITY 256u
 #define RACHIS_MAX_SURFACE_FORMATS 16U
 #define RACHIS_MAX_VERTEX_BUFFERS 8U
@@ -1271,6 +1271,47 @@ extern "C"
                                                  rachis_handle swapchain,
                                                  rachis_swapchain_presentation_progress* output,
                                                  rachis_error* error);
+
+#define RACHIS_PRESENT_TIMING_MIN_HISTORY 64U
+
+    enum
+    {
+        RACHIS_PRESENT_TIMING_DISPLAYED = 1U << 0U,
+        RACHIS_PRESENT_TIMING_DROPPED = 1U << 1U,
+        RACHIS_PRESENT_TIMING_ESTIMATED = 1U << 2U,
+        RACHIS_PRESENT_TIMING_HIDDEN = 1U << 3U
+    };
+
+    typedef struct rachis_present_timing
+    {
+        uint64_t present_sequence;
+        uint64_t present_time;
+        uint32_t flags;
+        uint32_t reserved0;
+    } rachis_present_timing;
+
+    typedef struct rachis_swapchain_present_timings
+    {
+        uint32_t struct_size;
+        uint32_t cpu_clock;
+        uint64_t cpu_frequency;
+        uint64_t generation;
+        uint64_t submitted_sequence;
+        uint64_t settled_sequence;
+        uint64_t first_available_sequence;
+        uint64_t refresh_interval_ns;
+        uint64_t max_refresh_interval_ns;
+        uint32_t record_count;
+        uint32_t reserved0;
+    } rachis_swapchain_present_timings;
+
+    RACHIS_API rachis_status rachis_swapchain_query_present_timings(rachis_device* device,
+                                                                    rachis_handle swapchain,
+                                                                    uint64_t first_sequence,
+                                                                    rachis_present_timing* records,
+                                                                    uint32_t capacity,
+                                                                    rachis_swapchain_present_timings* output,
+                                                                    rachis_error* error);
 
     RACHIS_API rachis_status rachis_swapchain_cancel(rachis_device* device,
                                                      rachis_handle swapchain,

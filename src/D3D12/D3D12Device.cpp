@@ -2985,6 +2985,16 @@ namespace rachis::d3d12
             return swapchains_.queryFrameTiming(swapchain);
         }
 
+        [[nodiscard]] Result<SwapchainPresentTimings> querySwapchainPresentTimings(
+            SwapchainHandle swapchain, std::uint64_t firstSequence, std::span<PresentTiming> records) const override
+        {
+            if (auto loss = deviceLossError())
+            {
+                return std::unexpected(std::move(*loss));
+            }
+            return swapchains_.queryPresentTimings(swapchain, firstSequence, records);
+        }
+
     private:
         template<typename Operation>
         [[nodiscard]] std::invoke_result_t<Operation&> guardDeviceLoss(Operation&& operation,

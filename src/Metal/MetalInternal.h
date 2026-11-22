@@ -959,6 +959,9 @@ namespace rachis::metal
     {
         __strong id view = nil;
         std::atomic<bool> hidden{false};
+        std::atomic<bool> onScreen{true};
+        std::atomic<std::uint64_t> minRefreshIntervalNs{0};
+        std::atomic<std::uint64_t> maxRefreshIntervalNs{0};
         std::atomic<bool> refreshQueued{false};
     };
 

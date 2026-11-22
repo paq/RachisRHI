@@ -1,4 +1,4 @@
-RACHIS_ABI_VERSION=4
+RACHIS_ABI_VERSION=5
 rachis_abi_version
 rachis_binding_layout_create
 rachis_binding_layout_destroy
@@ -72,6 +72,7 @@ rachis_swapchain_cancel
 rachis_swapchain_create
 rachis_swapchain_destroy
 rachis_swapchain_present
+rachis_swapchain_query_present_timings
 rachis_swapchain_query_presentation_progress
 rachis_swapchain_resize
 rachis_texture_create

@@ -19,6 +19,7 @@ The C ABI lives in the `rachis` shared library (`Rachis::C` in CMake) and export
   - [Timelines](#timelines)
   - [Texture leases](#texture-leases)
   - [Swapchain images](#swapchain-images)
+  - [Present timings](#present-timings)
 - [Threads](#threads)
 - [Device loss](#device-loss)
 - [Timestamps and memory budget](#timestamps-and-memory-budget)
@@ -225,6 +226,14 @@ if (rachis_command_submit(device, command, &timeline, &error) == RACHIS_STATUS_O
 - On Metal, submitting a command buffer referencing an invalidated swapchain image returns `RACHIS_STATUS_INVALID_STATE`.
 - On Direct3D 12 and Vulkan, `rachis_swapchain_cancel` returns `RACHIS_STATUS_INVALID_STATE` while a command buffer referencing the acquired image is recording or submitted-but-unpresented (see [Surfaces](using.md#surfaces)).
 - Frame flow: transition from `rachis_swapchain_acquire`'s reported `initial` state -> write -> transition to required presentation state -> submit -> pass the resulting timeline handle to `rachis_swapchain_present` -> release the timeline handle. On Vulkan, the timeline must come from a graphics-queue submission made after `rachis_swapchain_acquire` (otherwise `rachis_swapchain_present` returns `RACHIS_STATUS_INVALID_ARGUMENT` and leaves the image acquired).
+
+### Present timings
+
+`rachis_swapchain_query_present_timings` writes settled records with `first_sequence <= present_sequence <= settled_sequence` (oldest first, up to `capacity`; `records` may be `NULL` when `capacity == 0`), keeping at least `RACHIS_PRESENT_TIMING_MIN_HISTORY` (64) records per swapchain generation.
+
+- `present_time` uses `cpu_clock` at `cpu_frequency` ticks/s (matching `rachis_timestamp_calibration.cpu_timestamp`); `refresh_interval_ns` / `max_refresh_interval_ns` report display refresh bounds in ns (0 if unknown).
+- Flags: `RACHIS_PRESENT_TIMING_DISPLAYED`, `RACHIS_PRESENT_TIMING_DROPPED`, `RACHIS_PRESENT_TIMING_HIDDEN`, `RACHIS_PRESENT_TIMING_ESTIMATED` (`0` = unknown outcome).
+- Supported on Metal and Direct3D 12; returns `RACHIS_STATUS_UNSUPPORTED` on Vulkan or when frame statistics are unavailable.
 
 ## Threads
 
