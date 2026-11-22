@@ -4291,7 +4291,6 @@ extern "C"
                 }
                 native = entry->native;
             }
-            // A backend never keeps more than a few hundred records, so a larger capacity only needs this many.
             constexpr std::uint32_t maxRecordsPerCall = 4096;
             std::vector<rachis::PresentTiming> nativeRecords(std::min(capacity, maxRecordsPerCall));
             const auto timings = device->native.querySwapchainPresentTimings(native, firstSequence, nativeRecords);

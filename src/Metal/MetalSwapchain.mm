@@ -31,8 +31,6 @@ namespace rachis::metal
             return seconds > 0.0 && seconds < 10.0 ? static_cast<std::uint64_t>(std::llround(seconds * 1.0e9)) : 0;
         }
 
-        // Main thread only: whether the layer can be on screen, and the refresh intervals of its screen. AppKit is
-        // reached through key-value coding, as in metalReadViewHidden, so the library does not link it.
         void readMetalViewScreen(id view, bool hidden, MetalViewVisibility& visibility) noexcept
         {
             constexpr NSUInteger occlusionStateVisible = 1U << 1U; // NSWindowOcclusionStateVisible

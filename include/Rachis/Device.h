@@ -827,8 +827,6 @@ namespace rachis
         [[nodiscard]] Result<PresentStatus> present(SwapchainHandle swapchain, TimelinePoint renderComplete);
         [[nodiscard]] Result<SwapchainPresentationInfo> querySwapchainPresentation(SwapchainHandle swapchain) const;
         [[nodiscard]] Result<SwapchainFrameTiming> querySwapchainFrameTiming(SwapchainHandle swapchain) const;
-        // Settled present timings with presentSequence >= firstSequence, oldest first, written to the front of
-        // records. ErrorCode::unsupported when the backend or surface reports no per-present timing.
         [[nodiscard]] Result<SwapchainPresentTimings> querySwapchainPresentTimings(
             SwapchainHandle swapchain, std::uint64_t firstSequence, std::span<PresentTiming> records) const;
 

@@ -164,20 +164,14 @@ namespace rachis
         std::uint64_t displayedPresentationSequence = 0;
     };
 
-    // Every swapchain keeps at least this many settled present timings. It may keep more.
     inline constexpr std::uint32_t presentTimingMinHistory = 64;
 
     enum class PresentTimingFlags : std::uint32_t
     {
-        // Settled, but the backend could not tell what happened to the present.
         none = 0,
-        // presentTime is the start of the refresh (vblank) in which the image was first on screen.
         displayed = 1U << 0U,
-        // A newer present replaced it while the surface was visible, so it was never shown.
         dropped = 1U << 1U,
-        // With displayed: derived from a later vblank rather than reported for this present.
         estimated = 1U << 2U,
-        // Settled while the surface was hidden, occluded or minimized; nothing was shown.
         hidden = 1U << 3U,
     };
 
@@ -193,27 +187,19 @@ namespace rachis
 
     struct PresentTiming final
     {
-        // The present's sequence in its generation: the n-th present that returned PresentStatus::presented.
         std::uint64_t presentSequence = 0;
-        // CPU-clock ticks (SwapchainPresentTimings::cpuClock at cpuFrequency); 0 unless displayed.
         std::uint64_t presentTime = 0;
         PresentTimingFlags flags = PresentTimingFlags::none;
     };
 
     struct SwapchainPresentTimings final
     {
-        // The counter presentTime counts, the same one calibrateQueueClock reports: mach_absolute_time on
-        // macOS, QueryPerformanceCounter on Windows, CLOCK_MONOTONIC on Linux.
         CpuClock cpuClock = CpuClock::none;
         std::uint64_t cpuFrequency = 0;
         std::uint64_t generation = 0;
         std::uint64_t submittedSequence = 0;
-        // Every present up to this sequence is settled.
         std::uint64_t settledSequence = 0;
-        // The oldest present still kept; older ones are lost. 0 before the first present.
         std::uint64_t firstAvailableSequence = 0;
-        // Shortest and longest refresh interval of the display showing the surface, in nanoseconds. They are
-        // equal at a fixed refresh rate; the longest is larger with variable refresh. 0 when unknown.
         std::uint64_t refreshIntervalNs = 0;
         std::uint64_t maxRefreshIntervalNs = 0;
         std::uint32_t recordCount = 0;

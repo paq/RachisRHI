@@ -968,7 +968,6 @@ namespace rachis::d3d12
                        : 0;
         }
 
-        // Reads the swapchain's frame statistics into its presentation progress and present timings.
         void observeFrameStatistics(SwapchainRecord& record) noexcept
         {
             auto& presentation = record.presentation;

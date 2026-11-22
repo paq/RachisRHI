@@ -229,22 +229,11 @@ if (rachis_command_submit(device, command, &timeline, &error) == RACHIS_STATUS_O
 
 ### Present timings
 
-`rachis_swapchain_query_present_timings` reports what happened to each present, so a frame pacer can see when frames reached the screen.
+`rachis_swapchain_query_present_timings` writes settled records with `first_sequence <= present_sequence <= settled_sequence` (oldest first, up to `capacity`; `records` may be `NULL` when `capacity == 0`), keeping at least `RACHIS_PRESENT_TIMING_MIN_HISTORY` (64) records per swapchain generation.
 
-- **Sequences:** every `rachis_swapchain_present` that returns `RACHIS_PRESENT_STATUS_PRESENTED` takes the next sequence of the swapchain's generation (1, 2, 3, ...); no other status takes one. `rachis_swapchain_presentation_progress.submitted_sequence` read right after a present is that present's sequence. `rachis_swapchain_resize` starts a new generation: sequences restart at 1 and the history is cleared, as in the progress query.
-- **Reading:** pass `first_sequence` (for example, the last sequence you read plus one) and an array of `capacity` records. The call writes the settled records with `first_sequence <= present_sequence <= settled_sequence`, oldest first, with no gaps, and sets `record_count`. With `capacity` 0, `records` may be `NULL` and only the header is filled. A present is *settled* once the backend knows how it ended. Pending presents appear in a later call.
-- **History:** each swapchain keeps at least `RACHIS_PRESENT_TIMING_MIN_HISTORY` (64) records. `first_available_sequence` is the oldest one still kept; treat older sequences as unknown.
-- **Flags:** `RACHIS_PRESENT_TIMING_DISPLAYED` (`present_time` is valid), `RACHIS_PRESENT_TIMING_DROPPED` (a newer present replaced it while the surface was visible), `RACHIS_PRESENT_TIMING_HIDDEN` (settled while the surface was hidden, occluded or minimized), and `RACHIS_PRESENT_TIMING_ESTIMATED` (with `DISPLAYED`: derived from a later vblank). `flags == 0` means the backend could not tell.
-- **Clock:** `present_time` is in ticks of `cpu_clock` at `cpu_frequency` per second: the same counter and units as `rachis_timestamp_calibration.cpu_timestamp` (`mach_absolute_time` on macOS, `QueryPerformanceCounter` on Windows, `CLOCK_MONOTONIC` on Linux).
-- **Refresh:** `refresh_interval_ns` and `max_refresh_interval_ns` are the shortest and longest refresh intervals of the display showing the surface, read on every call. They are equal at a fixed rate; the longest is larger with variable refresh. 0 means unknown.
-
-| Backend | `present_time` means | Dropped and hidden | Refresh interval |
-| --- | --- | --- | --- |
-| Metal | `CAMetalDrawable.presentedTime`: the start of the refresh in which Core Animation first showed the drawable | `DROPPED` when `presentedTime` is 0, a newer present exists, and the view's window was visible and unoccluded; `HIDDEN` when it was not | The window's screen's `minimumRefreshInterval` / `maximumRefreshInterval` (ProMotion and adaptive sync show min < max); 0 without an `NSView` in a window |
-| Direct3D 12 | `DXGI_FRAME_STATISTICS.SyncQPCTime` for the present's first vblank (the compositor's vblank in a window). Polled at every present and query, so a sample taken vblanks later is moved back by that many refreshes and marked `ESTIMATED` | Presents that no sample caught settle with `flags == 0` | Measured from successive frame statistics (vblank time over vblank count), so it follows display changes; 0 until two samples arrive. Variable refresh is not told apart (min == max) |
-| Vulkan | Not reported yet: `RACHIS_STATUS_UNSUPPORTED` | | |
-
-The call returns `RACHIS_STATUS_UNSUPPORTED` (header zeroed, `cpu_clock` `RACHIS_CPU_CLOCK_NONE`) when the backend or swapchain reports no per-present timing, for example a Direct3D 12 swapchain whose frame statistics are unavailable.
+- `present_time` uses `cpu_clock` at `cpu_frequency` ticks/s (matching `rachis_timestamp_calibration.cpu_timestamp`); `refresh_interval_ns` / `max_refresh_interval_ns` report display refresh bounds in ns (0 if unknown).
+- Flags: `RACHIS_PRESENT_TIMING_DISPLAYED`, `RACHIS_PRESENT_TIMING_DROPPED`, `RACHIS_PRESENT_TIMING_HIDDEN`, `RACHIS_PRESENT_TIMING_ESTIMATED` (`0` = unknown outcome).
+- Supported on Metal and Direct3D 12; returns `RACHIS_STATUS_UNSUPPORTED` on Vulkan or when frame statistics are unavailable.
 
 ## Threads
 

@@ -959,9 +959,7 @@ namespace rachis::metal
     {
         __strong id view = nil;
         std::atomic<bool> hidden{false};
-        // In a visible, unoccluded window: when false, Core Animation shows nothing from the layer.
         std::atomic<bool> onScreen{true};
-        // The window's screen's refresh intervals in nanoseconds; 0 when unknown.
         std::atomic<std::uint64_t> minRefreshIntervalNs{0};
         std::atomic<std::uint64_t> maxRefreshIntervalNs{0};
         std::atomic<bool> refreshQueued{false};

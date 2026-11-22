@@ -85,7 +85,6 @@ TEST_CASE("Present timing history keeps at least the minimum history and reports
     CHECK(records[snapshot.recordCount - 1].presentSequence == total);
     CHECK(records[snapshot.recordCount - 1].presentTime == total * 10);
 
-    // A jump past the whole history leaves only the newest presents, all pending.
     history.submitted(total + 2 * PresentTimingHistory::capacity);
     snapshot = history.read(1, records);
     CHECK(snapshot.firstAvailableSequence == total + PresentTimingHistory::capacity + 1);
@@ -107,8 +106,6 @@ TEST_CASE("D3D12 frame statistics settle present timings by present count and ba
     std::array<PresentTiming, 8> records{};
     CHECK(tracker.readTimings(1, records).settledSequence == 0);
 
-    // Native present 102 (sequence 2) first showed at vblank 50 and is still the newest shown at vblank 50. No
-    // refresh period is known yet.
     tracker.observedFrame(102, 50, 50, 5'000);
     CHECK(tracker.refreshTicks() == 0);
     auto snapshot = tracker.readTimings(1, records);
@@ -119,7 +116,6 @@ TEST_CASE("D3D12 frame statistics settle present timings by present count and ba
     CHECK(records[1].presentTime == 5'000);
     CHECK(tracker.displayedSequence() == 2);
 
-    // Native present 104 first showed at vblank 52 but is sampled at vblank 54: two refreshes earlier.
     tracker.observedFrame(104, 52, 54, 5'400);
     CHECK(tracker.refreshTicks() == 100);
     snapshot = tracker.readTimings(3, records);

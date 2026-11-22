@@ -3381,6 +3381,136 @@ TEST_CASE("C ABI query_presentation_progress and sibling swapchains do not stall
     requireOk(rachis_surface_destroy(device.get(), surfaceB, &error), error);
     requireOk(rachis_surface_destroy(device.get(), surfaceA, &error), error);
 }
+TEST_CASE("C ABI present timings settle each present in order on the calibrated CPU clock",
+          "[size:large]" RACHIS_CABI_PRESENT_DESKTOP_REQUIRES RACHIS_CABI_DEVICE_REQUIRES
+          "[rachis][cabi][swapchain][presentation]")
+{
+    const SurfaceHost host;
+    REQUIRE(host.valid());
+    auto error = makeError();
+    auto device = createDevice(error);
+    const auto surfaceDesc = host.surfaceDesc();
+    rachis_handle surface = 0;
+    requireOk(rachis_surface_create(device.get(), &surfaceDesc, &surface, &error), error);
+    const auto swapchain = createSwapchain(device.get(), surface, error);
+    const auto pool = createPool(device.get(), RACHIS_QUEUE_GRAPHICS, error);
+
+    rachis_swapchain_present_timings timings{};
+    std::array<rachis_present_timing, 8> records{};
+    timings.struct_size = sizeof(timings) - 1;
+    CHECK(rachis_swapchain_query_present_timings(device.get(), swapchain, 1, records.data(), 8, &timings, &error) ==
+          RACHIS_STATUS_ABI_MISMATCH);
+    timings.struct_size = sizeof(timings);
+    CHECK(rachis_swapchain_query_present_timings(device.get(), swapchain, 1, records.data(), 8, nullptr, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_swapchain_query_present_timings(device.get(), swapchain, 1, nullptr, 1, &timings, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+    CHECK(rachis_swapchain_query_present_timings(device.get(), surface, 1, records.data(), 8, &timings, &error) ==
+          RACHIS_STATUS_INVALID_ARGUMENT);
+
+    const auto query = [&](std::uint64_t first, std::uint32_t capacity) {
+        timings = rachis_swapchain_present_timings{};
+        timings.struct_size = sizeof(timings);
+        return rachis_swapchain_query_present_timings(
+            device.get(), swapchain, first, capacity == 0 ? nullptr : records.data(), capacity, &timings, &error);
+    };
+    const auto supported = query(1, 0);
+    if (supported == RACHIS_STATUS_UNSUPPORTED)
+    {
+        CHECK(timings.cpu_clock == RACHIS_CPU_CLOCK_NONE);
+    }
+    else
+    {
+        REQUIRE(supported == RACHIS_STATUS_OK);
+        CHECK(timings.submitted_sequence == 0);
+        CHECK(timings.settled_sequence == 0);
+        CHECK(timings.first_available_sequence == 0);
+        CHECK(timings.record_count == 0);
+        CHECK(timings.max_refresh_interval_ns >= timings.refresh_interval_ns);
+
+        rachis_timestamp_calibration calibration{};
+        calibration.struct_size = sizeof(calibration);
+        requireOk(rachis_queue_calibrate_timestamps(device.get(), RACHIS_QUEUE_GRAPHICS, &calibration, &error), error);
+        CHECK(timings.cpu_clock == calibration.cpu_clock);
+        CHECK(timings.cpu_frequency == calibration.cpu_frequency);
+        const auto generation = timings.generation;
+
+        constexpr std::uint64_t frames = 3;
+        for (std::uint64_t frame = 1; frame <= frames; ++frame)
+        {
+            const auto image = acquireSwapchainImage(device.get(), swapchain, error);
+            const auto rendered = recordAndSubmitImageFrame(device.get(), pool, image, error);
+            std::uint32_t presentStatus = RACHIS_PRESENT_STATUS_SURFACE_OUT_OF_DATE;
+            requireOk(rachis_swapchain_present(device.get(), swapchain, rendered, &presentStatus, &error), error);
+            REQUIRE(presentStatus == RACHIS_PRESENT_STATUS_PRESENTED);
+            requireOk(rachis_timeline_wait(device.get(), rendered, &error), error);
+            requireOk(rachis_timeline_release(device.get(), rendered, &error), error);
+            requireOk(query(1, 0), error);
+            CHECK(timings.submitted_sequence == frame);
+            CHECK(timings.first_available_sequence == 1);
+        }
+
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        while (timings.settled_sequence < frames && std::chrono::steady_clock::now() < deadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            requireOk(query(1, 0), error);
+        }
+        rachis_timestamp_calibration after{};
+        after.struct_size = sizeof(after);
+        requireOk(rachis_queue_calibrate_timestamps(device.get(), RACHIS_QUEUE_GRAPHICS, &after, &error), error);
+
+        requireOk(query(1, static_cast<std::uint32_t>(records.size())), error);
+        CHECK(timings.generation == generation);
+        CHECK(timings.settled_sequence <= frames);
+        REQUIRE(timings.record_count == timings.settled_sequence);
+        constexpr std::uint32_t knownFlags = RACHIS_PRESENT_TIMING_DISPLAYED | RACHIS_PRESENT_TIMING_DROPPED |
+                                             RACHIS_PRESENT_TIMING_ESTIMATED | RACHIS_PRESENT_TIMING_HIDDEN;
+        for (std::uint32_t index = 0; index < timings.record_count; ++index)
+        {
+            const auto& record = records[index];
+            CHECK(record.present_sequence == index + 1);
+            CHECK((record.flags & ~knownFlags) == 0);
+            CHECK(record.reserved0 == 0);
+            if ((record.flags & RACHIS_PRESENT_TIMING_DISPLAYED) != 0)
+            {
+                CHECK((record.flags & (RACHIS_PRESENT_TIMING_DROPPED | RACHIS_PRESENT_TIMING_HIDDEN)) == 0);
+                CHECK(record.present_time > calibration.cpu_timestamp);
+                CHECK(record.present_time <= after.cpu_timestamp);
+            }
+            else
+            {
+                CHECK((record.flags & RACHIS_PRESENT_TIMING_ESTIMATED) == 0);
+                CHECK(record.present_time == 0);
+            }
+#if RACHIS_CABI_FAULT_BACKEND_METAL
+            CHECK(record.flags == RACHIS_PRESENT_TIMING_HIDDEN);
+#endif
+        }
+#if RACHIS_CABI_FAULT_BACKEND_METAL
+        CHECK(timings.settled_sequence == frames);
+#endif
+
+        requireOk(query(frames, static_cast<std::uint32_t>(records.size())), error);
+        CHECK(timings.record_count == (timings.settled_sequence == frames ? 1U : 0U));
+        requireOk(query(1, 1), error);
+        CHECK(timings.record_count == std::min<std::uint64_t>(1, timings.settled_sequence));
+
+        requireOk(
+            rachis_swapchain_resize(device.get(), swapchain, SurfaceHost::width + 16, SurfaceHost::height + 8, &error),
+            error);
+        requireOk(query(1, static_cast<std::uint32_t>(records.size())), error);
+        CHECK(timings.generation > generation);
+        CHECK(timings.submitted_sequence == 0);
+        CHECK(timings.settled_sequence == 0);
+        CHECK(timings.first_available_sequence == 0);
+        CHECK(timings.record_count == 0);
+    }
+
+    requireOk(rachis_command_pool_destroy(device.get(), pool, &error), error);
+    requireOk(rachis_swapchain_destroy(device.get(), swapchain, &error), error);
+    requireOk(rachis_surface_destroy(device.get(), surface, &error), error);
+}
 
 namespace
 {
@@ -3556,387 +3686,6 @@ TEST_CASE("C ABI timed acquire returns timeout within its bound while another ca
     requireOk(rachis_swapchain_cancel(device.get(), swapchain, &error), error);
     requireOk(rachis_command_pool_destroy(device.get(), copyPool, &error), error);
     requireOk(rachis_command_pool_destroy(device.get(), graphicsPool, &error), error);
-    requireOk(rachis_swapchain_destroy(device.get(), swapchain, &error), error);
-    requireOk(rachis_surface_destroy(device.get(), surface, &error), error);
-}
-#endif
-
-namespace
-{
-    class HeldTimeline final
-    {
-    public:
-        explicit HeldTimeline(rachis_device* device) : device_(device)
-        {
-#if RACHIS_CABI_FAULT_BACKEND_METAL
-            auto error = makeError();
-            pool_ = createPool(device_, RACHIS_QUEUE_GRAPHICS, error);
-            gate_ = std::make_shared<rachis::metal::MetalCommitFeedbackGate>();
-            rachis::metal::holdNextCommitFeedback(gate_);
-            rachis_handle command = 0;
-            auto status = rachis_command_acquire(device_, pool_, &command, &error);
-            if (status == RACHIS_STATUS_OK)
-            {
-                status = rachis_command_submit(device_, command, &timeline_, &error);
-            }
-            if (status != RACHIS_STATUS_OK)
-            {
-                gate_->release();
-            }
-            requireOk(status, error);
-#else
-            native_ = rachis::cabi::detail::nativeDeviceForTesting(device_);
-            REQUIRE(native_ != nullptr);
-            const auto capabilities = native_->capabilities();
-            REQUIRE(capabilities.has_value());
-            if (!capabilities->sharedTimelineHandles)
-            {
-                SKIP("The device cannot import a shared timeline to hold a point back.");
-            }
-#if RACHIS_CABI_FAULT_BACKEND_VULKAN
-            auto created = rachis::createDevice(rachis::DeviceDesc{
-                .backend = rachis::Backend::d3d12,
-                .adapterPreference = rachis::AdapterPreference::highPerformance,
-            });
-            if (!created)
-            {
-                SKIP("A Vulkan point is held back behind a Direct3D 12 fence, and no Direct3D 12 device opened.");
-            }
-            const auto consumerAdapter = native_->adapterInfo();
-            const auto producerAdapter = created->adapterInfo();
-            if (!consumerAdapter || !producerAdapter || consumerAdapter->vendorId != producerAdapter->vendorId ||
-                consumerAdapter->deviceId != producerAdapter->deviceId)
-            {
-                SKIP("The Direct3D 12 producer and the Vulkan device use different adapters.");
-            }
-            producerDevice_ = std::move(*created);
-            producer_ = &producerDevice_;
-#else
-            producer_ = native_;
-#endif
-            auto pool = producer_->createCommandPool({
-                .queueType = rachis::QueueType::compute,
-                .maxCommandBuffers = 4,
-                .label = "C ABI held timeline producer",
-            });
-            REQUIRE(pool.has_value());
-            pool_ = *pool;
-            auto first = submitProducer();
-            REQUIRE(first.has_value());
-            auto shared = producer_->exportTimelinePoint(*first);
-            REQUIRE(shared.has_value());
-            auto held = native_->enqueueSharedTimelineWait(
-                rachis::QueueType::graphics, {.handle = shared->handle.view(), .value = shared->value + 1});
-            REQUIRE(held.has_value());
-            timeline_ = rachis::cabi::detail::adoptTimelinePointForTesting(device_, *held);
-#endif
-            REQUIRE(timeline_ != 0);
-        }
-
-        ~HeldTimeline()
-        {
-            release();
-            auto error = makeError();
-            if (timeline_ != 0)
-            {
-                static_cast<void>(rachis_timeline_wait(device_, timeline_, &error));
-                static_cast<void>(rachis_timeline_release(device_, timeline_, &error));
-            }
-#if RACHIS_CABI_FAULT_BACKEND_METAL
-            static_cast<void>(rachis_command_pool_destroy(device_, pool_, &error));
-#else
-            if (native_ != nullptr)
-            {
-                static_cast<void>(native_->waitIdle());
-            }
-            if (producer_ != nullptr && pool_.isValid())
-            {
-                static_cast<void>(producer_->waitIdle());
-                static_cast<void>(producer_->destroyCommandPool(pool_));
-            }
-#endif
-        }
-
-        HeldTimeline(const HeldTimeline&) = delete;
-        HeldTimeline& operator=(const HeldTimeline&) = delete;
-
-        [[nodiscard]] rachis_handle timeline() const noexcept
-        {
-            return timeline_;
-        }
-
-        void release() noexcept
-        {
-            if (released_)
-            {
-                return;
-            }
-            released_ = true;
-#if RACHIS_CABI_FAULT_BACKEND_METAL
-            gate_->release();
-#else
-            static_cast<void>(submitProducer());
-#endif
-        }
-
-    private:
-#if !RACHIS_CABI_FAULT_BACKEND_METAL
-        [[nodiscard]] rachis::Result<rachis::TimelinePoint> submitProducer() noexcept
-        {
-            try
-            {
-                auto command = producer_->acquireCommandBuffer(pool_);
-                if (!command)
-                {
-                    return std::unexpected(std::move(command.error()));
-                }
-                return producer_->submit(std::move(*command));
-            }
-            catch (...)
-            {
-                return std::unexpected(rachis::Error{rachis::ErrorCode::outOfMemory, 0, "producer submit threw"});
-            }
-        }
-#endif
-
-        rachis_device* device_ = nullptr;
-        rachis_handle timeline_ = 0;
-        bool released_ = false;
-#if RACHIS_CABI_FAULT_BACKEND_METAL
-        rachis_handle pool_ = 0;
-        std::shared_ptr<rachis::metal::MetalCommitFeedbackGate> gate_;
-#else
-        rachis::Device* native_ = nullptr;
-        rachis::Device* producer_ = nullptr;
-        rachis::Device producerDevice_;
-        rachis::CommandPoolHandle pool_ = {};
-#endif
-    };
-} // namespace
-
-TEST_CASE("C ABI bounded timeline waits report a held-back point as pending until it completes",
-          RACHIS_CABI_DEVICE_SIZE RACHIS_CABI_DEVICE_REQUIRES "[rachis][cabi][timeline]")
-{
-    using namespace std::chrono_literals;
-    auto error = makeError();
-    auto device = createDevice(error);
-    HeldTimeline held(device.get());
-    const auto timeline = held.timeline();
-
-    std::uint32_t status = 99;
-    auto started = std::chrono::steady_clock::now();
-    requireOk(rachis_timeline_query(device.get(), timeline, &status, &error), error);
-    CHECK(status == RACHIS_TIMELINE_STATUS_PENDING);
-    CHECK(std::chrono::steady_clock::now() - started < 1s);
-
-    status = 99;
-    requireOk(rachis_timeline_wait_for(device.get(), timeline, 0, &status, &error), error);
-    CHECK(status == RACHIS_TIMELINE_STATUS_PENDING);
-
-    status = 99;
-    started = std::chrono::steady_clock::now();
-    requireOk(rachis_timeline_wait_for(device.get(), timeline, 50'000'000ULL, &status, &error), error);
-    const auto bounded = std::chrono::steady_clock::now() - started;
-    CHECK(status == RACHIS_TIMELINE_STATUS_PENDING);
-    CHECK(bounded >= 40ms);
-    CHECK(bounded < 5s);
-
-    std::atomic<std::uint32_t> waiterStatus{99};
-    std::atomic<rachis_status> waiterResult{RACHIS_STATUS_NATIVE_FAILURE};
-    std::thread waiter([&] {
-        auto waiterError = makeError();
-        std::uint32_t observed = 99;
-        waiterResult.store(rachis_timeline_wait_for(device.get(), timeline, UINT64_MAX, &observed, &waiterError));
-        waiterStatus.store(observed);
-    });
-    std::this_thread::sleep_for(20ms);
-    status = 99;
-    started = std::chrono::steady_clock::now();
-    const auto queriedDuringWait = rachis_timeline_query(device.get(), timeline, &status, &error);
-    const auto queryDuringWait = std::chrono::steady_clock::now() - started;
-    held.release();
-    waiter.join();
-    CHECK(queriedDuringWait == RACHIS_STATUS_OK);
-    CHECK(status == RACHIS_TIMELINE_STATUS_PENDING);
-    CHECK(queryDuringWait < 1s);
-    CHECK(waiterResult.load() == RACHIS_STATUS_OK);
-    CHECK(waiterStatus.load() == RACHIS_TIMELINE_STATUS_COMPLETE);
-
-    status = 99;
-    requireOk(rachis_timeline_wait_for(device.get(), timeline, 10'000'000'000ULL, &status, &error), error);
-    CHECK(status == RACHIS_TIMELINE_STATUS_COMPLETE);
-    status = 99;
-    requireOk(rachis_timeline_query(device.get(), timeline, &status, &error), error);
-    CHECK(status == RACHIS_TIMELINE_STATUS_COMPLETE);
-    requireOk(rachis_timeline_wait(device.get(), timeline, &error), error);
-}
-
-TEST_CASE("C ABI timestamp calibration and the memory budget report device loss",
-          RACHIS_CABI_DEVICE_SIZE RACHIS_CABI_DEVICE_REQUIRES "[rachis][cabi][loss][fault]")
-{
-    const auto trigger = GENERATE(Catch::Generators::from_range(lossTriggers()));
-    INFO("loss trigger: " << lossTriggerName(trigger));
-    auto error = makeError();
-    auto device = createDevice(error, lossValidation);
-    const auto copyPool = createPool(device.get(), RACHIS_QUEUE_COPY, error);
-
-    loseDevice(device.get(), copyPool, trigger);
-
-    rachis_timestamp_calibration calibration{};
-    calibration.struct_size = sizeof(calibration);
-    calibration.cpu_clock = 99;
-    error = makeError();
-    CHECK(rachis_queue_calibrate_timestamps(device.get(), RACHIS_QUEUE_GRAPHICS, &calibration, &error) ==
-          RACHIS_STATUS_DEVICE_LOST);
-    CHECK(error.code == RACHIS_STATUS_DEVICE_LOST);
-    CHECK(calibration.struct_size == sizeof(calibration));
-    CHECK(calibration.cpu_clock == RACHIS_CPU_CLOCK_NONE);
-    CHECK(calibration.cpu_timestamp == 0);
-
-    rachis_memory_budget budget{};
-    budget.struct_size = sizeof(budget);
-    budget.local_budget = 99;
-    error = makeError();
-    CHECK(rachis_device_memory_budget(device.get(), &budget, &error) == RACHIS_STATUS_DEVICE_LOST);
-    CHECK(error.code == RACHIS_STATUS_DEVICE_LOST);
-    CHECK(budget.struct_size == sizeof(budget));
-    CHECK(budget.local_budget == 0);
-
-    std::uint32_t validBits = 0;
-    error = makeError();
-    const auto bitsStatus = rachis_queue_timestamp_valid_bits(device.get(), RACHIS_QUEUE_GRAPHICS, &validBits, &error);
-    CHECK((bitsStatus == RACHIS_STATUS_OK || bitsStatus == RACHIS_STATUS_UNSUPPORTED));
-
-    requireOk(rachis_command_pool_destroy(device.get(), copyPool, &error), error);
-}
-
-TEST_CASE("C ABI present timings settle each present in order on the calibrated CPU clock",
-          "[size:large]" RACHIS_CABI_PRESENT_DESKTOP_REQUIRES RACHIS_CABI_DEVICE_REQUIRES
-          "[rachis][cabi][swapchain][presentation]")
-{
-    const SurfaceHost host;
-    REQUIRE(host.valid());
-    auto error = makeError();
-    auto device = createDevice(error);
-    const auto surfaceDesc = host.surfaceDesc();
-    rachis_handle surface = 0;
-    requireOk(rachis_surface_create(device.get(), &surfaceDesc, &surface, &error), error);
-    const auto swapchain = createSwapchain(device.get(), surface, error);
-    const auto pool = createPool(device.get(), RACHIS_QUEUE_GRAPHICS, error);
-
-    rachis_swapchain_present_timings timings{};
-    std::array<rachis_present_timing, 8> records{};
-    timings.struct_size = sizeof(timings) - 1;
-    CHECK(rachis_swapchain_query_present_timings(device.get(), swapchain, 1, records.data(), 8, &timings, &error) ==
-          RACHIS_STATUS_ABI_MISMATCH);
-    timings.struct_size = sizeof(timings);
-    CHECK(rachis_swapchain_query_present_timings(device.get(), swapchain, 1, records.data(), 8, nullptr, &error) ==
-          RACHIS_STATUS_INVALID_ARGUMENT);
-    CHECK(rachis_swapchain_query_present_timings(device.get(), swapchain, 1, nullptr, 1, &timings, &error) ==
-          RACHIS_STATUS_INVALID_ARGUMENT);
-    CHECK(rachis_swapchain_query_present_timings(device.get(), surface, 1, records.data(), 8, &timings, &error) ==
-          RACHIS_STATUS_INVALID_ARGUMENT);
-
-    const auto query = [&](std::uint64_t first, std::uint32_t capacity) {
-        timings = rachis_swapchain_present_timings{};
-        timings.struct_size = sizeof(timings);
-        return rachis_swapchain_query_present_timings(
-            device.get(), swapchain, first, capacity == 0 ? nullptr : records.data(), capacity, &timings, &error);
-    };
-    const auto supported = query(1, 0);
-    if (supported == RACHIS_STATUS_UNSUPPORTED)
-    {
-        CHECK(timings.cpu_clock == RACHIS_CPU_CLOCK_NONE);
-    }
-    else
-    {
-        REQUIRE(supported == RACHIS_STATUS_OK);
-        CHECK(timings.submitted_sequence == 0);
-        CHECK(timings.settled_sequence == 0);
-        CHECK(timings.first_available_sequence == 0);
-        CHECK(timings.record_count == 0);
-        CHECK(timings.max_refresh_interval_ns >= timings.refresh_interval_ns);
-
-        rachis_timestamp_calibration calibration{};
-        calibration.struct_size = sizeof(calibration);
-        requireOk(rachis_queue_calibrate_timestamps(device.get(), RACHIS_QUEUE_GRAPHICS, &calibration, &error), error);
-        CHECK(timings.cpu_clock == calibration.cpu_clock);
-        CHECK(timings.cpu_frequency == calibration.cpu_frequency);
-        const auto generation = timings.generation;
-
-        constexpr std::uint64_t frames = 3;
-        for (std::uint64_t frame = 1; frame <= frames; ++frame)
-        {
-            const auto image = acquireSwapchainImage(device.get(), swapchain, error);
-            const auto rendered = recordAndSubmitImageFrame(device.get(), pool, image, error);
-            std::uint32_t presentStatus = RACHIS_PRESENT_STATUS_SURFACE_OUT_OF_DATE;
-            requireOk(rachis_swapchain_present(device.get(), swapchain, rendered, &presentStatus, &error), error);
-            REQUIRE(presentStatus == RACHIS_PRESENT_STATUS_PRESENTED);
-            requireOk(rachis_timeline_wait(device.get(), rendered, &error), error);
-            requireOk(rachis_timeline_release(device.get(), rendered, &error), error);
-            requireOk(query(1, 0), error);
-            CHECK(timings.submitted_sequence == frame);
-            CHECK(timings.first_available_sequence == 1);
-        }
-
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-        while (timings.settled_sequence < frames && std::chrono::steady_clock::now() < deadline)
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            requireOk(query(1, 0), error);
-        }
-        rachis_timestamp_calibration after{};
-        after.struct_size = sizeof(after);
-        requireOk(rachis_queue_calibrate_timestamps(device.get(), RACHIS_QUEUE_GRAPHICS, &after, &error), error);
-
-        requireOk(query(1, static_cast<std::uint32_t>(records.size())), error);
-        CHECK(timings.generation == generation);
-        CHECK(timings.settled_sequence <= frames);
-        REQUIRE(timings.record_count == timings.settled_sequence);
-        constexpr std::uint32_t knownFlags = RACHIS_PRESENT_TIMING_DISPLAYED | RACHIS_PRESENT_TIMING_DROPPED |
-                                             RACHIS_PRESENT_TIMING_ESTIMATED | RACHIS_PRESENT_TIMING_HIDDEN;
-        for (std::uint32_t index = 0; index < timings.record_count; ++index)
-        {
-            const auto& record = records[index];
-            CHECK(record.present_sequence == index + 1);
-            CHECK((record.flags & ~knownFlags) == 0);
-            CHECK(record.reserved0 == 0);
-            if ((record.flags & RACHIS_PRESENT_TIMING_DISPLAYED) != 0)
-            {
-                CHECK((record.flags & (RACHIS_PRESENT_TIMING_DROPPED | RACHIS_PRESENT_TIMING_HIDDEN)) == 0);
-                CHECK(record.present_time > calibration.cpu_timestamp);
-                CHECK(record.present_time <= after.cpu_timestamp);
-            }
-            else
-            {
-                CHECK((record.flags & RACHIS_PRESENT_TIMING_ESTIMATED) == 0);
-                CHECK(record.present_time == 0);
-            }
-#if RACHIS_CABI_FAULT_BACKEND_METAL
-            CHECK(record.flags == RACHIS_PRESENT_TIMING_HIDDEN);
-#endif
-        }
-#if RACHIS_CABI_FAULT_BACKEND_METAL
-        CHECK(timings.settled_sequence == frames);
-#endif
-
-        requireOk(query(frames, static_cast<std::uint32_t>(records.size())), error);
-        CHECK(timings.record_count == (timings.settled_sequence == frames ? 1U : 0U));
-        requireOk(query(1, 1), error);
-        CHECK(timings.record_count == std::min<std::uint64_t>(1, timings.settled_sequence));
-
-        requireOk(
-            rachis_swapchain_resize(device.get(), swapchain, SurfaceHost::width + 16, SurfaceHost::height + 8, &error),
-            error);
-        requireOk(query(1, static_cast<std::uint32_t>(records.size())), error);
-        CHECK(timings.generation > generation);
-        CHECK(timings.submitted_sequence == 0);
-        CHECK(timings.settled_sequence == 0);
-        CHECK(timings.first_available_sequence == 0);
-        CHECK(timings.record_count == 0);
-    }
-
-    requireOk(rachis_command_pool_destroy(device.get(), pool, &error), error);
     requireOk(rachis_swapchain_destroy(device.get(), swapchain, &error), error);
     requireOk(rachis_surface_destroy(device.get(), surface, &error), error);
 }

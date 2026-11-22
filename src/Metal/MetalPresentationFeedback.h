@@ -12,7 +12,6 @@
 
 namespace rachis::metal
 {
-    // The presented-handler outcomes of one swapchain generation.
     class MetalPresentationFeedback final
     {
     public:
@@ -33,8 +32,6 @@ namespace rachis::metal
             history_.submitted(sequence);
         }
 
-        // presentedTime is CAMetalDrawable.presentedTime: CACurrentMediaTime seconds, 0 when nothing was shown.
-        // surfaceVisible says whether the surface could be seen when the handler ran.
         void presented(std::uint64_t sequence, double presentedTime, bool surfaceVisible = true) noexcept
         {
             if (!(presentedTime > 0.0))
@@ -61,7 +58,6 @@ namespace rachis::metal
             return history_.read(firstSequence, records);
         }
 
-        // mach_absolute_time ticks per second.
         [[nodiscard]] std::uint64_t ticksPerSecond() const noexcept
         {
             return static_cast<std::uint64_t>(std::llround(ticksPerSecond_));
@@ -74,7 +70,6 @@ namespace rachis::metal
             {
                 return PresentTimingFlags::hidden;
             }
-            // Core Animation drops a drawable that a newer one replaced before the next refresh.
             return sequence < submitted_.load(std::memory_order_acquire) ? PresentTimingFlags::dropped
                                                                          : PresentTimingFlags::none;
         }
@@ -86,7 +81,6 @@ namespace rachis::metal
 
         std::atomic<std::uint64_t> displayed_{0};
         std::atomic<std::uint64_t> submitted_{0};
-        // mach_absolute_time ticks per second; nanoseconds where the header is built for portable tests.
         double ticksPerSecond_ = 1.0e9;
         detail::PresentTimingHistory history_;
     };

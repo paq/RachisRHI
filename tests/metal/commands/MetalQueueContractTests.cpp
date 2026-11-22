@@ -107,11 +107,8 @@ TEST_CASE("Metal presentation feedback settles hidden and replaced drawables apa
     REQUIRE(snapshot.recordCount == 4);
     CHECK(records[0].flags == rachis::PresentTimingFlags::displayed);
     CHECK(records[0].presentTime == 2 * feedback.ticksPerSecond());
-    // Replaced by a newer present while visible.
     CHECK(records[1].flags == rachis::PresentTimingFlags::dropped);
-    // Not visible: nothing could be shown, so it is not counted as dropped.
     CHECK(records[2].flags == rachis::PresentTimingFlags::hidden);
-    // The newest present, visible but not shown: the outcome is unknown.
     CHECK(records[3].flags == rachis::PresentTimingFlags::none);
     CHECK(records[3].presentTime == 0);
     CHECK(feedback.displayedSequence() == 1);

@@ -12,9 +12,6 @@
 namespace rachis::detail
 {
 
-    // The outcome of each present of one swapchain generation, by present sequence (1, 2, 3, ...).
-    // A backend calls submitted() as a present takes its sequence and settle() or settleBefore() as it
-    // learns the outcome. Thread-safe: Metal settles from its presented handlers.
     class PresentTimingHistory final
     {
     public:
@@ -55,7 +52,6 @@ namespace rachis::detail
             }
         }
 
-        // Settles every pending present older than sequence with an unknown outcome.
         void settleBefore(std::uint64_t sequence) noexcept
         {
             const std::scoped_lock lock(mutex_);

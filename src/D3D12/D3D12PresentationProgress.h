@@ -83,9 +83,6 @@ namespace rachis::d3d12
             }
         }
 
-        // One DXGI_FRAME_STATISTICS sample. syncTime is the QueryPerformanceCounter time of the vblank numbered
-        // syncRefreshCount; the present numbered presentCount first reached the screen at vblank
-        // presentRefreshCount. Successive samples also give the refresh period.
         void observedFrame(std::uint32_t presentCount,
                            std::uint32_t presentRefreshCount,
                            std::uint32_t syncRefreshCount,
@@ -121,7 +118,6 @@ namespace rachis::d3d12
             timings_.settleBefore(sequence);
         }
 
-        // The refresh period measured from frame statistics, in QueryPerformanceCounter ticks; 0 until measured.
         [[nodiscard]] std::uint64_t refreshTicks() const noexcept
         {
             return refreshTicks_;
