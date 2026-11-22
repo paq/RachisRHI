@@ -282,12 +282,16 @@ namespace rachis::metal
     class MetalCommitFeedbackGate final
     {
     public:
+        // A test that fails before it releases the gate must not hang the backend thread parked here, so the hold
+        // gives up after maxHold.
+        static constexpr std::chrono::seconds maxHold{30};
+
         void waitUntilReleased() noexcept
         {
             std::unique_lock lock(mutex_);
             entered_ = true;
             cv_.notify_all();
-            cv_.wait(lock, [&] { return released_; });
+            static_cast<void>(cv_.wait_for(lock, maxHold, [&] { return released_; }));
         }
 
         [[nodiscard]] bool waitForEntry(std::chrono::milliseconds timeout) noexcept
