@@ -2234,16 +2234,22 @@ namespace rachis::vulkan
         return {};
     }
 
-    bool VulkanSwapchainManager::retainImageIfWindowHidden(SwapchainRecord& record, TimelinePoint renderComplete)
+    Result<bool> VulkanSwapchainManager::retainImageIfWindowHidden(SwapchainRecord& record,
+                                                                   TimelinePoint renderComplete)
     {
 #ifdef _WIN32
         if (record.surface != nullptr && record.surface->kind == SurfaceKind::win32 && surfaceIsHidden(record))
         {
             // Keep the native acquisition: releasing and reacquiring a hidden Win32 image can leave its next
-            // acquire semaphore unsignaled. Later graphics submissions remain ordered after the rendered frame.
+            // acquire wait stalled. Preserve the rendering memory dependency on the GPU before reusing it.
+            auto bridged = queues_->submitGraphicsPresentationSync({.waitTimeline = renderComplete});
+            if (!bridged)
+            {
+                return std::unexpected(std::move(bridged.error()));
+            }
             auto& image = record.images[record.acquiredIndex];
             image.contentsDefined = true;
-            image.acquireBridge = renderComplete;
+            image.acquireBridge = *bridged;
             record.contentsDefined = true;
             record.acquired = false;
             record.cancelledAcquire = true;
@@ -2430,7 +2436,12 @@ namespace rachis::vulkan
                                                                        TimelinePoint renderComplete,
                                                                        bool& injectedDeviceLoss)
     {
-        if (retainImageIfWindowHidden(record, renderComplete))
+        auto retainedWhileHidden = retainImageIfWindowHidden(record, renderComplete);
+        if (!retainedWhileHidden)
+        {
+            return std::unexpected(std::move(retainedWhileHidden.error()));
+        }
+        if (*retainedWhileHidden)
         {
             return PresentStatus::occluded;
         }

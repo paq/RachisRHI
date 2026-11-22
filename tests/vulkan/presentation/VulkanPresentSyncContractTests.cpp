@@ -461,6 +461,39 @@ TEST_CASE("Vulkan hidden presents remain reusable after visible rendering and re
     CHECK(fixture.errors.load(std::memory_order_relaxed) == 0);
 }
 
+TEST_CASE("Vulkan hidden present keeps its acquired lease when the graphics dependency submit fails",
+          "[size:medium][requires:InteractiveDesktop][requires:HardwareVulkan][rhi][vulkan][present]")
+{
+    PresentFixture fixture(true, 3);
+    REQUIRE(fixture.ready);
+    [[maybe_unused]] const ClearAcquireFailureInjections clearInjections;
+    presentOne(fixture);
+    ShowWindow(fixture.window.get(), SW_HIDE);
+    REQUIRE_FALSE(IsWindowVisible(fixture.window.get()));
+    const auto acquired = fixture.device.acquireNextImage(fixture.swapchain);
+    REQUIRE(acquired);
+    const auto submitted = fixture.drawAcquired(*acquired);
+    REQUIRE(submitted);
+    rachis::vulkan::test::nextGraphicsPresentationSyncResult().store(VK_ERROR_OUT_OF_HOST_MEMORY,
+                                                                     std::memory_order_relaxed);
+    const auto failed = fixture.device.present(fixture.swapchain, *submitted);
+    REQUIRE_FALSE(failed);
+    CHECK(failed.error().code == rachis::ErrorCode::outOfMemory);
+    auto snapshot = rachis::vulkan::queryVulkanPresentationSync(fixture.swapchain);
+    REQUIRE(snapshot);
+    CHECK(snapshot->acquired);
+    const auto retried = fixture.device.present(fixture.swapchain, *submitted);
+    REQUIRE(retried);
+    CHECK(*retried == rachis::PresentStatus::occluded);
+    snapshot = rachis::vulkan::queryVulkanPresentationSync(fixture.swapchain);
+    REQUIRE(snapshot);
+    CHECK_FALSE(snapshot->acquired);
+    ShowWindow(fixture.window.get(), SW_SHOWNOACTIVATE);
+    presentOne(fixture);
+    REQUIRE(fixture.device.waitIdle());
+    CHECK(fixture.errors.load(std::memory_order_relaxed) == 0);
+}
+
 TEST_CASE("Vulkan present sync covers min-image-count and injected acquire/present failures",
           "[size:medium][requires:InteractiveDesktop][requires:HardwareVulkan][rhi][vulkan][present]")
 {

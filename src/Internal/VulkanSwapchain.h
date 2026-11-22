@@ -217,7 +217,7 @@ namespace rachis::vulkan
                                                    SwapchainImage& image,
                                                    const rachis::detail::AcquireDeadline& deadline);
         [[nodiscard]] Status validatePresentable(const SwapchainRecord& record, TimelinePoint renderComplete) const;
-        [[nodiscard]] bool retainImageIfWindowHidden(SwapchainRecord& record, TimelinePoint renderComplete);
+        [[nodiscard]] Result<bool> retainImageIfWindowHidden(SwapchainRecord& record, TimelinePoint renderComplete);
         [[nodiscard]] Result<bool> releaseImageIfSurfaceHidden(SwapchainRecord& record, TimelinePoint renderComplete);
         [[nodiscard]] Result<SubmittedPresent> submitPresent(SwapchainRecord& record, TimelinePoint renderComplete);
         [[nodiscard]] Status settleSubmittedPresent(SwapchainRecord& record, const SubmittedPresent& submitted);
