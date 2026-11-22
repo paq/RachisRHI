@@ -156,7 +156,12 @@ namespace rachis::metal
 
         void applyMetalPresentMode(CAMetalLayer* layer, PresentMode mode) noexcept
         {
-            layer.displaySyncEnabled = mode == PresentMode::immediate ? NO : YES;
+            // A windowed layer is composited at the display's rate. With three drawables and display sync off,
+            // nextDrawable still hands drawables back at that rate, so immediate keeps only two: the one the
+            // compositor holds and the one being drawn. fifo keeps three so a frame can queue behind vsync.
+            const bool immediate = mode == PresentMode::immediate;
+            layer.displaySyncEnabled = immediate ? NO : YES;
+            layer.maximumDrawableCount = immediate ? 2 : 3;
         }
 
         void applyMetalSwapchainLayer(CAMetalLayer* layer, const SwapchainDesc& desc) noexcept
@@ -957,7 +962,7 @@ namespace rachis::metal
         }
 #endif
         const auto record = ready->first;
-        if (record->drawableFetch == nullptr && record->inFlightPresents >= 3 && !record->inFlight.empty())
+        if (record->inFlightPresents >= 3 && !record->inFlight.empty())
         {
             const auto backend = native_;
             const auto oldestValue = record->inFlight.front().timelineValue;
@@ -1267,7 +1272,16 @@ namespace rachis::metal
             else
 #endif
             {
-                return submitMetalDrawablePresent(*native_, record, timeline, renderComplete);
+                const auto status = submitMetalDrawablePresent(*native_, record, timeline, renderComplete);
+                // Ask for the next drawable now, so the thread hop to nextDrawable overlaps the caller's next
+                // frame instead of adding its wake-up latency to the next acquire.
+                if (auto* surface = native_->surfaces.find(record.surface);
+                    record.drawableFetch == nullptr && surface != nullptr && *surface != nullptr &&
+                    (*surface)->layer != nil)
+                {
+                    record.drawableFetch = startMetalDrawableFetch((*surface)->layer);
+                }
+                return status;
             }
         }
 #ifdef RACHIS_TESTING
