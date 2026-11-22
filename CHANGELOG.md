@@ -3,6 +3,7 @@
 ## Unreleased
 
 - `Device::acquireNextImage(swapchain, timeout)` and `rachis_swapchain_acquire_for` count the timeout from the call: waiting for the device or swapchain lock held by another call now ends at the deadline with `ErrorCode::timeout` (`RACHIS_STATUS_TIMEOUT`) on Direct3D 12, Vulkan, and Metal. On macOS these lock waits use strict timers, since condition-variable timeouts there can return 100 ms or more late.
+- Metal: timed acquires also bound their drawable and timeline waits by the deadline, so a late or missing timer event cannot extend them.
 
 ## 0.4.0
 

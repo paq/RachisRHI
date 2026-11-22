@@ -888,17 +888,12 @@ namespace rachis::metal
               }
               pending->arrived.notify_all();
             });
+            // The strict timer wakes this wait on time even under timer coalescing. The wait is also bounded by the
+            // deadline itself, re-checked after every wake, so a late or missing timer event cannot extend it.
             std::unique_lock fetchLock(fetch->mutex);
-            while (!fetch->done && !expired->load(std::memory_order_acquire))
+            while (!fetch->done && !expired->load(std::memory_order_acquire) && !deadline.expired())
             {
-                if (alarm.armed())
-                {
-                    fetch->arrived.wait(fetchLock);
-                }
-                else if (fetch->arrived.wait_for(fetchLock, deadline.remaining()) == std::cv_status::timeout)
-                {
-                    break;
-                }
+                static_cast<void>(fetch->arrived.wait_for(fetchLock, deadline.remaining()));
             }
             return fetch->done;
         }
@@ -919,10 +914,11 @@ namespace rachis::metal
             });
             for (;;)
             {
+                // The 1 ms strict ticker polls the timeline; the deadline bounds each wait in case a tick is late or
+                // never arrives.
                 const auto left = static_cast<std::int64_t>(std::min<std::uint64_t>(
                     deadline.remainingNs(), static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())));
-                static_cast<void>(dispatch_semaphore_wait(
-                    tick, ticker.armed() ? DISPATCH_TIME_FOREVER : dispatch_time(DISPATCH_TIME_NOW, left)));
+                static_cast<void>(dispatch_semaphore_wait(tick, dispatch_time(DISPATCH_TIME_NOW, left)));
                 status = queryMetalValue(native, timeline, value);
                 if (!status || *status == TimelinePointStatus::complete || deadline.expired())
                 {
