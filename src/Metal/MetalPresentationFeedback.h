@@ -6,7 +6,9 @@
 #include <cmath>
 #include <cstdint>
 
+#ifdef __APPLE__
 #include <mach/mach_time.h>
+#endif
 
 namespace rachis::metal
 {
@@ -16,11 +18,13 @@ namespace rachis::metal
     public:
         MetalPresentationFeedback() noexcept
         {
+#ifdef __APPLE__
             mach_timebase_info_data_t timebase{};
             if (mach_timebase_info(&timebase) == KERN_SUCCESS && timebase.numer != 0 && timebase.denom != 0)
             {
                 ticksPerSecond_ = 1.0e9 * static_cast<double>(timebase.denom) / static_cast<double>(timebase.numer);
             }
+#endif
         }
 
         void submitted(std::uint64_t sequence) noexcept
@@ -82,7 +86,8 @@ namespace rachis::metal
 
         std::atomic<std::uint64_t> displayed_{0};
         std::atomic<std::uint64_t> submitted_{0};
-        double ticksPerSecond_ = 0.0;
+        // mach_absolute_time ticks per second; nanoseconds where the header is built for portable tests.
+        double ticksPerSecond_ = 1.0e9;
         detail::PresentTimingHistory history_;
     };
 } // namespace rachis::metal
