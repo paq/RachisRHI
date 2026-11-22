@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
-- `Device::acquireNextImage(swapchain, timeout)` and `rachis_swapchain_acquire_for` (`ErrorCode::timeout` / `RACHIS_STATUS_TIMEOUT`, C ABI version 4).
+- `Device::acquireNextImage(swapchain, timeout)` and `rachis_swapchain_acquire_for` (`ErrorCode::timeout` / `RACHIS_STATUS_TIMEOUT`, `RACHIS_ABI_VERSION` 4: `librachis.so.4` / `librachis.4.dylib`).
 - Metal: support `PresentMode::immediate` (`RACHIS_PRESENT_MODE_IMMEDIATE_BIT`) via `CAMetalLayer.displaySyncEnabled = NO`.
 - Metal: place retry guidance before `NSError` detail in Metal 4 bootstrap `notReady` messages so it survives 255-byte C ABI truncation.
 - Metal: drain an internal autorelease pool in surface and swapchain calls so worker threads without a draining pool do not retain `CAMetalDrawable` objects across frames.
