@@ -10,8 +10,6 @@ file(GLOB_RECURSE sources LIST_DIRECTORIES false
     "${TEST_ROOT}/*.mm")
 list(SORT sources)
 
-# A dispatch statement followed directly by a copy statement records the copy with no barrier between the
-# shader write and the copy read. Backends do not order those for the caller, so the copy can read stale data.
 set(dispatch_then_copy
     "[.>]dispatch[A-Za-z]*\\([^;]*;[ \t\r\n]*[^;]*[.>]copy(Buffer|TextureToBuffer|BufferToTexture|Texture)[A-Za-z]*\\(")
 
@@ -19,7 +17,6 @@ set(offenders)
 foreach(source IN LISTS sources)
     file(READ "${source}" content)
     file(RELATIVE_PATH relative "${TEST_ROOT}" "${source}")
-    # Each match ends in ';' and MATCHALL joins matches with ';', so walk the content instead.
     while(TRUE)
         string(REGEX MATCH "${dispatch_then_copy}" match "${content}")
         if(match STREQUAL "")
