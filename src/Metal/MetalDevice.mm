@@ -570,7 +570,7 @@ namespace rachis::metal
         }
 
         [[nodiscard]] std::vector<std::weak_ptr<MetalCommandPoolState>> takeCommandPoolsForTeardown(
-            MetalDeviceNative& native, std::mutex& deviceMutex) noexcept
+            MetalDeviceNative& native, rachis::detail::TimedMutex& deviceMutex) noexcept
         {
             std::vector<std::weak_ptr<MetalCommandPoolState>> pools;
             {
@@ -1274,6 +1274,13 @@ void rachis::metal::setFailSharedEventProbe(bool fail) noexcept
 {
     std::scoped_lock const lock(metalTestingState().mutex);
     metalTestingState().failSharedEventProbe = fail;
+}
+
+void rachis::metal::setSharedEventCountOverride(bool active, std::optional<std::uint64_t> count) noexcept
+{
+    std::scoped_lock const lock(metalTestingState().mutex);
+    metalTestingState().overrideSharedEventCount = active;
+    metalTestingState().sharedEventCountOverride = active ? count : std::nullopt;
 }
 
 void rachis::metal::setFailNextLogStateCreate(bool fail) noexcept

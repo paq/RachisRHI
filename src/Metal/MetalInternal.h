@@ -9,6 +9,7 @@
 #include "Common/AcquireDeadline.h"
 #include "Common/HandleTable.h"
 #include "Common/MonotonicIdentitySource.h"
+#include "Common/TimedMutex.h"
 #include "Internal/BackendCommandBuffer.h"
 #include "Internal/CommandBufferAccess.h"
 #include "Internal/MetalDevice.h"
@@ -996,7 +997,7 @@ namespace rachis::metal
         __strong id<CAMetalDrawable> drawable = nil;
         TextureHandle texture{};
         TextureViewHandle view{};
-        std::mutex operationMutex;
+        rachis::detail::TimedMutex operationMutex;
         bool acquired = false;
         bool leaseDroppedByHostClose = false;
         std::uint64_t lastAcquireId = 0;
@@ -1495,6 +1496,8 @@ namespace rachis::metal
         std::uint32_t failCommandApiCreateAttempts = 0;
         std::string failCommandApiNativeDescription;
         bool failSharedEventProbe = false;
+        bool overrideSharedEventCount = false;
+        std::optional<std::uint64_t> sharedEventCountOverride;
         bool failNextLogStateCreate = false;
         bool failNextDepthStencilStateCreate = false;
         bool failNextDrawable = false;

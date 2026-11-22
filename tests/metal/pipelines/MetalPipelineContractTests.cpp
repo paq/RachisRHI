@@ -680,6 +680,22 @@ TEST_CASE("Metal specialized library variants write distinct GPU values",
     REQUIRE(device.bindComputePipeline(*command, *pipeline13));
     REQUIRE(device.bindComputeBindingSet(*command, 0, *set13));
     REQUIRE(device.dispatch(*command, 1));
+    REQUIRE(device.bufferBarrier(*command,
+                                 {
+                                     .buffer = *storage7,
+                                     .stagesBefore = rachis::PipelineStage::computeShader,
+                                     .stagesAfter = rachis::PipelineStage::copy,
+                                     .accessBefore = rachis::Access::unorderedAccess,
+                                     .accessAfter = rachis::Access::copySource,
+                                 }));
+    REQUIRE(device.bufferBarrier(*command,
+                                 {
+                                     .buffer = *storage13,
+                                     .stagesBefore = rachis::PipelineStage::computeShader,
+                                     .stagesAfter = rachis::PipelineStage::copy,
+                                     .accessBefore = rachis::Access::unorderedAccess,
+                                     .accessAfter = rachis::Access::copySource,
+                                 }));
     REQUIRE(device.copyBuffer(*command, {.source = *storage7, .destination = *readback7, .size = outputSize}));
     REQUIRE(device.copyBuffer(*command, {.source = *storage13, .destination = *readback13, .size = outputSize}));
     REQUIRE(device.destroyPipeline(*pipeline7));
@@ -764,6 +780,14 @@ TEST_CASE("Metal compute push constants are captured and survive source mutation
     REQUIRE(device.setComputePushConstants(*command, 0, std::as_bytes(std::span{constants})));
     constants[0] = 0xFFFFFFFFU;
     REQUIRE(device.dispatch(*command, 1));
+    REQUIRE(device.bufferBarrier(*command,
+                                 {
+                                     .buffer = *storage,
+                                     .stagesBefore = rachis::PipelineStage::computeShader,
+                                     .stagesAfter = rachis::PipelineStage::copy,
+                                     .accessBefore = rachis::Access::unorderedAccess,
+                                     .accessAfter = rachis::Access::copySource,
+                                 }));
     REQUIRE(device.copyBuffer(*command, {.source = *storage, .destination = *readback, .size = outputSize}));
     REQUIRE(device.destroyPipeline(*pipeline));
     REQUIRE(device.destroyBindingSet(*set));

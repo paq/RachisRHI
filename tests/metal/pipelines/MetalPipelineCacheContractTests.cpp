@@ -716,6 +716,14 @@ TEST_CASE("Metal pipeline-cache restore keeps GPU specialization output identica
     REQUIRE(device.bindComputePipeline(*command, *warmPipeline));
     REQUIRE(device.bindComputeBindingSet(*command, 0, *set));
     REQUIRE(device.dispatch(*command, 1));
+    REQUIRE(device.bufferBarrier(*command,
+                                 {
+                                     .buffer = *storage,
+                                     .stagesBefore = rachis::PipelineStage::computeShader,
+                                     .stagesAfter = rachis::PipelineStage::copy,
+                                     .accessBefore = rachis::Access::unorderedAccess,
+                                     .accessAfter = rachis::Access::copySource,
+                                 }));
     REQUIRE(device.copyBuffer(*command, {.source = *storage, .destination = *readback, .size = outputSize}));
     REQUIRE(device.destroyPipeline(*warmPipeline));
     REQUIRE(device.destroyPipelineCache(*restored));

@@ -455,7 +455,7 @@ TEST_CASE("Metal surfaces leave the CAMetalLayer unchanged until a swapchain con
     CHECK(device.diagnosticCounts().errors == 0);
 }
 
-TEST_CASE("Metal immediate swapchains turn off display sync and keep it off across resize",
+TEST_CASE("Metal immediate swapchains turn off display sync and keep two drawables across resize",
           "[size:large][rhi][metal][surface][gpu]")
 {
     auto created = rachis::createDevice(metalDesc());
@@ -486,6 +486,7 @@ TEST_CASE("Metal immediate swapchains turn off display sync and keep it off acro
     auto swapchain = device.createSwapchain(immediateDesc);
     REQUIRE(swapchain);
     CHECK_FALSE(rxMetalTestQueryLayerState(layer).displaySyncEnabled);
+    CHECK(rxMetalTestQueryLayerState(layer).maximumDrawableCount == 2);
     auto info = device.querySwapchainPresentation(*swapchain);
     REQUIRE(info);
     CHECK(info->presentMode == rachis::PresentMode::immediate);
@@ -497,6 +498,7 @@ TEST_CASE("Metal immediate swapchains turn off display sync and keep it off acro
     rxMetalTestSetDrawableSize(layer, 32, 24);
     REQUIRE(device.resizeSwapchain(*swapchain, 32, 24).has_value());
     CHECK_FALSE(rxMetalTestQueryLayerState(layer).displaySyncEnabled);
+    CHECK(rxMetalTestQueryLayerState(layer).maximumDrawableCount == 2);
     REQUIRE(device.destroySwapchain(*swapchain).has_value());
 
     auto fifoDesc = immediateDesc;
@@ -506,6 +508,7 @@ TEST_CASE("Metal immediate swapchains turn off display sync and keep it off acro
     auto fifo = device.createSwapchain(fifoDesc);
     REQUIRE(fifo);
     CHECK(rxMetalTestQueryLayerState(layer).displaySyncEnabled);
+    CHECK(rxMetalTestQueryLayerState(layer).maximumDrawableCount == 3);
     REQUIRE(device.destroySwapchain(*fifo).has_value());
     REQUIRE(device.destroySurface(*surface).has_value());
     rxMetalTestRelease(layer);

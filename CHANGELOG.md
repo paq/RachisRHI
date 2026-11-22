@@ -1,9 +1,5 @@
 # Changelog
 
-## Unreleased
-
-- C ABI version 5 (`RACHIS_ABI_VERSION` 5, `librachis.so.5` / `librachis.5.dylib`): `rachis_swapchain_query_present_timings` (`rachis_present_timing`, `rachis_swapchain_present_timings`, `RACHIS_PRESENT_TIMING_*`) reports when each present reached the screen, on the CPU clock of `rachis_queue_calibrate_timestamps`, plus dropped and hidden presents and the display's refresh interval. C++: `Device::querySwapchainPresentTimings`. Metal and Direct3D 12 fill it; Vulkan returns `ErrorCode::unsupported` for now.
-
 ## 0.4.0
 
 - `Device::acquireNextImage(swapchain, timeout)` and `rachis_swapchain_acquire_for` (`ErrorCode::timeout` / `RACHIS_STATUS_TIMEOUT`, `RACHIS_ABI_VERSION` 4: `librachis.so.4` / `librachis.4.dylib`).

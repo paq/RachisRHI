@@ -2,6 +2,7 @@
 
 #include "Common/AcquireDeadline.h"
 #include "Common/HandleTable.h"
+#include "Common/TimedMutex.h"
 #include "Internal/VulkanQueues.h"
 #include "Internal/VulkanResources.h"
 #include "Internal/VulkanWindowsProfile.h"
@@ -113,7 +114,7 @@ namespace rachis::vulkan
 
         struct SwapchainRecord final
         {
-            mutable std::mutex recordMutex;
+            mutable rachis::detail::TimedMutex recordMutex;
             std::shared_ptr<SurfaceRecord> surface;
             SurfaceHandle surfaceHandle{};
             VkSwapchainKHR swapchain = VK_NULL_HANDLE;
@@ -149,6 +150,8 @@ namespace rachis::vulkan
         };
 
         [[nodiscard]] std::shared_ptr<SwapchainRecord> findSwapchainRecord(SwapchainHandle swapchain) const noexcept;
+        [[nodiscard]] std::optional<std::shared_ptr<SwapchainRecord>> findSwapchainRecord(
+            SwapchainHandle swapchain, const rachis::detail::AcquireDeadline& deadline) const;
         [[nodiscard]] Result<SurfaceCapabilities> capabilitiesFor(VkSurfaceKHR surface,
                                                                   VkSurfaceCapabilitiesKHR* nativeOut = nullptr) const;
         [[nodiscard]] Status createImages(SwapchainRecord& record);
@@ -240,7 +243,7 @@ namespace rachis::vulkan
         PFN_vkAcquireNextImageKHR vkAcquireNextImageKHR_ = nullptr;
         PFN_vkWaitForPresentKHR vkWaitForPresentKHR_ = nullptr;
         PFN_vkVoidFunction vkReleaseSwapchainImages_ = nullptr;
-        mutable std::mutex mutex_;
+        mutable rachis::detail::TimedMutex mutex_;
         detail::HandleTable<std::shared_ptr<SurfaceRecord>, SurfaceHandle> surfaces_;
         detail::HandleTable<std::shared_ptr<SwapchainRecord>, SwapchainHandle> swapchains_;
     };
