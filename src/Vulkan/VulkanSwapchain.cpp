@@ -2252,8 +2252,6 @@ namespace rachis::vulkan
 #ifdef _WIN32
         if (retainImage)
         {
-            // Keep the native acquisition: releasing and reacquiring a hidden Win32 image can leave its next
-            // acquire wait stalled. Preserve the rendering memory dependency on the GPU before reusing it.
             auto bridged = queues_->submitGraphicsPresentationSync({.waitTimeline = renderComplete});
             if (!bridged)
             {

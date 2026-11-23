@@ -381,10 +381,8 @@ TEST_CASE("Vulkan hidden presents remain reusable after visible rendering and re
 {
     using Clock = std::chrono::steady_clock;
     PresentFixture fixture(true, 3);
-    if (!fixture.ready)
-    {
-        FAIL(fixture.error.message);
-    }
+    INFO(fixture.error.message);
+    REQUIRE(fixture.ready);
     const auto pump = [] {
         MSG message{};
         while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE) != FALSE)
