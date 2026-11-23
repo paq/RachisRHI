@@ -2186,6 +2186,7 @@ if(rachis_build_tests)
         tests/core/ShaderBinaryToolContractTests.cpp
         tests/core/ShaderInterfaceReflectionTests.cpp
         tests/core/StageLinkageTests.cpp
+        tests/core/StrictWaitUntilTests.cpp
         tests/d3d12/binding/BindingBatchContractTests.cpp
         tests/d3d12/binding/BindingContractTests.cpp
         tests/d3d12/binding/BindingSetUpdateContractTests.cpp
@@ -2568,6 +2569,7 @@ if(rachis_build_tests)
             tests/core/ShaderBinaryToolContractTests.cpp
             tests/core/ShaderInterfaceReflectionTests.cpp
             tests/core/StageLinkageTests.cpp
+            tests/core/StrictWaitUntilTests.cpp
             tests/d3d12/internals/D3D12AccelerationStructureLeaseTests.cpp
             tests/d3d12/internals/D3D12BarrierTranslationTests.cpp
             tests/d3d12/internals/D3D12DxilSignatureTests.cpp
@@ -2699,6 +2701,7 @@ if(rachis_build_tests)
             tests/core/ShaderBinaryToolContractTests.cpp
             tests/core/ShaderInterfaceReflectionTests.cpp
             tests/core/StageLinkageTests.cpp
+            tests/core/StrictWaitUntilTests.cpp
             tests/d3d12/internals/D3D12AccelerationStructureLeaseTests.cpp
             tests/d3d12/internals/D3D12BarrierTranslationTests.cpp
             tests/d3d12/internals/D3D12DxilSignatureTests.cpp
