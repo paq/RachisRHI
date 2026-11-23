@@ -328,8 +328,7 @@ namespace
         CHECK(diagnostics.corruptions == 0);
         if (!firstFeedback || !secondFeedback)
         {
-            SKIP("DXGI did not supply display statistics through the target sequence in both generations; "
-                 "submission, native sample mapping, resize and cleanup checks completed.");
+            SKIP("DXGI did not report display statistics through the target sequence.");
         }
     }
 
@@ -547,8 +546,10 @@ TEST_CASE("D3D12 displayed progress requires a DXGI sample and recovers after mi
     CHECK(timing.submittedPresentationSequence == 1);
     CHECK(timing.displayedPresentationSequence == 1);
 
-    rachis::d3d12::test::nextPresentCountResult().store(static_cast<std::int32_t>(E_FAIL));
-    REQUIRE(device.resizeSwapchain(*swapchain, windowWidth, windowHeight).has_value());
+    rachis::d3d12::test::nextPresentCountResult().store(static_cast<std::int32_t>(E_FAIL), std::memory_order_relaxed);
+    const auto disabledResize = device.resizeSwapchain(*swapchain, windowWidth, windowHeight);
+    rachis::d3d12::test::nextPresentCountResult().store(0, std::memory_order_relaxed);
+    REQUIRE(disabledResize.has_value());
     timing = queryTiming(device, *swapchain);
     CHECK_FALSE(timing.presentationSupported);
     CHECK(timing.presentationGeneration == 0);

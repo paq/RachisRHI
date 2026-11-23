@@ -1164,7 +1164,7 @@ namespace rachis::d3d12
             }
             DXGI_FRAME_STATISTICS statistics{};
 #ifdef RACHIS_TESTING
-            const auto reader = test::nativeFrameStatisticsReader().load(std::memory_order_relaxed);
+            const auto reader = test::nativeFrameStatisticsReader().load(std::memory_order_acquire);
             const auto result = reader != nullptr ? static_cast<HRESULT>(reader(record.swapchain.Get(), &statistics))
                                                   : record.swapchain->GetFrameStatistics(&statistics);
 #else

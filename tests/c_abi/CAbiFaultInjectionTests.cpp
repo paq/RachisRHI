@@ -3442,8 +3442,11 @@ TEST_CASE("C ABI displayed progress requires a DXGI sample and recovers after mi
     CHECK(progress.submitted_sequence == 1);
     CHECK(progress.displayed_sequence == 1);
 
-    rachis::d3d12::test::nextPresentCountResult().store(static_cast<std::int32_t>(E_FAIL));
-    requireOk(rachis_swapchain_resize(device.get(), swapchain, SurfaceHost::width, SurfaceHost::height, &error), error);
+    rachis::d3d12::test::nextPresentCountResult().store(static_cast<std::int32_t>(E_FAIL), std::memory_order_relaxed);
+    const auto resizeStatus =
+        rachis_swapchain_resize(device.get(), swapchain, SurfaceHost::width, SurfaceHost::height, &error);
+    rachis::d3d12::test::nextPresentCountResult().store(0, std::memory_order_relaxed);
+    requireOk(resizeStatus, error);
     progress = query();
     CHECK(progress.supported == 0);
     CHECK(progress.generation == 0);
