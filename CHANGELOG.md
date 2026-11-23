@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1
+
+- Metal: match the `acquireNextImage` in-flight present wait threshold and `SwapchainInfo::framesInFlightBound` to the layer's drawable count (2 in `PresentMode::immediate`, 3 otherwise) so immediate acquires wait on the oldest present instead of blocking inside `nextDrawable`.
+- Vulkan: on Win32 surfaces, presenting while the window is hidden retains the acquired swapchain image, orders it through the graphics timeline, and returns `PresentStatus::occluded` without calling `vkQueuePresentKHR`.
+- Windows: use a high-resolution waitable timer for timed device-lock and wait deadlines so short `acquireNextImage` / `rachis_swapchain_acquire_for` timeouts do not overrun the default 15.625 ms system timer tick.
+
 ## 0.5.0
 
 - C ABI version 5 (`RACHIS_ABI_VERSION` 5, `librachis.so.5` / `librachis.5.dylib`):

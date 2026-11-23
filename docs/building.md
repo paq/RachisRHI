@@ -182,16 +182,16 @@ cmake --install out/build/windows-x64-both-product --config Release --prefix out
 ```
 
 - Debug static libraries carry a `d` suffix (e.g., `RachisRHId.lib`, `Rachis/volkd.lib`, `libRachisRHId.a`), allowing side-by-side installation. `find_package(Rachis)` selects the matching configuration (`RelWithDebInfo` and `MinSizeRel` use Release).
-- The C ABI shared library has no configuration suffix (`rachis.dll`, `librachis.5.5.0.dylib`), so installing Release last ensures the redistributable DLL remains in the prefix. `Rachis::C` does not depend on the C runtime configuration and works with either.
+- The C ABI shared library has no configuration suffix (`rachis.dll`, `librachis.5.5.1.dylib`), so installing Release last ensures the redistributable DLL remains in the prefix. `Rachis::C` does not depend on the C runtime configuration and works with either.
 
 ### C ABI library version
 
-The C ABI shared library is versioned from `RACHIS_ABI_VERSION` in `rachis.h` (`<abi>.<package minor>.<package patch>`), not the package major version. For package `0.5.0` and C ABI `5`:
+The C ABI shared library is versioned from `RACHIS_ABI_VERSION` in `rachis.h` (`<abi>.<package minor>.<package patch>`), not the package major version. For package `0.5.1` and C ABI `5`:
 
 | Host | Library artifacts |
 | --- | --- |
-| **Linux** | `librachis.so.5.5.0`, `SONAME` `librachis.so.5`, symlinks `librachis.so.5` and `librachis.so` |
-| **macOS** | `librachis.5.5.0.dylib`, install name `@rpath/librachis.5.dylib`, compatibility `5.0.0`, current `5.5.0`, symlinks `librachis.5.dylib` and `librachis.dylib` |
+| **Linux** | `librachis.so.5.5.1`, `SONAME` `librachis.so.5`, symlinks `librachis.so.5` and `librachis.so` |
+| **macOS** | `librachis.5.5.1.dylib`, install name `@rpath/librachis.5.dylib`, compatibility `5.0.0`, current `5.5.1`, symlinks `librachis.5.dylib` and `librachis.dylib` |
 | **Windows** | `rachis.dll` with image version `5.5` |
 
 Different C ABI versions produce distinct `SONAME`s and install names so the dynamic loader never binds an incompatible version.
