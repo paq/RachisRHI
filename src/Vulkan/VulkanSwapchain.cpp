@@ -2234,16 +2234,40 @@ namespace rachis::vulkan
         return {};
     }
 
-    Result<bool> VulkanSwapchainManager::releaseImageIfSurfaceHidden(SwapchainRecord& record,
-                                                                     TimelinePoint renderComplete)
+    Result<bool> VulkanSwapchainManager::completePresentIfSurfaceHidden(SwapchainRecord& record,
+                                                                        TimelinePoint renderComplete)
     {
         const bool canReleaseImages =
             presentCompletion_ == VulkanPresentCompletionStrategy::swapchainMaintenancePresentFence &&
             vkReleaseSwapchainImages_ != nullptr;
-        if (!canReleaseImages || !surfaceIsHidden(record))
+#ifdef _WIN32
+        const bool retainImage = record.surface != nullptr && record.surface->kind == SurfaceKind::win32;
+#else
+        constexpr bool retainImage = false;
+#endif
+        if ((!retainImage && !canReleaseImages) || !surfaceIsHidden(record))
         {
             return false;
         }
+#ifdef _WIN32
+        if (retainImage)
+        {
+            auto bridged = queues_->submitGraphicsPresentationSync({.waitTimeline = renderComplete});
+            if (!bridged)
+            {
+                return std::unexpected(std::move(bridged.error()));
+            }
+            auto& image = record.images[record.acquiredIndex];
+            image.contentsDefined = true;
+            image.acquireBridge = *bridged;
+            record.contentsDefined = true;
+            record.acquired = false;
+            record.cancelledAcquire = true;
+            record.suspended = record.suspended || hiddenSurfaceHasZeroExtent(record);
+            recordPresentCompletion(record);
+            return true;
+        }
+#endif
         auto waited = queues_->wait(renderComplete);
         if (!waited)
         {
@@ -2406,12 +2430,12 @@ namespace rachis::vulkan
                                                                        TimelinePoint renderComplete,
                                                                        bool& injectedDeviceLoss)
     {
-        auto releasedWhileHidden = releaseImageIfSurfaceHidden(record, renderComplete);
-        if (!releasedWhileHidden)
+        auto completedWhileHidden = completePresentIfSurfaceHidden(record, renderComplete);
+        if (!completedWhileHidden)
         {
-            return std::unexpected(std::move(releasedWhileHidden.error()));
+            return std::unexpected(std::move(completedWhileHidden.error()));
         }
-        if (*releasedWhileHidden)
+        if (*completedWhileHidden)
         {
             return PresentStatus::occluded;
         }
