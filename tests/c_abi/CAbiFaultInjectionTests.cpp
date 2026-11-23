@@ -551,7 +551,9 @@ namespace
         requireOk(rachis_command_discard(device, command, &discardError), discardError);
         return status;
     }
+#endif
 
+#if RACHIS_CABI_FAULT_HAS_SURFACE_HOST
     [[nodiscard]] rachis_handle recordAndSubmitImageFrame(rachis_device* device,
                                                           rachis_handle pool,
                                                           const rachis_swapchain_image& image,
@@ -3593,7 +3595,9 @@ TEST_CASE("C ABI present timings settle each present in order on the calibrated 
     requireOk(rachis_swapchain_destroy(device.get(), swapchain, &error), error);
     requireOk(rachis_surface_destroy(device.get(), surface, &error), error);
 }
+#endif
 
+#if RACHIS_CABI_FAULT_HAS_SURFACE_HOST
 namespace
 {
     struct ParkedCall final
