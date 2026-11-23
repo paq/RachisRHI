@@ -11,16 +11,17 @@
 namespace rachis::cabi::detail
 {
 
-    class CAbiDeviceMutex final
+    template<typename Wake = rachis::detail::StrictDeadlineWake>
+    class BasicCAbiDeviceMutex final
     {
     public:
-        CAbiDeviceMutex() = default;
-        ~CAbiDeviceMutex() = default;
+        BasicCAbiDeviceMutex() = default;
+        ~BasicCAbiDeviceMutex() = default;
 
-        CAbiDeviceMutex(const CAbiDeviceMutex&) = delete;
-        CAbiDeviceMutex& operator=(const CAbiDeviceMutex&) = delete;
-        CAbiDeviceMutex(CAbiDeviceMutex&&) = delete;
-        CAbiDeviceMutex& operator=(CAbiDeviceMutex&&) = delete;
+        BasicCAbiDeviceMutex(const BasicCAbiDeviceMutex&) = delete;
+        BasicCAbiDeviceMutex& operator=(const BasicCAbiDeviceMutex&) = delete;
+        BasicCAbiDeviceMutex(BasicCAbiDeviceMutex&&) = delete;
+        BasicCAbiDeviceMutex& operator=(BasicCAbiDeviceMutex&&) = delete;
 
         void lock()
         {
@@ -104,7 +105,9 @@ namespace rachis::cabi::detail
         {
             std::condition_variable admittedChanged;
             Waiter* next = nullptr;
+            const std::chrono::steady_clock::time_point* deadline = nullptr;
             bool shared = false;
+            bool queued = false;
             bool admitted = false;
         };
 
@@ -116,6 +119,7 @@ namespace rachis::cabi::detail
         {
             Waiter waiter;
             waiter.shared = shared;
+            waiter.deadline = deadline;
             std::unique_lock lock(queueMutex_);
             auto state = state_.load(std::memory_order_relaxed);
             for (;;)
@@ -148,22 +152,28 @@ namespace rachis::cabi::detail
                 tail_->next = &waiter;
             }
             tail_ = &waiter;
+            waiter.queued = true;
             if (deadline == nullptr)
             {
                 waiter.admittedChanged.wait(lock, [&] { return waiter.admitted; });
                 return true;
             }
-            if (rachis::detail::strictWaitUntil(
-                    lock, waiter.admittedChanged, *deadline, [&] { return waiter.admitted; }))
-            {
-                return true;
-            }
-            withdraw(waiter);
-            return false;
+            return rachis::detail::strictWaitUntil<Wake>(
+                lock,
+                waiter.admittedChanged,
+                *deadline,
+                [&] { return waiter.admitted; },
+                [&] {
+                    if (waiter.queued)
+                    {
+                        withdraw(waiter);
+                    }
+                });
         }
 
         void withdraw(Waiter& waiter) noexcept
         {
+            waiter.queued = false;
             Waiter* previous = nullptr;
             for (Waiter* current = head_; current != &waiter; current = current->next)
             {
@@ -189,6 +199,8 @@ namespace rachis::cabi::detail
         void handOff() noexcept
         {
             const std::scoped_lock lock(queueMutex_);
+            const auto now = std::chrono::steady_clock::now();
+            dropExpiredHeads(now);
             std::uint64_t next = 0;
             if (head_ != nullptr && !head_->shared)
             {
@@ -201,6 +213,7 @@ namespace rachis::cabi::detail
                 {
                     admitHead();
                     ++next;
+                    dropExpiredHeads(now);
                 }
             }
             if (head_ != nullptr)
@@ -210,7 +223,7 @@ namespace rachis::cabi::detail
             state_.exchange(next, std::memory_order_acq_rel);
         }
 
-        void admitHead() noexcept
+        Waiter& popHead() noexcept
         {
             Waiter& waiter = *head_;
             head_ = waiter.next;
@@ -218,6 +231,21 @@ namespace rachis::cabi::detail
             {
                 tail_ = nullptr;
             }
+            waiter.queued = false;
+            return waiter;
+        }
+
+        void dropExpiredHeads(std::chrono::steady_clock::time_point now) noexcept
+        {
+            while (head_ != nullptr && head_->deadline != nullptr && now >= *head_->deadline)
+            {
+                popHead().admittedChanged.notify_one();
+            }
+        }
+
+        void admitHead() noexcept
+        {
+            Waiter& waiter = popHead();
             waiter.admitted = true;
             waiter.admittedChanged.notify_one();
         }
@@ -227,5 +255,7 @@ namespace rachis::cabi::detail
         Waiter* head_ = nullptr;
         Waiter* tail_ = nullptr;
     };
+
+    using CAbiDeviceMutex = BasicCAbiDeviceMutex<>;
 
 } // namespace rachis::cabi::detail

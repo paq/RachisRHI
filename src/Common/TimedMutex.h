@@ -146,11 +146,22 @@ namespace rachis::detail
     };
 #endif
 
-    template<typename Done>
+#if !defined(__APPLE__) && !defined(_WIN32)
+    class StrictDeadlineWake final
+    {
+    public:
+        StrictDeadlineWake(SteadyTimePoint, std::mutex&, std::condition_variable&) noexcept
+        {
+        }
+    };
+#endif
+
+    template<typename Wake = StrictDeadlineWake, typename Done, typename Expire>
     [[nodiscard]] bool strictWaitUntil(std::unique_lock<std::mutex>& lock,
                                        std::condition_variable& changed,
                                        SteadyTimePoint deadline,
-                                       Done&& done)
+                                       Done&& done,
+                                       Expire&& expire)
     {
         if (done())
         {
@@ -158,32 +169,45 @@ namespace rachis::detail
         }
         if (std::chrono::steady_clock::now() >= deadline)
         {
+            expire();
             return false;
         }
-#if defined(__APPLE__) || defined(_WIN32)
-        std::optional<StrictDeadlineWake> wake;
-        wake.emplace(deadline, *lock.mutex(), changed);
-#endif
-        static_cast<void>(
-            changed.wait_until(lock, deadline, [&] { return done() || std::chrono::steady_clock::now() >= deadline; }));
-#if defined(__APPLE__) || defined(_WIN32)
-        lock.unlock();
-        wake.reset();
+        bool acquired = false;
+        {
+            std::optional<Wake> wake;
+            wake.emplace(deadline, *lock.mutex(), changed);
+            for (;;)
+            {
+                if (done())
+                {
+                    acquired = true;
+                    break;
+                }
+                if (std::chrono::steady_clock::now() >= deadline)
+                {
+                    expire();
+                    break;
+                }
+                static_cast<void>(changed.wait_until(lock, deadline));
+            }
+            lock.unlock();
+            wake.reset();
+        }
         lock.lock();
-#endif
-        return done();
+        return acquired;
     }
 
-    class TimedMutex final
+    template<typename Wake = StrictDeadlineWake>
+    class BasicTimedMutex final
     {
     public:
-        TimedMutex() = default;
-        ~TimedMutex() = default;
+        BasicTimedMutex() = default;
+        ~BasicTimedMutex() = default;
 
-        TimedMutex(const TimedMutex&) = delete;
-        TimedMutex& operator=(const TimedMutex&) = delete;
-        TimedMutex(TimedMutex&&) = delete;
-        TimedMutex& operator=(TimedMutex&&) = delete;
+        BasicTimedMutex(const BasicTimedMutex&) = delete;
+        BasicTimedMutex& operator=(const BasicTimedMutex&) = delete;
+        BasicTimedMutex(BasicTimedMutex&&) = delete;
+        BasicTimedMutex& operator=(BasicTimedMutex&&) = delete;
 
         void lock()
         {
@@ -207,12 +231,25 @@ namespace rachis::detail
         [[nodiscard]] bool try_lock_until(const std::chrono::time_point<Clock, Duration>& deadline)
         {
             std::unique_lock lock(mutex_);
-            if (!strictWaitUntil(lock, changed_, toSteadyTimePoint(deadline), [&] { return !locked_; }))
+            if (!locked_)
             {
-                return false;
+                locked_ = true;
+                return true;
             }
-            locked_ = true;
-            return true;
+            const SteadyTimePoint until = toSteadyTimePoint(deadline);
+            return strictWaitUntil<Wake>(
+                lock,
+                changed_,
+                until,
+                [&] {
+                    if (locked_ || std::chrono::steady_clock::now() >= until)
+                    {
+                        return false;
+                    }
+                    locked_ = true;
+                    return true;
+                },
+                [] {});
         }
 
         template<typename Rep, typename Period>
@@ -235,4 +272,6 @@ namespace rachis::detail
         std::condition_variable changed_;
         bool locked_ = false;
     };
+
+    using TimedMutex = BasicTimedMutex<>;
 } // namespace rachis::detail
