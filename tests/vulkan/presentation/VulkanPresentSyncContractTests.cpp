@@ -658,6 +658,53 @@ TEST_CASE("Vulkan cancelled acquisitions remain reusable without exhausting WSI 
     CHECK(fixture.errors.load() == 0);
 }
 
+TEST_CASE("Vulkan reacquiring a cancelled image refreshes the acquire timestamp",
+          "[size:medium][requires:InteractiveDesktop][requires:HardwareVulkan][rhi][vulkan][present]")
+{
+    PresentFixture fixture(true, 2);
+    INFO(fixture.error.message);
+    REQUIRE(fixture.ready);
+    auto& device = fixture.device;
+    const auto nowNs = [] {
+        return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+                .count());
+    };
+
+    const auto acquired = device.acquireNextImage(fixture.swapchain);
+    REQUIRE(acquired);
+    const auto before = device.querySwapchainFrameTiming(fixture.swapchain);
+    REQUIRE(before);
+    REQUIRE(before->lastAcquireNs != 0);
+    REQUIRE(device.cancelSwapchainImage(fixture.swapchain));
+    const auto cancelled = device.querySwapchainFrameTiming(fixture.swapchain);
+    REQUIRE(cancelled);
+    CHECK(cancelled->lastAcquireNs == before->lastAcquireNs);
+
+    const auto startedNs = nowNs();
+    const auto reacquired = device.acquireNextImage(fixture.swapchain);
+    const auto finishedNs = nowNs();
+    REQUIRE(reacquired);
+    CHECK(reacquired->texture == acquired->texture);
+    CHECK(reacquired->imageIndex == acquired->imageIndex);
+    CHECK(reacquired->generation == acquired->generation);
+    const auto after = device.querySwapchainFrameTiming(fixture.swapchain);
+    REQUIRE(after);
+    CHECK(after->lastAcquireNs > before->lastAcquireNs);
+    CHECK(after->lastAcquireNs >= startedNs);
+    CHECK(after->lastAcquireNs <= finishedNs);
+
+    const auto rejected = device.acquireNextImage(fixture.swapchain);
+    REQUIRE_FALSE(rejected);
+    CHECK(rejected.error().code == rachis::ErrorCode::invalidState);
+    const auto afterRejection = device.querySwapchainFrameTiming(fixture.swapchain);
+    REQUIRE(afterRejection);
+    CHECK(afterRejection->lastAcquireNs == after->lastAcquireNs);
+    REQUIRE(device.cancelSwapchainImage(fixture.swapchain));
+    REQUIRE(device.waitIdle());
+    CHECK(fixture.errors.load() == 0);
+}
+
 TEST_CASE("Vulkan swapchain cancellation resumes after command reset or abandonment",
           "[size:medium][requires:InteractiveDesktop][requires:HardwareVulkan][rhi][vulkan][present][lifetime]")
 {
