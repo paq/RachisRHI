@@ -3492,7 +3492,7 @@ TEST_CASE("C ABI query_presentation_progress and sibling swapchains do not stall
 }
 #if RACHIS_CABI_FAULT_BACKEND_D3D12
 TEST_CASE("C ABI displayed progress requires a DXGI sample and recovers after missing statistics",
-          "[size:medium][rachis][cabi][swapchain][presentation]")
+          "[size:medium]" RACHIS_CABI_PRESENT_DESKTOP_REQUIRES "[rachis][cabi][swapchain][presentation]")
 {
     using Statistics = rachis::test::ScopedD3D12FrameStatistics;
     Statistics statistics(Statistics::Source::zero);

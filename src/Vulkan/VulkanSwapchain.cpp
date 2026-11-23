@@ -2094,6 +2094,7 @@ namespace rachis::vulkan
             {
                 return expired(std::move(reacquired.error()));
             }
+            record.lastAcquireNs = steadyClockNowNs();
             return reacquired;
         }
 
