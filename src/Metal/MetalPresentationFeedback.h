@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <span>
 
 #ifdef __APPLE__
 #include <mach/mach_time.h>
@@ -50,6 +51,12 @@ namespace rachis::metal
         [[nodiscard]] std::uint64_t displayedSequence() const noexcept
         {
             return displayed_.load(std::memory_order_acquire);
+        }
+
+        [[nodiscard]] detail::PresentTimingHistory::Snapshot readTimings(
+            std::uint64_t firstSequence, const detail::PresentTimingSink& records) const noexcept
+        {
+            return history_.read(firstSequence, records);
         }
 
         [[nodiscard]] detail::PresentTimingHistory::Snapshot readTimings(

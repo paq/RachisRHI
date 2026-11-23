@@ -1764,9 +1764,8 @@ namespace rachis::d3d12
         };
     }
 
-    Result<SwapchainPresentTimings> SwapchainManager::queryPresentTimings(SwapchainHandle swapchain,
-                                                                          std::uint64_t firstSequence,
-                                                                          std::span<PresentTiming> records) const
+    Result<SwapchainPresentTimings> SwapchainManager::queryPresentTimings(
+        SwapchainHandle swapchain, std::uint64_t firstSequence, const detail::PresentTimingSink& records) const
     {
         const auto recordOwner = findSwapchainRecord(impl_->mutex, impl_->swapchains, swapchain);
         if (recordOwner == nullptr)

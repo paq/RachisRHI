@@ -3716,7 +3716,7 @@ namespace rachis
                     "Cannot query swapchain present timings on an invalid device.",
                 });
             }
-            return backend_->querySwapchainPresentTimings(swapchain, firstSequence, records);
+            return backend_->querySwapchainPresentTimings(swapchain, firstSequence, detail::PresentTimingSink{records});
         });
     }
 

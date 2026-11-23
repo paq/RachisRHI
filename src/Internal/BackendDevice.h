@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Common/PresentTimingSink.h"
 #include "Internal/BackendCommandBuffer.h"
 #include "Rachis/Device.h"
 
@@ -698,7 +699,7 @@ namespace rachis::detail
         [[nodiscard]] virtual Result<SwapchainFrameTiming> querySwapchainFrameTiming(
             SwapchainHandle swapchain) const = 0;
         [[nodiscard]] virtual Result<SwapchainPresentTimings> querySwapchainPresentTimings(
-            SwapchainHandle swapchain, std::uint64_t firstSequence, std::span<PresentTiming> records) const
+            SwapchainHandle swapchain, std::uint64_t firstSequence, const PresentTimingSink& records) const
         {
             static_cast<void>(swapchain);
             static_cast<void>(firstSequence);

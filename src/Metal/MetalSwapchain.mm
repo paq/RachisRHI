@@ -1420,9 +1420,8 @@ namespace rachis::metal
         };
     }
 
-    Result<SwapchainPresentTimings> MetalDevice::querySwapchainPresentTimings(SwapchainHandle swapchain,
-                                                                              std::uint64_t firstSequence,
-                                                                              std::span<PresentTiming> records) const
+    Result<SwapchainPresentTimings> MetalDevice::querySwapchainPresentTimings(
+        SwapchainHandle swapchain, std::uint64_t firstSequence, const detail::PresentTimingSink& records) const
     {
         std::scoped_lock const lock(mutex_);
         if (native_ == nullptr)

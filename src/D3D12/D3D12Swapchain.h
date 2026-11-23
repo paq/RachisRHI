@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Common/PresentTimingSink.h"
 #include "D3D12/D3D12Queue.h"
 #include "D3D12/D3D12Resource.h"
 #include "D3D12/D3D12View.h"
@@ -58,9 +59,8 @@ namespace rachis::d3d12
                                                     TimelinePoint renderComplete);
         [[nodiscard]] Result<SwapchainPresentationInfo> queryPresentation(SwapchainHandle swapchain) const;
         [[nodiscard]] Result<SwapchainFrameTiming> queryFrameTiming(SwapchainHandle swapchain) const;
-        [[nodiscard]] Result<SwapchainPresentTimings> queryPresentTimings(SwapchainHandle swapchain,
-                                                                          std::uint64_t firstSequence,
-                                                                          std::span<PresentTiming> records) const;
+        [[nodiscard]] Result<SwapchainPresentTimings> queryPresentTimings(
+            SwapchainHandle swapchain, std::uint64_t firstSequence, const detail::PresentTimingSink& records) const;
 
     private:
         struct Impl;

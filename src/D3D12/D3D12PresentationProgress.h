@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <span>
 
 namespace rachis::d3d12
 {
@@ -121,6 +122,12 @@ namespace rachis::d3d12
         [[nodiscard]] std::uint64_t refreshTicks() const noexcept
         {
             return refreshTicks_;
+        }
+
+        [[nodiscard]] detail::PresentTimingHistory::Snapshot readTimings(
+            std::uint64_t firstSequence, const detail::PresentTimingSink& records) const noexcept
+        {
+            return timings_.read(firstSequence, records);
         }
 
         [[nodiscard]] detail::PresentTimingHistory::Snapshot readTimings(
