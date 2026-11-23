@@ -48,6 +48,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -55,6 +56,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <shared_mutex>
 #include <span>
 #include <stdexcept>
@@ -62,6 +64,110 @@
 #include <string_view>
 #include <thread>
 #include <vector>
+
+namespace
+{
+    thread_local bool gCountAllocations = false;
+    thread_local std::size_t gAllocationCount = 0;
+
+    class ScopedAllocationCounter final
+    {
+    public:
+        ScopedAllocationCounter() noexcept
+        {
+            gAllocationCount = 0;
+            gCountAllocations = true;
+        }
+
+        ~ScopedAllocationCounter()
+        {
+            gCountAllocations = false;
+        }
+
+        ScopedAllocationCounter(const ScopedAllocationCounter&) = delete;
+        ScopedAllocationCounter& operator=(const ScopedAllocationCounter&) = delete;
+
+        [[nodiscard]] std::size_t count() const noexcept
+        {
+            return gAllocationCount;
+        }
+    };
+
+} // namespace
+
+void* operator new(std::size_t size)
+{
+    if (gCountAllocations)
+    {
+        ++gAllocationCount;
+    }
+    const auto bytes = size == 0 ? std::size_t{1} : size;
+    while (true)
+    {
+        if (void* const memory = std::malloc(bytes))
+        {
+            return memory;
+        }
+        const auto handler = std::get_new_handler();
+        if (handler == nullptr)
+        {
+            throw std::bad_alloc{};
+        }
+        handler();
+    }
+}
+
+void* operator new[](std::size_t size)
+{
+    return ::operator new(size);
+}
+
+void* operator new(std::size_t size, const std::nothrow_t&) noexcept
+{
+    try
+    {
+        return ::operator new(size);
+    }
+    catch (...)
+    {
+        return nullptr;
+    }
+}
+
+void* operator new[](std::size_t size, const std::nothrow_t&) noexcept
+{
+    return ::operator new(size, std::nothrow);
+}
+
+void operator delete(void* memory) noexcept
+{
+    std::free(memory);
+}
+
+void operator delete[](void* memory) noexcept
+{
+    std::free(memory);
+}
+
+void operator delete(void* memory, std::size_t) noexcept
+{
+    std::free(memory);
+}
+
+void operator delete[](void* memory, std::size_t) noexcept
+{
+    std::free(memory);
+}
+
+void operator delete(void* memory, const std::nothrow_t&) noexcept
+{
+    std::free(memory);
+}
+
+void operator delete[](void* memory, const std::nothrow_t&) noexcept
+{
+    std::free(memory);
+}
 
 namespace
 {
@@ -3589,6 +3695,85 @@ TEST_CASE("C ABI present timings settle each present in order on the calibrated 
         CHECK(timings.settled_sequence == 0);
         CHECK(timings.first_available_sequence == 0);
         CHECK(timings.record_count == 0);
+    }
+
+    requireOk(rachis_command_pool_destroy(device.get(), pool, &error), error);
+    requireOk(rachis_swapchain_destroy(device.get(), swapchain, &error), error);
+    requireOk(rachis_surface_destroy(device.get(), surface, &error), error);
+}
+
+TEST_CASE("C ABI present timings query fills the caller's records without allocating",
+          "[size:large]" RACHIS_CABI_PRESENT_DESKTOP_REQUIRES RACHIS_CABI_DEVICE_REQUIRES
+          "[rachis][cabi][swapchain][presentation]")
+{
+    const SurfaceHost host;
+    REQUIRE(host.valid());
+    auto error = makeError();
+    auto device = createDevice(error);
+    const auto surfaceDesc = host.surfaceDesc();
+    rachis_handle surface = 0;
+    requireOk(rachis_surface_create(device.get(), &surfaceDesc, &surface, &error), error);
+    const auto swapchain = createSwapchain(device.get(), surface, error);
+    const auto pool = createPool(device.get(), RACHIS_QUEUE_GRAPHICS, error);
+
+    rachis_swapchain_present_timings timings{};
+    std::array<rachis_present_timing, RACHIS_PRESENT_TIMING_MIN_HISTORY> records{};
+    const auto query = [&](std::uint64_t first, std::uint32_t capacity) {
+        timings = rachis_swapchain_present_timings{};
+        timings.struct_size = sizeof(timings);
+        return rachis_swapchain_query_present_timings(
+            device.get(), swapchain, first, capacity == 0 ? nullptr : records.data(), capacity, &timings, &error);
+    };
+    const auto supported = query(1, 0);
+    if (supported == RACHIS_STATUS_UNSUPPORTED)
+    {
+        CHECK(timings.cpu_clock == RACHIS_CPU_CLOCK_NONE);
+    }
+    else
+    {
+        REQUIRE(supported == RACHIS_STATUS_OK);
+        constexpr std::uint64_t frames = 3;
+        for (std::uint64_t frame = 1; frame <= frames; ++frame)
+        {
+            const auto image = acquireSwapchainImage(device.get(), swapchain, error);
+            const auto rendered = recordAndSubmitImageFrame(device.get(), pool, image, error);
+            std::uint32_t presentStatus = RACHIS_PRESENT_STATUS_SURFACE_OUT_OF_DATE;
+            requireOk(rachis_swapchain_present(device.get(), swapchain, rendered, &presentStatus, &error), error);
+            REQUIRE(presentStatus == RACHIS_PRESENT_STATUS_PRESENTED);
+            requireOk(rachis_timeline_wait(device.get(), rendered, &error), error);
+            requireOk(rachis_timeline_release(device.get(), rendered, &error), error);
+        }
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        while (timings.settled_sequence < frames && std::chrono::steady_clock::now() < deadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            requireOk(query(1, 0), error);
+        }
+
+        const auto newest = timings.settled_sequence;
+        std::array<rachis_status, 3> statuses{};
+        std::uint32_t partialCount = 0;
+        std::size_t allocations = 0;
+        {
+            const ScopedAllocationCounter counter;
+            statuses[0] = query(1, 0);
+            statuses[1] = query(newest, 1);
+            partialCount = timings.record_count;
+            statuses[2] = query(1, static_cast<std::uint32_t>(records.size()));
+            allocations = counter.count();
+        }
+        for (const auto status : statuses)
+        {
+            requireOk(status, error);
+        }
+        CHECK(allocations == 0);
+        CHECK(partialCount == std::min<std::uint64_t>(1, newest));
+        REQUIRE(timings.record_count == timings.settled_sequence);
+        for (std::uint32_t index = 0; index < timings.record_count; ++index)
+        {
+            CHECK(records[index].present_sequence == index + 1);
+            CHECK(records[index].reserved0 == 0);
+        }
     }
 
     requireOk(rachis_command_pool_destroy(device.get(), pool, &error), error);

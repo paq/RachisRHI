@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Common/PresentTimingSink.h"
 #include "Rachis/Presentation.h"
 
 #include <algorithm>
@@ -77,6 +78,11 @@ namespace rachis::detail
 
         [[nodiscard]] Snapshot read(std::uint64_t firstSequence, std::span<PresentTiming> records) const noexcept
         {
+            return read(firstSequence, PresentTimingSink{records});
+        }
+
+        [[nodiscard]] Snapshot read(std::uint64_t firstSequence, const PresentTimingSink& records) const noexcept
+        {
             const std::scoped_lock lock(mutex_);
             Snapshot snapshot{.submittedSequence = submitted_, .firstAvailableSequence = firstAvailable()};
             if (snapshot.firstAvailableSequence == 0)
@@ -90,15 +96,16 @@ namespace rachis::detail
             }
             snapshot.settledSequence = settled;
             for (auto next = std::max(firstSequence, snapshot.firstAvailableSequence);
-                 next <= settled && snapshot.recordCount < records.size();
+                 next <= settled && snapshot.recordCount < records.capacity();
                  ++next)
             {
                 const auto& entry = entries_[slot(next)];
-                records[snapshot.recordCount++] = PresentTiming{
-                    .presentSequence = next,
-                    .presentTime = entry.presentTime,
-                    .flags = entry.flags,
-                };
+                records.write(snapshot.recordCount++,
+                              PresentTiming{
+                                  .presentSequence = next,
+                                  .presentTime = entry.presentTime,
+                                  .flags = entry.flags,
+                              });
             }
             return snapshot;
         }

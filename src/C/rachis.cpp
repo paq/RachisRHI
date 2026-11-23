@@ -6,7 +6,9 @@
 #include "C/CAbiTokenSource.h"
 #include "Common/AcquireDeadline.h"
 #include "Common/MonotonicIdentitySource.h"
+#include "Common/PresentTimingSink.h"
 #include "Common/TimedMutex.h"
+#include "Internal/DeviceAccess.h"
 #include "Rachis/Device.h"
 
 #include <algorithm>
@@ -4296,9 +4298,16 @@ extern "C"
                 }
                 native = entry->native;
             }
-            constexpr std::uint32_t maxRecordsPerCall = 4096;
-            std::vector<rachis::PresentTiming> nativeRecords(std::min(capacity, maxRecordsPerCall));
-            const auto timings = device->native.querySwapchainPresentTimings(native, firstSequence, nativeRecords);
+            const auto writeRecord = [records](std::size_t index, const rachis::PresentTiming& record) noexcept {
+                records[index] = rachis_present_timing{
+                    .present_sequence = record.presentSequence,
+                    .present_time = record.presentTime,
+                    .flags = static_cast<std::uint32_t>(record.flags),
+                    .reserved0 = 0,
+                };
+            };
+            const auto timings = rachis::detail::DeviceAccess::querySwapchainPresentTimings(
+                device->native, native, firstSequence, rachis::detail::PresentTimingSink{capacity, writeRecord});
             if (!timings)
             {
                 return result(error, timings.error());
@@ -4310,16 +4319,6 @@ extern "C"
                             RACHIS_STATUS_UNSUPPORTED,
                             "present timings are not on the platform's monotonic CPU counter");
             }
-            const auto count = std::min<std::size_t>(timings->recordCount, nativeRecords.size());
-            for (std::size_t index = 0; index < count; ++index)
-            {
-                records[index] = rachis_present_timing{
-                    .present_sequence = nativeRecords[index].presentSequence,
-                    .present_time = nativeRecords[index].presentTime,
-                    .flags = static_cast<std::uint32_t>(nativeRecords[index].flags),
-                    .reserved0 = 0,
-                };
-            }
             output->cpu_clock = clock;
             output->cpu_frequency = timings->cpuFrequency;
             output->generation = timings->generation;
@@ -4328,7 +4327,7 @@ extern "C"
             output->first_available_sequence = timings->firstAvailableSequence;
             output->refresh_interval_ns = timings->refreshIntervalNs;
             output->max_refresh_interval_ns = timings->maxRefreshIntervalNs;
-            output->record_count = static_cast<std::uint32_t>(count);
+            output->record_count = std::min(timings->recordCount, capacity);
             return RACHIS_STATUS_OK;
         });
     }

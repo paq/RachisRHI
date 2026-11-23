@@ -2986,7 +2986,9 @@ namespace rachis::d3d12
         }
 
         [[nodiscard]] Result<SwapchainPresentTimings> querySwapchainPresentTimings(
-            SwapchainHandle swapchain, std::uint64_t firstSequence, std::span<PresentTiming> records) const override
+            SwapchainHandle swapchain,
+            std::uint64_t firstSequence,
+            const detail::PresentTimingSink& records) const override
         {
             if (auto loss = deviceLossError())
             {
