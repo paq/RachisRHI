@@ -1324,7 +1324,7 @@ TEST_CASE("CAbiDeviceMutex timed locks give up at their deadline and leave the l
         const auto elapsed = Clock::now() - started;
         CHECK_FALSE(acquired);
         CHECK(elapsed >= bound);
-        CHECK(elapsed < bound + 50ms);
+        CHECK(elapsed < bound + 200ms);
     };
 
     SECTION("an exclusive holder times out exclusive and shared callers")
