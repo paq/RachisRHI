@@ -124,6 +124,26 @@ namespace rachis::detail
 #undef RACHIS_DISPATCH_RETAIN
 #undef RACHIS_DISPATCH_BORROW
 #undef RACHIS_DISPATCH_RELEASE
+#elif defined(_WIN32)
+    class StrictDeadlineWake final
+    {
+    public:
+        StrictDeadlineWake(SteadyTimePoint deadline, std::mutex& mutex, std::condition_variable& changed) noexcept;
+        ~StrictDeadlineWake();
+
+        StrictDeadlineWake(const StrictDeadlineWake&) = delete;
+        StrictDeadlineWake& operator=(const StrictDeadlineWake&) = delete;
+        StrictDeadlineWake(StrictDeadlineWake&&) = delete;
+        StrictDeadlineWake& operator=(StrictDeadlineWake&&) = delete;
+
+    private:
+        friend void fireStrictDeadlineWake(StrictDeadlineWake& self) noexcept;
+
+        std::mutex* mutex_ = nullptr;
+        std::condition_variable* changed_ = nullptr;
+        void* timer_ = nullptr;
+        void* wait_ = nullptr;
+    };
 #endif
 
     template<typename Done>
@@ -140,13 +160,13 @@ namespace rachis::detail
         {
             return false;
         }
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(_WIN32)
         std::optional<StrictDeadlineWake> wake;
         wake.emplace(deadline, *lock.mutex(), changed);
 #endif
         static_cast<void>(
             changed.wait_until(lock, deadline, [&] { return done() || std::chrono::steady_clock::now() >= deadline; }));
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(_WIN32)
         lock.unlock();
         wake.reset();
         lock.lock();

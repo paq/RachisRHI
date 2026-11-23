@@ -1565,6 +1565,9 @@ add_library(RachisRHI STATIC
     src/RayTracingShaderTableLayout.cpp
     src/Interop.cpp
 )
+if(WIN32)
+    target_sources(RachisRHI PRIVATE src/Common/TimedMutex.cpp)
+endif()
 
 add_library(Rachis::RHI ALIAS RachisRHI)
 
