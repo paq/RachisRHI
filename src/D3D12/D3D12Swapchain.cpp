@@ -453,6 +453,13 @@ namespace rachis::d3d12
 
         [[nodiscard]] bool readPresentCount(IDXGISwapChain4& swapchain, std::uint32_t& count) noexcept
         {
+#ifdef RACHIS_TESTING
+            const auto injectedResult = test::nextPresentCountResult().exchange(0, std::memory_order_relaxed);
+            if (FAILED(static_cast<HRESULT>(injectedResult)))
+            {
+                return false;
+            }
+#endif
             UINT native = 0;
             if (FAILED(swapchain.GetLastPresentCount(&native)))
             {
@@ -1156,7 +1163,14 @@ namespace rachis::d3d12
                 return;
             }
             DXGI_FRAME_STATISTICS statistics{};
-            if (FAILED(record.swapchain->GetFrameStatistics(&statistics)))
+#ifdef RACHIS_TESTING
+            const auto reader = test::nativeFrameStatisticsReader().load(std::memory_order_acquire);
+            const auto result = reader != nullptr ? static_cast<HRESULT>(reader(record.swapchain.Get(), &statistics))
+                                                  : record.swapchain->GetFrameStatistics(&statistics);
+#else
+            const auto result = record.swapchain->GetFrameStatistics(&statistics);
+#endif
+            if (FAILED(result))
             {
                 return;
             }

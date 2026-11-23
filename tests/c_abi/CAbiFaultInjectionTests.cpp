@@ -13,6 +13,7 @@
 #include "MetalSurfaceTestHost.h"
 #elif RACHIS_CABI_FAULT_BACKEND_D3D12
 #include "D3D12/D3D12TestHooks.h"
+#include "Rachis/TestSupport/D3D12FrameStatistics.h"
 #include <Windows.h>
 #include <d3d12.h>
 #include <dxgi1_4.h>
@@ -3381,6 +3382,87 @@ TEST_CASE("C ABI query_presentation_progress and sibling swapchains do not stall
     requireOk(rachis_surface_destroy(device.get(), surfaceB, &error), error);
     requireOk(rachis_surface_destroy(device.get(), surfaceA, &error), error);
 }
+#if RACHIS_CABI_FAULT_BACKEND_D3D12
+TEST_CASE("C ABI displayed progress requires a DXGI sample and recovers after missing statistics",
+          "[size:medium][rachis][cabi][swapchain][presentation]")
+{
+    using Statistics = rachis::test::ScopedD3D12FrameStatistics;
+    Statistics statistics(Statistics::Source::zero);
+    const SurfaceHost host;
+    REQUIRE(host.valid());
+    auto error = makeError();
+    auto device = createDevice(error);
+    const auto surfaceDesc = host.surfaceDesc();
+    rachis_handle surface = 0;
+    requireOk(rachis_surface_create(device.get(), &surfaceDesc, &surface, &error), error);
+    const auto swapchain = createSwapchain(device.get(), surface, error);
+    const auto pool = createPool(device.get(), RACHIS_QUEUE_GRAPHICS, error);
+    const auto query = [&] {
+        rachis_swapchain_presentation_progress progress{};
+        progress.struct_size = sizeof(progress);
+        requireOk(rachis_swapchain_query_presentation_progress(device.get(), swapchain, &progress, &error), error);
+        return progress;
+    };
+    REQUIRE(query().submitted_sequence == 0);
+    const auto present = [&] {
+        const auto image = acquireSwapchainImage(device.get(), swapchain, error);
+        const auto rendered = recordAndSubmitImageFrame(device.get(), pool, image, error);
+        std::uint32_t status = RACHIS_PRESENT_STATUS_SURFACE_OUT_OF_DATE;
+        requireOk(rachis_swapchain_present(device.get(), swapchain, rendered, &status, &error), error);
+        REQUIRE(status == RACHIS_PRESENT_STATUS_PRESENTED);
+        requireOk(rachis_timeline_wait(device.get(), rendered, &error), error);
+        requireOk(rachis_timeline_release(device.get(), rendered, &error), error);
+    };
+    present();
+    present();
+    for (const auto source : {Statistics::Source::zero, Statistics::Source::disjoint})
+    {
+        statistics.source(source);
+        const auto progress = query();
+        CHECK(progress.supported == 1);
+        CHECK(progress.generation == 1);
+        CHECK(progress.submitted_sequence == 2);
+        CHECK(progress.displayed_sequence == 0);
+    }
+
+    statistics.source(Statistics::Source::currentPresent);
+    auto progress = query();
+    CHECK(progress.supported == 1);
+    CHECK(progress.submitted_sequence == 2);
+    CHECK(progress.displayed_sequence == 2);
+    requireOk(
+        rachis_swapchain_resize(device.get(), swapchain, SurfaceHost::width + 16, SurfaceHost::height + 8, &error),
+        error);
+    progress = query();
+    CHECK(progress.generation == 2);
+    CHECK(progress.submitted_sequence == 0);
+    CHECK(progress.displayed_sequence == 0);
+    present();
+    progress = query();
+    CHECK(progress.submitted_sequence == 1);
+    CHECK(progress.displayed_sequence == 1);
+
+    rachis::d3d12::test::nextPresentCountResult().store(static_cast<std::int32_t>(E_FAIL), std::memory_order_relaxed);
+    const auto resizeStatus =
+        rachis_swapchain_resize(device.get(), swapchain, SurfaceHost::width, SurfaceHost::height, &error);
+    rachis::d3d12::test::nextPresentCountResult().store(0, std::memory_order_relaxed);
+    requireOk(resizeStatus, error);
+    progress = query();
+    CHECK(progress.supported == 0);
+    CHECK(progress.generation == 0);
+    CHECK(progress.submitted_sequence == 0);
+    CHECK(progress.displayed_sequence == 0);
+    requireOk(
+        rachis_swapchain_resize(device.get(), swapchain, SurfaceHost::width + 16, SurfaceHost::height + 8, &error),
+        error);
+    CHECK(query().supported == 0);
+
+    requireOk(rachis_command_pool_destroy(device.get(), pool, &error), error);
+    requireOk(rachis_swapchain_destroy(device.get(), swapchain, &error), error);
+    requireOk(rachis_surface_destroy(device.get(), surface, &error), error);
+}
+#endif
+
 TEST_CASE("C ABI present timings settle each present in order on the calibrated CPU clock",
           "[size:large]" RACHIS_CABI_PRESENT_DESKTOP_REQUIRES RACHIS_CABI_DEVICE_REQUIRES
           "[rachis][cabi][swapchain][presentation]")
