@@ -21,10 +21,12 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
+#include <limits>
 #include <string_view>
 #include <vector>
 
@@ -717,6 +719,16 @@ TEST_CASE("headless Vulkan devices create and destroy repeatedly", "[size:medium
         }
         CHECK(capabilities.limits.maxViewports >= 1);
         CHECK((capabilities.limits.maxViewports > 1) == capabilities.multiViewport);
+        CHECK(capabilities.limits.maxStorageBufferBindingSize >= (std::uint64_t{1} << 27));
+        CHECK(capabilities.limits.maxStorageBufferBindingSize <= std::numeric_limits<std::uint32_t>::max());
+        CHECK(capabilities.limits.maxUniformBufferSize >= 16384);
+        CHECK(capabilities.limits.maxUniformBufferSize <= std::numeric_limits<std::uint32_t>::max());
+        for (const auto alignment :
+             {capabilities.limits.minUniformBufferOffsetAlignment, capabilities.limits.minStorageBufferOffsetAlignment})
+        {
+            CHECK(std::has_single_bit(alignment));
+            CHECK(alignment <= 256);
+        }
         CHECK_FALSE((capabilities.taskShaders && !capabilities.meshShaders));
         CHECK_FALSE((capabilities.variableRateShadingTier2 && !capabilities.variableRateShading));
         CHECK((capabilities.shadingRateImageTileSize != 0) == capabilities.variableRateShadingTier2);

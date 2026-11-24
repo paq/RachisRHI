@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- C ABI version 6 (`RACHIS_ABI_VERSION` 6, `librachis.so.6` / `librachis.6.dylib`): `rachis_device_capabilities` adds `max_storage_buffer_binding_size`, `max_uniform_buffer_binding_size`, and `min_storage_buffer_offset_alignment`.
+- `DeviceLimits::maxStorageBufferBindingSize` and `DeviceLimits::minStorageBufferOffsetAlignment` report the largest storage buffer binding and its offset alignment on every backend (see [Buffer binding limits](docs/using.md#buffer-binding-limits)).
+- Direct3D 12: storage buffer bindings of more than `2^27` elements now fail with `ErrorCode::invalidArgument` instead of creating a view Direct3D 12 does not allow.
+- Vulkan: if a driver reports `0` for a buffer binding range or offset alignment, RachisRHI now reports and enforces the weakest value the Vulkan specification allows.
+
 ## 0.5.1
 
 - Metal: match the `acquireNextImage` in-flight present wait threshold and `SwapchainInfo::framesInFlightBound` to the layer's drawable count (2 in `PresentMode::immediate`, 3 otherwise) so immediate acquires wait on the oldest present instead of blocking inside `nextDrawable`.

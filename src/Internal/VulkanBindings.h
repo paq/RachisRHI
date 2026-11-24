@@ -34,6 +34,26 @@ namespace rachis::vulkan
         std::uint64_t maxStorageBufferRange = 1ULL << 30;
     };
 
+    [[nodiscard]] inline VulkanBufferBindingLimits vulkanBufferBindingLimits(
+        const VkPhysicalDeviceLimits& limits) noexcept
+    {
+        constexpr std::uint64_t maxRequiredOffsetAlignment = 256;
+        constexpr std::uint64_t minRequiredUniformBufferRange = 16384;
+        constexpr std::uint64_t minRequiredStorageBufferRange = 1ULL << 27;
+        return VulkanBufferBindingLimits{
+            .minUniformBufferOffsetAlignment = limits.minUniformBufferOffsetAlignment != 0
+                                                   ? limits.minUniformBufferOffsetAlignment
+                                                   : maxRequiredOffsetAlignment,
+            .minStorageBufferOffsetAlignment = limits.minStorageBufferOffsetAlignment != 0
+                                                   ? limits.minStorageBufferOffsetAlignment
+                                                   : maxRequiredOffsetAlignment,
+            .maxUniformBufferRange =
+                limits.maxUniformBufferRange != 0 ? limits.maxUniformBufferRange : minRequiredUniformBufferRange,
+            .maxStorageBufferRange =
+                limits.maxStorageBufferRange != 0 ? limits.maxStorageBufferRange : minRequiredStorageBufferRange,
+        };
+    }
+
     struct VulkanDescriptorLimits final
     {
         std::uint32_t maxPerStageDescriptorSamplers = std::numeric_limits<std::uint32_t>::max();

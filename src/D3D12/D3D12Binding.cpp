@@ -608,14 +608,13 @@ namespace rachis::d3d12
                  (binding.structureByteStride % 4 != 0 ||
                   binding.structureByteStride > D3D12_REQ_MULTI_ELEMENT_STRUCTURE_SIZE_IN_BYTES)) ||
                 (binding.structureByteStride == 0 && binding.offset % D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT != 0) ||
-                binding.offset % stride != 0 || *size % stride != 0 ||
-                *size / stride > std::numeric_limits<std::uint32_t>::max())
+                binding.offset % stride != 0 || *size % stride != 0 || *size / stride > maxBufferViewElements)
             {
                 return std::unexpected(Error{
                     ErrorCode::invalidArgument,
                     0,
-                    "Storage-buffer binding ranges must satisfy D3D12 raw/structured alignment and element-count "
-                    "limits.",
+                    "Storage-buffer binding ranges must satisfy D3D12 raw/structured alignment and hold at most 2^27 "
+                    "elements (maxStorageBufferBindingSize bytes for a raw binding).",
                 });
             }
             return *size;

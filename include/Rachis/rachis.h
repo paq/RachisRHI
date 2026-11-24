@@ -21,7 +21,7 @@ extern "C"
 {
 #endif
 
-#define RACHIS_ABI_VERSION 5U
+#define RACHIS_ABI_VERSION 6U
 #define RACHIS_ERROR_MESSAGE_CAPACITY 256u
 #define RACHIS_MAX_SURFACE_FORMATS 16U
 #define RACHIS_MAX_VERTEX_BUFFERS 8U
@@ -453,6 +453,9 @@ extern "C"
         uint32_t max_vertex_attribute_offset;
         uint32_t max_vertex_instance_step_rate;
         uint32_t reserved0;
+        uint64_t max_storage_buffer_binding_size;
+        uint64_t max_uniform_buffer_binding_size;
+        uint64_t min_storage_buffer_offset_alignment;
     } rachis_device_capabilities;
 
     typedef struct rachis_buffer_desc

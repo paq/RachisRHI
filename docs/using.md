@@ -6,7 +6,7 @@
 - **Shaders & pipelines:** [Shaders](#shaders) ([Optional shader stages](#optional-shader-stages), [Stage inputs and outputs](#stage-inputs-and-outputs)) · [Vertex input](#vertex-input) · [Graphics pipeline limits on Metal](#graphics-pipeline-limits-on-metal) · [Point lists](#point-lists) · [Multiview rendering](#multiview-rendering)
 - **Presentation:** [Surfaces](#surfaces)
 - **Resources & lifetimes:** [Handles and lifetime](#handles-and-lifetime) · [Texture layouts](#texture-layouts) · [Readback buffers](#readback-buffers) · [Acceleration structures](#acceleration-structures) · [Sharing resources](#sharing-resources)
-- **Bindings & barriers:** [Samplers](#samplers) · [Binding pools](#binding-pools) · [Variable-count binding arrays](#variable-count-binding-arrays) · [Direct3D 12 without enhanced barriers](#direct3d-12-without-enhanced-barriers)
+- **Bindings & barriers:** [Samplers](#samplers) · [Buffer binding limits](#buffer-binding-limits) · [Binding pools](#binding-pools) · [Variable-count binding arrays](#variable-count-binding-arrays) · [Direct3D 12 without enhanced barriers](#direct3d-12-without-enhanced-barriers)
 - **Execution & operations:** [Threads](#threads) · [Queries](#queries) · [Device loss](#device-loss) · [Diagnostics](#diagnostics) · [Examples](#examples)
 
 ---
@@ -410,6 +410,24 @@ Using an invalid transfer target or releasing from a non-`common` layout returns
 - Setting `maxAnisotropy > 1` forces `minFilter` and `magFilter` to `FilterMode::linear`.
 - `mipFilter` supports `MipmapFilterMode::none`, `nearest`, and `linear`. On Direct3D 12, combining `MipmapFilterMode::nearest` with `maxAnisotropy > 1` requires `AnisoFilterWithPointMipSupported` (`D3D12_FEATURE_DATA_D3D12_OPTIONS19`) and fails with `ErrorCode::unsupported` otherwise.
 - `lodBias` must be finite and within `[-maxSamplerLodBias, +maxSamplerLodBias]` (`ErrorCode::invalidArgument` outside range—RachisRHI does not clamp). Hardware bounds are at least `2` on Vulkan, `15.99` on Direct3D 12, and `15.999` on Metal. (In the C ABI, `lodBias` is fixed to `0.0f`.)
+
+---
+
+## Buffer binding limits
+
+`DeviceLimits` reports how large a buffer binding may be and how its offset must be aligned. `createBindingSet`, `updateBindingSet`, and the dynamic offsets of `dynamicUniformBuffer` and `dynamicStorageBuffer` bindings enforce these limits, and fail with `ErrorCode::invalidArgument` past them. A binding also has to fit inside its buffer, and `maxBufferSize` limits the buffer.
+
+| Limit | Vulkan | Direct3D 12 | Metal |
+| --- | --- | --- | --- |
+| `maxStorageBufferBindingSize` | `maxStorageBufferRange` | `2^29` bytes: `2^27` elements (`D3D12_REQ_BUFFER_RESOURCE_TEXEL_COUNT_2_TO_EXP`) of 4 bytes, the element size of a raw (`ByteAddressBuffer`) view | `maxBufferLength`, but at most `(2^32 - 1) * 4` bytes |
+| `maxUniformBufferSize` | `maxUniformBufferRange` | `65,536` bytes: `D3D12_REQ_CONSTANT_BUFFER_ELEMENT_COUNT` 16-byte elements | `65,536` bytes, or `maxBufferLength` if smaller |
+| `minUniformBufferOffsetAlignment` | `minUniformBufferOffsetAlignment` | `256` (`D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT`) | `16` |
+| `minStorageBufferOffsetAlignment` | `minStorageBufferOffsetAlignment` | `16` (`D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT`) | `16` |
+
+- **Storage buffer element count:** A storage buffer binding is a view of `size / stride` elements, where `stride` is `structureByteStride`, or `4` for a raw binding (`structureByteStride == 0`). Direct3D 12 allows at most `2^27` elements and Metal at most `2^32 - 1`, so a structured binding with a stride above `4` may be larger than `maxStorageBufferBindingSize` on those backends. Vulkan applies `maxStorageBufferRange` to every stride.
+- **Storage buffer offsets:** A raw binding offset must be a multiple of `minStorageBufferOffsetAlignment`. A structured binding offset must be a multiple of its `structureByteStride` and, on Vulkan, also of `minStorageBufferOffsetAlignment`. An offset that is a multiple of both is accepted on every backend.
+- **Metal uniform buffers:** Metal sets no size limit of its own on a constant buffer bound by `setBuffer`. RachisRHI caps uniform bindings at `64 KiB`, the Direct3D 12 limit.
+- **Vulkan drivers that report `0`:** A conformant driver never does. If one does, RachisRHI reports and enforces the weakest value the Vulkan specification allows: `2^27` bytes of storage range, `16,384` bytes of uniform range, and `256`-byte offset alignments.
 
 ---
 

@@ -467,6 +467,27 @@ TEST_CASE("buffer-texture copy queue-family check rejects depth and stencil aspe
 }
 
 #if RACHIS_ENABLE_VULKAN && defined(RACHIS_TESTING)
+TEST_CASE("Vulkan buffer binding limits pass native values through and replace 0 with the weakest legal value",
+          "[size:small][rhi][vuid][binding]")
+{
+    VkPhysicalDeviceLimits native{};
+    native.minUniformBufferOffsetAlignment = 64;
+    native.minStorageBufferOffsetAlignment = 32;
+    native.maxUniformBufferRange = 65536;
+    native.maxStorageBufferRange = std::numeric_limits<std::uint32_t>::max();
+    const auto reported = rachis::vulkan::vulkanBufferBindingLimits(native);
+    CHECK(reported.minUniformBufferOffsetAlignment == 64);
+    CHECK(reported.minStorageBufferOffsetAlignment == 32);
+    CHECK(reported.maxUniformBufferRange == 65536);
+    CHECK(reported.maxStorageBufferRange == std::numeric_limits<std::uint32_t>::max());
+
+    const auto fallback = rachis::vulkan::vulkanBufferBindingLimits(VkPhysicalDeviceLimits{});
+    CHECK(fallback.minUniformBufferOffsetAlignment == 256);
+    CHECK(fallback.minStorageBufferOffsetAlignment == 256);
+    CHECK(fallback.maxUniformBufferRange == 16384);
+    CHECK(fallback.maxStorageBufferRange == (std::uint64_t{1} << 27));
+}
+
 namespace
 {
 

@@ -90,7 +90,6 @@ namespace rachis::metal
     {
 
         constexpr std::uint64_t metalUniformAlignment = 16;
-        constexpr std::uint64_t metalRawStorageAlignment = 16;
         constexpr std::uint64_t metalMaxUniformBindingBytes = 65536;
         constexpr std::uint32_t metalMaxStructuredStride = 2048;
         constexpr std::uint32_t metalResourceHeapCapacity = 1'000'000;
@@ -159,9 +158,8 @@ namespace rachis::metal
             const auto stride = binding.structureByteStride == 0 ? 4U : binding.structureByteStride;
             if ((binding.structureByteStride != 0 &&
                  (binding.structureByteStride % 4 != 0 || binding.structureByteStride > metalMaxStructuredStride)) ||
-                (binding.structureByteStride == 0 && binding.offset % metalRawStorageAlignment != 0) ||
-                binding.offset % stride != 0 || size % stride != 0 ||
-                size / stride > std::numeric_limits<std::uint32_t>::max())
+                (binding.structureByteStride == 0 && binding.offset % metalStorageBufferOffsetAlignment != 0) ||
+                binding.offset % stride != 0 || size % stride != 0 || size / stride > metalMaxStorageBufferViewElements)
             {
                 return std::unexpected(metalSelectionError(ErrorCode::invalidArgument,
                                                            "Storage-buffer binding ranges must satisfy D3D12 "
@@ -840,7 +838,7 @@ namespace rachis::metal
                 const auto extra = offsets[cursor++];
                 const auto alignment = metalStaticBufferType(slot.type) == BindingType::uniformBuffer
                                            ? metalUniformAlignment
-                                           : metalRawStorageAlignment;
+                                           : metalStorageBufferOffsetAlignment;
                 if (slot.buffer == nil || extra % alignment != 0)
                 {
                     return std::unexpected(metalSelectionError(

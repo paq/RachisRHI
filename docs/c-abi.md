@@ -87,14 +87,14 @@ Supported C ABI surface:
 - Buffer, texture-view, and sampler bindings
 - Vertex, pixel, and compute shader modules; graphics and compute pipelines; graphics and compute push constants; viewport, scissor, draw, and dispatch
 - Vertex buffer layouts, vertex and index buffer binding, and indexed draws
-- Device capabilities for mapping and vertex input
+- Device capabilities for mapping, vertex input, and buffer binding limits
 - Timestamp queries, valid bits, and CPU-clock calibration
 - Adapter identification and runtime memory budget
 - Surfaces, swapchains, presentation status, and bounded timeline waits/queries
 
 ### C++-only features and stage rules
 
-- **Not exposed in C ABI:** Shared resources and cross-device ownership transfers (C ABI barriers always use `OwnershipTransfer::none`), variable-count binding arrays, device limits other than the vertex-input limits, indirect draws, stencil state, and optional pipeline stages (geometry, tessellation, mesh, task, ray tracing).
+- **Not exposed in C ABI:** Shared resources and cross-device ownership transfers (C ABI barriers always use `OwnershipTransfer::none`), variable-count binding arrays, device limits other than the vertex-input and buffer binding limits, indirect draws, stencil state, and optional pipeline stages (geometry, tessellation, mesh, task, ray tracing).
 - **Stage masks (`visibility` and push constants):** Combine `RACHIS_SHADER_VERTEX`, `RACHIS_SHADER_PIXEL`, and `RACHIS_SHADER_COMPUTE` (or `RACHIS_SHADER_ALL` for all three). `0` or unknown bits return `RACHIS_STATUS_INVALID_ARGUMENT`.
 - **Push constants:**
   - `rachis_command_set_graphics_push_constants` requires graphics stage bits only (including `RACHIS_SHADER_COMPUTE` fails with `RACHIS_STATUS_INVALID_ARGUMENT`) and a bound graphics pipeline inside a render pass.
@@ -115,6 +115,11 @@ Supported C ABI surface:
 | `max_vertex_buffers`, `max_vertex_attributes` | Vertex buffer slots and vertex attributes one pipeline may use (at most `RACHIS_MAX_VERTEX_BUFFERS` and `RACHIS_MAX_VERTEX_ATTRIBUTES`) |
 | `max_vertex_buffer_stride`, `max_vertex_attribute_offset` | Largest `stride` and attribute `offset` in a vertex buffer layout |
 | `max_vertex_instance_step_rate` | Largest `instance_step_rate` (`1` on Vulkan) |
+| `max_storage_buffer_binding_size` | Largest `size`, in bytes, of a `RACHIS_BINDING_STORAGE_BUFFER` or `RACHIS_BINDING_READ_ONLY_STORAGE_BUFFER` binding (C++ `DeviceLimits::maxStorageBufferBindingSize`) |
+| `max_uniform_buffer_binding_size` | Largest `size`, in bytes, of a `RACHIS_BINDING_UNIFORM_BUFFER` binding (C++ `DeviceLimits::maxUniformBufferSize`) |
+| `min_storage_buffer_offset_alignment` | A storage buffer binding `offset` that is a multiple of this and of the binding's stride is accepted (C++ `DeviceLimits::minStorageBufferOffsetAlignment`) |
+
+Every backend reports a nonzero value for each buffer binding limit. [Buffer binding limits](using.md#buffer-binding-limits) lists where each value comes from. A binding larger than its limit, or with a misaligned offset, fails with `RACHIS_STATUS_INVALID_ARGUMENT`.
 
 ## Mapped buffers
 

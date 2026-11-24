@@ -559,6 +559,8 @@ namespace rachis::d3d12
                 .maxBufferSize = std::max(minimumResourceBytes, std::min(maximumResourceBytes, dedicatedMemoryQuarter)),
                 .maxUniformBufferSize = static_cast<std::uint64_t>(D3D12_REQ_CONSTANT_BUFFER_ELEMENT_COUNT) * 16U,
                 .minUniformBufferOffsetAlignment = D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT,
+                .maxStorageBufferBindingSize = maxRawBufferViewBytes,
+                .minStorageBufferOffsetAlignment = D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT,
                 .maxSamplerAnisotropy = D3D12_REQ_MAXANISOTROPY,
                 .maxSamplerLodBias = D3D12_MIP_LOD_BIAS_MAX,
                 .maxColorAttachments = D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT,

@@ -5,6 +5,9 @@
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
 
+#include <algorithm>
+#include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 
@@ -82,6 +85,13 @@ TEST_CASE("headless Metal devices report identity, limits, and core formats", "[
         CHECK(capabilities.cacheCoherentUnifiedMemory);
         CHECK(capabilities.limits.maxTextureDimension2D >= rachis::metalMacosProfileMinMaxTexture2D);
         CHECK(capabilities.limits.maxBufferSize >= rachis::metalMacosProfileMinBufferBytes);
+        CHECK(capabilities.limits.maxStorageBufferBindingSize >= rachis::metalMacosProfileMinBufferBytes);
+        CHECK(capabilities.limits.maxStorageBufferBindingSize ==
+              std::min<std::uint64_t>(capabilities.limits.maxBufferSize,
+                                      std::uint64_t{std::numeric_limits<std::uint32_t>::max()} * 4U));
+        CHECK(capabilities.limits.maxUniformBufferSize == 65536);
+        CHECK(capabilities.limits.minUniformBufferOffsetAlignment == 16);
+        CHECK(capabilities.limits.minStorageBufferOffsetAlignment == 16);
         CHECK(capabilities.limits.maxBindingSets >= 4);
         CHECK(capabilities.limits.maxPushConstantBytes >= 128);
         CHECK(capabilities.limits.maxColorAttachments >= 8);

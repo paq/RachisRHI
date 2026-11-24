@@ -1275,6 +1275,9 @@ extern "C"
             output->max_vertex_attribute_offset = capabilities->vertexInput.maxAttributeOffset;
             output->max_vertex_instance_step_rate = capabilities->vertexInput.maxInstanceStepRate;
             output->reserved0 = 0;
+            output->max_storage_buffer_binding_size = capabilities->limits.maxStorageBufferBindingSize;
+            output->max_uniform_buffer_binding_size = capabilities->limits.maxUniformBufferSize;
+            output->min_storage_buffer_offset_alignment = capabilities->limits.minStorageBufferOffsetAlignment;
             return RACHIS_STATUS_OK;
         });
     }

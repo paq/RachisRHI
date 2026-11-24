@@ -91,6 +91,9 @@ namespace rachis::metal
     inline constexpr std::uint32_t metalMaxTextureArguments = 128;
     inline constexpr std::uint32_t metalMaxSamplerArguments = 16;
 
+    inline constexpr std::uint64_t metalStorageBufferOffsetAlignment = 16;
+    inline constexpr std::uint64_t metalMaxStorageBufferViewElements = std::numeric_limits<std::uint32_t>::max();
+
     inline constexpr std::string_view kMetalDeviceLabel = "RHI.Metal";
     inline constexpr std::string_view kMetalQueueLabel = "RHI.Metal.Graphics";
 
