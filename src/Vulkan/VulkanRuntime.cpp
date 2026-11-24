@@ -2,6 +2,7 @@
 
 #include "Internal/TextureFormatRules.h"
 #include "Internal/VulkanBackendConfiguration.h"
+#include "Internal/VulkanBindings.h"
 #include "Internal/VulkanDiagnostics.h"
 #include "Internal/VulkanLinuxProfile.h"
 
@@ -2841,8 +2842,11 @@ namespace rachis::vulkan
                 limits.maxComputeWorkGroupCount[2],
             };
             capabilities.limits.maxBufferSize = limits.maxStorageBufferRange;
-            capabilities.limits.maxUniformBufferSize = limits.maxUniformBufferRange;
-            capabilities.limits.minUniformBufferOffsetAlignment = limits.minUniformBufferOffsetAlignment;
+            const auto bufferLimits = vulkanBufferBindingLimits(limits);
+            capabilities.limits.maxUniformBufferSize = bufferLimits.maxUniformBufferRange;
+            capabilities.limits.minUniformBufferOffsetAlignment = bufferLimits.minUniformBufferOffsetAlignment;
+            capabilities.limits.maxStorageBufferBindingSize = bufferLimits.maxStorageBufferRange;
+            capabilities.limits.minStorageBufferOffsetAlignment = bufferLimits.minStorageBufferOffsetAlignment;
             capabilities.limits.maxSamplerAnisotropy = static_cast<std::uint32_t>(limits.maxSamplerAnisotropy);
             capabilities.limits.maxSamplerLodBias = limits.maxSamplerLodBias;
             capabilities.limits.maxColorAttachments = std::min(limits.maxColorAttachments, maxColorAttachments);

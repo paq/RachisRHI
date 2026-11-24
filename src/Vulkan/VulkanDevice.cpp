@@ -264,18 +264,7 @@ namespace rachis::vulkan
         {
             resources_.waitOnAllCommandsBeforeBarriers(waitsOnAllCommandsBeforeBarriers(record_));
             const auto& nativeLimits = record_.properties.limits;
-            const VulkanBufferBindingLimits bufferLimits{
-                .minUniformBufferOffsetAlignment = nativeLimits.minUniformBufferOffsetAlignment != 0
-                                                       ? nativeLimits.minUniformBufferOffsetAlignment
-                                                       : 256,
-                .minStorageBufferOffsetAlignment = nativeLimits.minStorageBufferOffsetAlignment != 0
-                                                       ? nativeLimits.minStorageBufferOffsetAlignment
-                                                       : 16,
-                .maxUniformBufferRange =
-                    nativeLimits.maxUniformBufferRange != 0 ? nativeLimits.maxUniformBufferRange : 65536,
-                .maxStorageBufferRange =
-                    nativeLimits.maxStorageBufferRange != 0 ? nativeLimits.maxStorageBufferRange : (1ULL << 30),
-            };
+            const auto bufferLimits = vulkanBufferBindingLimits(nativeLimits);
             const VulkanDescriptorLimits descriptorLimits{
                 .maxPerStageDescriptorSamplers = nativeLimits.maxPerStageDescriptorSamplers,
                 .maxPerStageDescriptorUniformBuffers = nativeLimits.maxPerStageDescriptorUniformBuffers,

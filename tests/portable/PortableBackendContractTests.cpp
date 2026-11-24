@@ -3150,6 +3150,156 @@ TEST_CASE("Portable samplers, binding layouts, pools, and sets enforce capacity 
     checkNoDiagnosticsErrors(device);
 }
 
+TEST_CASE("Portable buffer binding limits are nonzero and binding sets reject ranges past them",
+          RACHIS_PORTABLE_CONTRACT_TAGS)
+{
+    const auto& spec = GENERATE_REF(from_range(enabledBackends()));
+    CAPTURE(spec.name);
+
+    auto maybeDevice = createPortableDeviceOrSkip(spec);
+    if (!maybeDevice)
+    {
+        return;
+    }
+    auto& device = *maybeDevice;
+    const auto limits = rachis::test::requireCapabilities(device).limits;
+    CAPTURE(limits.maxStorageBufferBindingSize,
+            limits.maxUniformBufferSize,
+            limits.minUniformBufferOffsetAlignment,
+            limits.minStorageBufferOffsetAlignment);
+
+    CHECK(limits.maxStorageBufferBindingSize >= (std::uint64_t{1} << 27));
+    CHECK(limits.maxUniformBufferSize >= 16384);
+    for (const auto alignment : {limits.minUniformBufferOffsetAlignment, limits.minStorageBufferOffsetAlignment})
+    {
+        CHECK(std::has_single_bit(alignment));
+        CHECK(alignment <= 256);
+    }
+    switch (spec.backend)
+    {
+    case rachis::Backend::d3d12:
+        CHECK(limits.maxStorageBufferBindingSize == (std::uint64_t{1} << 29));
+        CHECK(limits.maxUniformBufferSize == 65536);
+        CHECK(limits.minStorageBufferOffsetAlignment == 16);
+        break;
+    case rachis::Backend::metal:
+        CHECK(limits.maxStorageBufferBindingSize <= limits.maxBufferSize);
+        CHECK(limits.maxUniformBufferSize == 65536);
+        CHECK(limits.minStorageBufferOffsetAlignment == 16);
+        break;
+    case rachis::Backend::vulkan:
+        CHECK(limits.maxStorageBufferBindingSize <= std::numeric_limits<std::uint32_t>::max());
+        CHECK(limits.maxUniformBufferSize <= std::numeric_limits<std::uint32_t>::max());
+        break;
+    }
+
+    const std::array entries{
+        rachis::BindingLayoutEntry{0, rachis::BindingType::uniformBuffer, rachis::ShaderStage::compute, 1},
+        rachis::BindingLayoutEntry{1, rachis::BindingType::storageBuffer, rachis::ShaderStage::compute, 1},
+    };
+    auto layout = device.createBindingLayout({.entries = entries, .label = "Portable buffer limit layout"});
+    REQUIRE(layout.has_value());
+    const std::array poolSizes{
+        rachis::BindingPoolSize{.type = rachis::BindingType::uniformBuffer, .descriptorCount = 1},
+        rachis::BindingPoolSize{.type = rachis::BindingType::storageBuffer, .descriptorCount = 1},
+    };
+    auto pool =
+        device.createBindingPool({.maxBindingSets = 1, .sizes = poolSizes, .label = "Portable buffer limit pool"});
+    REQUIRE(pool.has_value());
+
+    const auto tryBind = [&](const rachis::BufferBinding& uniform,
+                             const rachis::BufferBinding& storage) -> std::optional<rachis::ErrorCode> {
+        const std::array writes{
+            rachis::BindingWrite{.binding = 0, .resource = uniform},
+            rachis::BindingWrite{.binding = 1, .resource = storage},
+        };
+        auto set = device.createBindingSet({.layout = *layout, .writes = writes, .pool = *pool});
+        if (!set)
+        {
+            return set.error().code;
+        }
+        REQUIRE(device.destroyBindingSet(*set).has_value());
+        return std::nullopt;
+    };
+
+    constexpr std::uint64_t largestTestBuffer = std::uint64_t{1} << 30;
+    const auto uniformAlignment = limits.minUniformBufferOffsetAlignment;
+    const auto storageAlignment = (std::max<std::uint64_t>)(limits.minStorageBufferOffsetAlignment, 4);
+    const bool uniformLimitTestable = limits.maxUniformBufferSize + uniformAlignment <= largestTestBuffer;
+    const auto uniformBytes = uniformLimitTestable ? limits.maxUniformBufferSize + uniformAlignment : 4096;
+    auto uniformBuffer = device.createBuffer({
+        .size = uniformBytes,
+        .usage = rachis::BufferUsage::constant,
+        .label = "Portable buffer limit uniform buffer",
+    });
+    REQUIRE(uniformBuffer.has_value());
+    auto storageBuffer = device.createBuffer({
+        .size = 4096,
+        .usage = rachis::BufferUsage::storage,
+        .label = "Portable buffer limit storage buffer",
+    });
+    REQUIRE(storageBuffer.has_value());
+
+    const rachis::BufferBinding smallUniform{.buffer = *uniformBuffer, .size = 256};
+    const rachis::BufferBinding smallStorage{.buffer = *storageBuffer, .size = 256};
+    CHECK(tryBind(smallUniform, smallStorage) == std::nullopt);
+    CHECK(tryBind(smallUniform, {.buffer = *storageBuffer, .offset = storageAlignment, .size = 256}) == std::nullopt);
+    if (limits.minStorageBufferOffsetAlignment > 4)
+    {
+        CHECK(tryBind(smallUniform, {.buffer = *storageBuffer, .offset = 4, .size = 256}) ==
+              rachis::ErrorCode::invalidArgument);
+    }
+    if (uniformAlignment > 16)
+    {
+        CHECK(tryBind({.buffer = *uniformBuffer, .offset = 16, .size = 256}, smallStorage) ==
+              rachis::ErrorCode::invalidArgument);
+    }
+
+    if (uniformLimitTestable)
+    {
+        CHECK(tryBind({.buffer = *uniformBuffer, .size = limits.maxUniformBufferSize}, smallStorage) == std::nullopt);
+        CHECK(tryBind({.buffer = *uniformBuffer, .size = limits.maxUniformBufferSize + uniformAlignment},
+                      smallStorage) == rachis::ErrorCode::invalidArgument);
+    }
+    else
+    {
+        WARN("maxUniformBufferSize is too large to allocate a buffer past it in this test");
+    }
+
+    if (limits.maxStorageBufferBindingSize + storageAlignment <= largestTestBuffer)
+    {
+        auto largeStorage = device.createBuffer({
+            .size = limits.maxStorageBufferBindingSize + storageAlignment,
+            .usage = rachis::BufferUsage::storage,
+            .label = "Portable buffer limit large storage buffer",
+        });
+        if (largeStorage)
+        {
+            CHECK(tryBind(smallUniform, {.buffer = *largeStorage, .size = limits.maxStorageBufferBindingSize}) ==
+                  std::nullopt);
+            CHECK(tryBind(smallUniform,
+                          {.buffer = *largeStorage, .size = limits.maxStorageBufferBindingSize + storageAlignment}) ==
+                  rachis::ErrorCode::invalidArgument);
+            CHECK(tryBind(smallUniform, {.buffer = *largeStorage}) == rachis::ErrorCode::invalidArgument);
+            REQUIRE(device.destroyBuffer(*largeStorage).has_value());
+        }
+        else
+        {
+            WARN("Could not allocate a buffer past maxStorageBufferBindingSize: " << largeStorage.error().message);
+        }
+    }
+    else
+    {
+        WARN("maxStorageBufferBindingSize is too large to allocate a buffer past it in this test");
+    }
+
+    REQUIRE(device.destroyBuffer(*storageBuffer).has_value());
+    REQUIRE(device.destroyBuffer(*uniformBuffer).has_value());
+    REQUIRE(device.destroyBindingPool(*pool).has_value());
+    REQUIRE(device.destroyBindingLayout(*layout).has_value());
+    checkNoDiagnosticsErrors(device);
+}
+
 #ifdef RACHIS_TEST_PORTABLE_COMPUTE_SHADER_DIR
 TEST_CASE("Portable binding-set updates reuse an idle set's pool capacity and need room while a command holds the set",
           RACHIS_PORTABLE_CONTRACT_TAGS)

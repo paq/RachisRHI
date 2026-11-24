@@ -242,6 +242,9 @@ namespace rachis::metal
             capabilities.limits.maxBufferSize = host.maxBufferLength;
             capabilities.limits.maxUniformBufferSize = std::min(host.maxBufferLength, 64ULL * 1024ULL);
             capabilities.limits.minUniformBufferOffsetAlignment = 16;
+            capabilities.limits.maxStorageBufferBindingSize =
+                std::min(host.maxBufferLength, metalMaxStorageBufferViewElements * sizeof(std::uint32_t));
+            capabilities.limits.minStorageBufferOffsetAlignment = metalStorageBufferOffsetAlignment;
             capabilities.limits.maxSamplerAnisotropy = 16;
             capabilities.limits.maxSamplerLodBias = 15.999F;
             capabilities.limits.maxColorAttachments = rachis::maxColorAttachments;

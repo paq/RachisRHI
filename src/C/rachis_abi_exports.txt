@@ -1,4 +1,4 @@
-RACHIS_ABI_VERSION=5
+RACHIS_ABI_VERSION=6
 rachis_abi_version
 rachis_binding_layout_create
 rachis_binding_layout_destroy

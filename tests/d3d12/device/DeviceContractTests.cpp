@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 
 #ifdef _WINDOWS_
@@ -77,9 +78,18 @@ namespace
         }
     }
 
+    void verifyBufferBindingLimits(const rachis::DeviceLimits& limits)
+    {
+        CHECK(limits.maxStorageBufferBindingSize == (std::uint64_t{1} << 27) * 4U);
+        CHECK(limits.maxUniformBufferSize == 65536);
+        CHECK(limits.minUniformBufferOffsetAlignment == 256);
+        CHECK(limits.minStorageBufferOffsetAlignment == 16);
+    }
+
     void verifyDeviceLimits(const rachis::DeviceCapabilities& capabilities)
     {
         verifyFramebufferLayerAndMultiviewLimits(capabilities);
+        verifyBufferBindingLimits(capabilities.limits);
     }
 
     void verifySubgroupCapabilities(const rachis::DeviceCapabilities& capabilities)

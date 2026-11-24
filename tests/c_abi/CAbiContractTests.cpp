@@ -742,6 +742,87 @@ TEST_CASE("C ABI texture and sampler bindings validate handles and publish a set
     requireNoValidationErrors(device.get(), error);
 }
 
+TEST_CASE("C ABI buffer bindings reject ranges and offsets past the reported limits",
+          RACHIS_CABI_DEVICE_SIZE RACHIS_CABI_DEVICE_REQUIRES "[rachis][cabi]")
+{
+    auto error = makeError();
+    auto device = createDevice(error);
+    rachis_device_capabilities capabilities{};
+    capabilities.struct_size = sizeof(capabilities);
+    requireOk(rachis_device_query_capabilities(device.get(), &capabilities, &error), error);
+
+    constexpr std::uint64_t largestTestBuffer = std::uint64_t{1} << 30;
+    constexpr std::uint64_t uniformSlack = 256;
+    const bool uniformLimitTestable = capabilities.max_uniform_buffer_binding_size + uniformSlack <= largestTestBuffer;
+    const auto uniformBytes = uniformLimitTestable ? capabilities.max_uniform_buffer_binding_size + uniformSlack : 4096;
+    const auto uniform =
+        createBuffer(device.get(), uniformBytes, RACHIS_BUFFER_CONSTANT, RACHIS_MEMORY_DEVICE_LOCAL, error);
+    const auto storage = createBuffer(device.get(), 4096, RACHIS_BUFFER_STORAGE, RACHIS_MEMORY_DEVICE_LOCAL, error);
+
+    const std::array entries{
+        rachis_binding_layout_entry{0, RACHIS_BINDING_UNIFORM_BUFFER, RACHIS_SHADER_COMPUTE, 1},
+        rachis_binding_layout_entry{1, RACHIS_BINDING_STORAGE_BUFFER, RACHIS_SHADER_COMPUTE, 1},
+    };
+    rachis_binding_layout_desc layoutDesc{};
+    layoutDesc.struct_size = sizeof(layoutDesc);
+    layoutDesc.abi_version = RACHIS_ABI_VERSION;
+    layoutDesc.entries = entries.data();
+    layoutDesc.entry_count = static_cast<std::uint32_t>(entries.size());
+    rachis_handle layout = 0;
+    requireOk(rachis_binding_layout_create(device.get(), &layoutDesc, &layout, &error), error);
+    const std::array sizes{
+        rachis_binding_pool_size{RACHIS_BINDING_UNIFORM_BUFFER, 1},
+        rachis_binding_pool_size{RACHIS_BINDING_STORAGE_BUFFER, 1},
+    };
+    rachis_binding_pool_desc poolDesc{};
+    poolDesc.struct_size = sizeof(poolDesc);
+    poolDesc.abi_version = RACHIS_ABI_VERSION;
+    poolDesc.max_binding_sets = 1;
+    poolDesc.sizes = sizes.data();
+    poolDesc.size_count = static_cast<std::uint32_t>(sizes.size());
+    rachis_handle pool = 0;
+    requireOk(rachis_binding_pool_create(device.get(), &poolDesc, &pool, &error), error);
+
+    const auto bind = [&](std::uint64_t uniformSize, std::uint64_t storageOffset) {
+        const std::array writes{
+            rachis_buffer_binding{0, 0, uniform, 0, uniformSize, 0},
+            rachis_buffer_binding{1, 0, storage, storageOffset, 256, 0},
+        };
+        rachis_binding_set_desc setDesc{};
+        setDesc.struct_size = sizeof(setDesc);
+        setDesc.abi_version = RACHIS_ABI_VERSION;
+        setDesc.layout = layout;
+        setDesc.pool = pool;
+        setDesc.writes = writes.data();
+        setDesc.write_count = static_cast<std::uint32_t>(writes.size());
+        rachis_handle set = 0;
+        const auto status = rachis_binding_set_create(device.get(), &setDesc, &set, &error);
+        if (status == RACHIS_STATUS_OK)
+        {
+            requireOk(rachis_binding_set_destroy(device.get(), set, &error), error);
+        }
+        return status;
+    };
+
+    const auto storageAlignment = (std::max<std::uint64_t>)(capabilities.min_storage_buffer_offset_alignment, 4);
+    CHECK(bind(256, 0) == RACHIS_STATUS_OK);
+    CHECK(bind(256, storageAlignment) == RACHIS_STATUS_OK);
+    if (capabilities.min_storage_buffer_offset_alignment > 4)
+    {
+        CHECK(bind(256, 4) == RACHIS_STATUS_INVALID_ARGUMENT);
+    }
+    if (uniformLimitTestable)
+    {
+        CHECK(bind(capabilities.max_uniform_buffer_binding_size, 0) == RACHIS_STATUS_OK);
+        CHECK(bind(capabilities.max_uniform_buffer_binding_size + uniformSlack, 0) == RACHIS_STATUS_INVALID_ARGUMENT);
+    }
+
+    requireOk(rachis_binding_pool_destroy(device.get(), pool, &error), error);
+    requireOk(rachis_binding_layout_destroy(device.get(), layout, &error), error);
+    requireOk(rachis_buffer_destroy(device.get(), storage, &error), error);
+    requireOk(rachis_buffer_destroy(device.get(), uniform, &error), error);
+}
+
 TEST_CASE("C ABI stage masks accept RACHIS_SHADER_ALL and reject stages outside the C ABI",
           RACHIS_CABI_DEVICE_SIZE RACHIS_CABI_DEVICE_REQUIRES "[rachis][cabi]")
 {
@@ -1276,7 +1357,7 @@ TEST_CASE("C ABI maps one range per buffer and validates mapped ranges",
           RACHIS_STATUS_INVALID_ARGUMENT);
 }
 
-TEST_CASE("C ABI reports mapping and vertex input capabilities",
+TEST_CASE("C ABI reports mapping, vertex input, and buffer binding capabilities",
           RACHIS_CABI_DEVICE_SIZE RACHIS_CABI_DEVICE_REQUIRES "[rachis][cabi]")
 {
     auto error = makeError();
@@ -1317,6 +1398,22 @@ TEST_CASE("C ABI reports mapping and vertex input capabilities",
     CHECK(capabilities.max_vertex_buffer_stride >= 1);
     CHECK(capabilities.max_vertex_instance_step_rate >= 1);
     CHECK(capabilities.reserved0 == 0);
+
+    CHECK(capabilities.max_storage_buffer_binding_size >= (std::uint64_t{1} << 27));
+    CHECK(capabilities.max_uniform_buffer_binding_size >= 16384);
+    CHECK(capabilities.min_storage_buffer_offset_alignment >= 1);
+    CHECK(capabilities.min_storage_buffer_offset_alignment <= 256);
+    CHECK((capabilities.min_storage_buffer_offset_alignment & (capabilities.min_storage_buffer_offset_alignment - 1)) ==
+          0);
+    if (RACHIS_SMOKE_BACKEND == RACHIS_BACKEND_D3D12)
+    {
+        CHECK(capabilities.max_storage_buffer_binding_size == (std::uint64_t{1} << 29));
+    }
+    if (RACHIS_SMOKE_BACKEND != RACHIS_BACKEND_VULKAN)
+    {
+        CHECK(capabilities.max_uniform_buffer_binding_size == 65536);
+        CHECK(capabilities.min_storage_buffer_offset_alignment == 16);
+    }
 }
 
 TEST_CASE("C ABI rejects descriptor version and layout mismatch", "[size:small]")

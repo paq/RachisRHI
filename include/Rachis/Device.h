@@ -215,6 +215,8 @@ namespace rachis
         std::uint64_t maxBufferSize = 0;
         std::uint64_t maxUniformBufferSize = 0;
         std::uint64_t minUniformBufferOffsetAlignment = 1;
+        std::uint64_t maxStorageBufferBindingSize = 0;
+        std::uint64_t minStorageBufferOffsetAlignment = 1;
         std::uint32_t maxSamplerAnisotropy = 1;
         float maxSamplerLodBias = 0.0F;
         std::uint32_t maxColorAttachments = 0;

@@ -29,6 +29,9 @@ namespace rachis::d3d12
     static_assert(maxDynamicBufferOffsetsPerBindingSet <= maxDynamicTablePageDescriptors);
     inline constexpr std::uint32_t bindingSamplerDescriptorBudget = D3D12_MAX_SHADER_VISIBLE_SAMPLER_HEAP_SIZE;
 
+    inline constexpr std::uint64_t maxBufferViewElements = 1ULL << D3D12_REQ_BUFFER_RESOURCE_TEXEL_COUNT_2_TO_EXP;
+    inline constexpr std::uint64_t maxRawBufferViewBytes = maxBufferViewElements * sizeof(std::uint32_t);
+
     struct NativeBindingLayoutEntry final
     {
         BindingLayoutEntry entry;
